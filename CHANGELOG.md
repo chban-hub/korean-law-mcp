@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.0] - 2026-03-15
+
+### Fixed
+- HWP 구형 파서: `controls` 내 테이블(표) 추출 지원
+  - `hwp.js`의 `paragraph.controls[].content` 경로에서 테이블 구조(rows/cells) 탐색
+  - 기존에는 `paragraph.content`만 탐색하여 표 형식 HWP 파싱 실패
+
+## [1.8.1] - 2026-03-15
+
+### Changed
+- MCP 도구 스키마 최적화: description 압축 + apiKey 은닉
+
 ## [1.8.0] - 2026-03-10
 
 ### Added

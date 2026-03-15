@@ -1,8 +1,8 @@
 # Korean Law MCP - API Reference
 
-> **v1.6.0** | 58개 도구
+> **v1.9.0** | 64개 도구
 
-도구 목록은 [README.md](../README.md#-available-tools-58-total) 참조.
+도구 목록은 [README.md](../README.md#도구-목록-64개) 참조.
 상세 파라미터는 각 도구의 Zod 스키마(`src/tools/*.ts`) 참조.
 
 ---
@@ -41,7 +41,7 @@
 
 ```json
 {
-  "content": [{ "type": "text", "text": "❌ 에러 메시지\n\n💡 해결 방법: ..." }],
+  "content": [{ "type": "text", "text": "[에러코드] 도구명: 에러 메시지\n\n💡 해결 방법: ..." }],
   "isError": true
 }
 ```
@@ -74,12 +74,12 @@
 | `search_ordinance` | `ordin` | 조례/규칙 |
 | `search_precedents` | `prec` | 판례 |
 | `search_interpretations` | `expc` | 법령해석례 |
-| `search_all` | - | 통합 검색 |
+| `search_all` | - | 통합 검색 (법령+행정규칙+자치법규) |
 | `suggest_law_names` | - | 법령명 자동완성 |
 | `parse_jo_code` | - | 조문번호 ↔ 코드 변환 |
 | `get_law_history` | - | 특정일 법령 변경 목록 |
 | `advanced_search` | - | 기간/AND/OR 검색 |
-| `get_annexes` | - | 별표/서식 조회 |
+| `get_annexes` | - | 별표/서식 조회 + HWPX/HWP 본문 추출 |
 
 ### 조회 (9개)
 
@@ -90,7 +90,7 @@
 | `get_ordinance` | 자치법규 전문 |
 | `get_precedent_text` | 판례 전문 |
 | `get_interpretation_text` | 해석례 전문 |
-| `get_batch_articles` | 여러 조문 일괄 조회 |
+| `get_batch_articles` | 여러 조문 일괄 조회 (`laws` 배열로 복수 법령 지원) |
 | `get_article_with_precedents` | 조문 + 관련 판례 |
 | `compare_old_new` | 신구법 대조 |
 | `get_three_tier` | 법률→시행령→시행규칙 |
@@ -114,11 +114,11 @@
 | 도구 | 설명 |
 |------|------|
 | `search_tax_tribunal_decisions` | 조세심판원 재결례 검색 |
-| `get_tax_tribunal_decision` | 조세심판원 재결례 전문 |
+| `get_tax_tribunal_decision_text` | 조세심판원 재결례 전문 |
 | `search_customs_interpretations` | 관세청 법령해석 검색 |
-| `get_customs_interpretation` | 관세청 법령해석 전문 |
+| `get_customs_interpretation_text` | 관세청 법령해석 전문 |
 
-### v1.5.0 추가 (17개)
+### 헌재·행심·위원회 (6개)
 
 | 도구 | 설명 |
 |------|------|
@@ -126,31 +126,44 @@
 | `get_constitutional_decision_text` | 헌재 결정례 전문 |
 | `search_admin_appeals` | 행정심판례 검색 |
 | `get_admin_appeal_text` | 행정심판례 전문 |
-| `search_english_law` | 영문법령 검색 |
-| `get_english_law_text` | 영문법령 조문 |
-| `search_legal_terms` | 법령용어 검색 |
-| `search_ftc_decisions` | 공정위 결정문 검색 |
-| `get_ftc_decision_text` | 공정위 결정문 전문 |
-| `search_pipc_decisions` | 개보위 결정문 검색 |
-| `get_pipc_decision_text` | 개보위 결정문 전문 |
-| `search_nlrc_decisions` | 노동위 결정문 검색 |
-| `get_nlrc_decision_text` | 노동위 결정문 전문 |
-| `get_historical_law` | 연혁법령 조회 |
-| `search_historical_law` | 연혁법령 목록 |
-| `get_law_system_tree` | 법령체계도 |
+| `search_ftc_decisions` / `search_nlrc_decisions` / `search_pipc_decisions` | 공정위/노동위/개보위 결정 검색 |
+| `get_ftc_decision_text` / `get_nlrc_decision_text` / `get_pipc_decision_text` | 결정 전문 |
 
-### v1.6.0 추가 (8개)
+### 지식베이스 (7개)
 
 | 도구 | 설명 |
 |------|------|
-| `search_ai_law` | AI 지능형 법령검색 (자연어) |
-| `get_legal_term_kb` | 법령용어 지식베이스 |
+| `get_legal_term_kb` | 법령용어 지식베이스 검색 |
 | `get_legal_term_detail` | 법령용어 상세 정의 |
 | `get_daily_term` | 일상용어 검색 |
 | `get_daily_to_legal` | 일상용어→법령용어 |
 | `get_legal_to_daily` | 법령용어→일상용어 |
 | `get_term_articles` | 용어→조문 연계 |
 | `get_related_laws` | 관련법령 조회 |
+
+### 기타 (4개)
+
+| 도구 | 설명 |
+|------|------|
+| `search_ai_law` | AI 지능형 법령검색 (자연어, `lawTypes` 필터) |
+| `search_english_law` / `get_english_law_text` | 영문법령 검색/조회 |
+| `search_historical_law` / `get_historical_law` | 연혁법령 검색/조회 |
+| `search_legal_terms` | 법령용어 사전 검색 |
+| `get_law_system_tree` | 법령체계도 |
+
+### 체인 도구 (7개)
+
+여러 도구를 자동 조합하여 복합 리서치를 한 번에 수행.
+
+| 도구 | 설명 |
+|------|------|
+| `chain_law_system` | 법체계 파악 (법령검색→3단비교→조문 일괄) |
+| `chain_action_basis` | 처분/허가 근거 확인 (법체계→해석례→판례→행심) |
+| `chain_dispute_prep` | 불복/쟁송 대비 (판례+행심+전문결정례 병렬) |
+| `chain_amendment_track` | 개정 추적 (신구대조+조문이력) |
+| `chain_ordinance_compare` | 조례 비교 연구 (상위법→전국 조례 검색) |
+| `chain_full_research` | 종합 리서치 (AI검색→법령→판례→해석) |
+| `chain_procedure_detail` | 절차/비용/서식 (법체계→별표→시행규칙별표) |
 
 ---
 
@@ -181,6 +194,23 @@
    → 도로교통법 제148조의2 발견
 
 2. get_law_text(lawId="도로교통법", jo="제148조의2")
+```
+
+### 별표 본문 추출
+
+```
+1. get_annexes(lawName="여권법 시행령")
+   → 별표 목록 + bylSeq 획득
+
+2. get_annexes(lawName="여권법 시행령", bylSeq="000000")
+   → HWP 파일 다운로드 → 표 Markdown 변환
+```
+
+### 체인 도구 (종합 리서치)
+
+```
+1. chain_full_research(query="음주운전 처벌")
+   → AI검색 → 법령조문 → 판례 → 해석례 자동 수행
 ```
 
 ---

@@ -2,7 +2,7 @@
 
 법제처 Open API 기반 한국 법령 MCP 서버 + CLI. 64개 도구로 법령, 판례, 행정규칙, 자치법규, 법령해석례 등을 검색·조회·분석할 수 있다.
 
-[![MCP Compatible](https://img.shields.io/badge/MCP-1.26-blue)](https://modelcontextprotocol.io)
+[![MCP Compatible](https://img.shields.io/badge/MCP-1.27-blue)](https://modelcontextprotocol.io)
 [![CLI](https://img.shields.io/badge/CLI-korean--law-green)](#cli-사용법)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue)](https://www.typescriptlang.org/)

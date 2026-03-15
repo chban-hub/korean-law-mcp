@@ -6,9 +6,10 @@ Korean Law MCP Server - 법제처 API 기반 MCP 서버 (64개 도구)
 
 ```
 src/
-├── index.ts              # 엔트리포인트 (55줄, STDIO/SSE 모드)
-├── tool-registry.ts      # 64개 도구 등록 (~470줄)
-├── tools/                # 도구 구현 (각 파일 200줄 미만)
+├── index.ts              # 엔트리포인트 (STDIO/HTTP 모드)
+├── cli.ts                # CLI 인터페이스
+├── tool-registry.ts      # 64개 도구 등록
+├── tools/                # 도구 구현 (40개 파일, 각 200줄 미만)
 ├── lib/
 │   ├── api-client.ts     # API 클라이언트
 │   ├── fetch-with-retry.ts  # 타임아웃/재시도
@@ -17,8 +18,15 @@ src/
 │   ├── errors.ts         # 에러 표준화
 │   ├── schemas.ts        # 날짜/응답크기 검증
 │   ├── search-normalizer.ts  # 검색어 정규화 (LexDiff)
-│   └── law-parser.ts     # JO 코드 변환 (LexDiff)
+│   ├── law-parser.ts     # JO 코드 변환 (LexDiff)
+│   ├── annex-file-parser.ts  # 별표 파일 파서 (HWPX/HWP/PDF)
+│   ├── article-parser.ts # 조문 파서
+│   ├── cache.ts          # LRU 캐시 (TTL)
+│   ├── three-tier-parser.ts  # 3단 비교 파서
+│   └── types.ts          # 공통 타입
 └── server/               # HTTP/SSE 서버 (Express)
+    ├── http-server.ts    # Streamable HTTP (MCP 표준)
+    └── sse-server.ts     # SSE 서버 (레거시)
 ```
 
 ## Commands
@@ -32,7 +40,7 @@ LAW_OC=키 node build/index.js  # 로컬 실행
 
 ## Environment
 
-`LAW_OC`: 법제처 API 키 (필수) - https://www.law.go.kr/DRF/lawService.do
+`LAW_OC`: 법제처 API 키 (필수) - https://open.law.go.kr/LSO/openApi/guideResult.do
 
 ## Domain Knowledge
 
@@ -76,6 +84,7 @@ get_law_text(mst, jo="006300") → 제63조(휴직) 조회
 | `lib/fetch-with-retry.ts` | 30초 타임아웃, 3회 재시도 |
 | `lib/session-state.ts` | 멀티세션 API 키 격리 |
 | `lib/xml-parser.ts` | 6개 도메인별 XML 파서 |
+| `lib/annex-file-parser.ts` | HWPX/HWP/PDF 별표 파싱 |
 
 ## Docs
 
