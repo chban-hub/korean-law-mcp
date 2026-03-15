@@ -315,7 +315,9 @@ async function parseHwp(buffer: ArrayBuffer): Promise<AnnexParseResult> {
       return { success: false, fileType: "hwp", error: "HWP 문서에 내용이 없습니다" }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+
+    /** content 배열에서 텍스트 추출 (한 글자씩 {type:0, value:"X"} 형태) */
     function extractTextFromContent(content: any[]): string {
       let text = ""
       for (const item of content) {
@@ -329,15 +331,55 @@ async function parseHwp(buffer: ArrayBuffer): Promise<AnnexParseResult> {
       return text
     }
 
+    /** items(단락) 배열에서 텍스트 추출 */
+    function extractTextFromItems(items: any[]): string {
+      const texts: string[] = []
+      for (const item of items) {
+        const content = item.content || []
+        const text = extractTextFromContent(content).trim()
+        if (text) texts.push(text)
+      }
+      return texts.join(" ")
+    }
+
+    /** controls 내 테이블 → Markdown 변환 */
+    function extractTableFromControl(ctrl: any): string | null {
+      if (!ctrl.content || !Array.isArray(ctrl.content) || !ctrl.rowCount) return null
+
+      const rows: string[][] = []
+      for (const row of ctrl.content) {
+        if (!Array.isArray(row)) continue
+        const cells: string[] = []
+        for (const cell of row) {
+          const items = cell.items || []
+          cells.push(extractTextFromItems(items))
+        }
+        rows.push(cells)
+      }
+
+      if (rows.length === 0) return null
+      return createMarkdownTable(rows)
+    }
+
     const parts: string[] = []
     for (const section of hwpDoc.sections) {
       const paragraphs = section.content || []
       for (const paragraph of paragraphs) {
+        // 1) 일반 텍스트 추출
         const content = paragraph.content || []
         const text = extractTextFromContent(content).trim()
         if (text) parts.push(text)
+
+        // 2) controls 내 테이블 추출
+        const controls = paragraph.controls || []
+        for (const ctrl of controls) {
+          const table = extractTableFromControl(ctrl)
+          if (table) parts.push(table)
+        }
       }
     }
+
+    /* eslint-enable @typescript-eslint/no-explicit-any */
 
     if (parts.length === 0) {
       return { success: false, fileType: "hwp", error: "HWP 텍스트 추출 실패 (표 형식 문서일 수 있음)" }
