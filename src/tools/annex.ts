@@ -216,9 +216,16 @@ async function extractAnnexContent(
     }
   }
 
-  // 파싱 성공 - 크기 제한 적용
+  // 파싱 성공 - 묶음 별표면 요청 섹션만 추출
+  let markdown = result.markdown
+  const selectorNumbers = extractSelectorNumbers(annexSelector)
+  if (selectorNumbers.length > 0 && isBundledAnnex(annexTitle)) {
+    const extracted = extractBundledSection(markdown, selectorNumbers[0])
+    if (extracted) markdown = extracted
+  }
+
   const header = `📋 ${normalizedLawName} - ${annexTitle}\n(파일 형식: ${result.fileType.toUpperCase()}${result.pageCount ? `, ${result.pageCount}페이지` : ""})\n\n`
-  const fullText = header + result.markdown
+  const fullText = header + markdown
   return {
     content: [{
       type: "text",
@@ -419,6 +426,23 @@ function titleMatchesAnnexNumber(title: string, annexNumber: string): boolean {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/** 묶음 별표 여부 판별: "[별표1~5]" 같은 범위 표기가 있는지 */
+function isBundledAnnex(annexTitle: string): boolean {
+  return /별표\s*\d+\s*[~\-]\s*\d+/.test(annexTitle)
+}
+
+/** 묶음 별표 마크다운에서 특정 별표 섹션만 추출 */
+function extractBundledSection(markdown: string, targetNum: string): string | null {
+  const num = parseInt(targetNum, 10)
+  if (isNaN(num)) return null
+
+  const pattern = new RegExp(
+    `(##\\s*\\[별표\\s*${num}\\][\\s\\S]*?)(?=##\\s*\\[별표\\s*\\d|$)`
+  )
+  const match = markdown.match(pattern)
+  return match ? match[1].trim() : null
 }
 
 /**
