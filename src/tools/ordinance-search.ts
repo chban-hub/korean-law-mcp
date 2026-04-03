@@ -105,7 +105,7 @@ export async function searchOrdinance(
       output += `\n`
     }
 
-    output += `\n💡 전문을 조회하려면 get_ordinance Tool을 사용하세요.\n`
+    output += `\n💡 전문 조회: execute_tool(tool_name="get_ordinance", params={ordinSeq:"일련번호"})\n`
 
     return {
       content: [{

@@ -88,7 +88,7 @@ export async function getOrdinance(
       resultText += `\n💡 상위법령 참고:\n`
       parentLawHints.forEach(h => { resultText += `   - ${h}\n` })
     } else {
-      resultText += `\n💡 상위법령 확인: search_law 또는 get_related_laws 도구를 사용하세요.`
+      resultText += `\n💡 상위법령 확인: search_law(query="법령명") 또는 execute_tool(tool_name="get_related_laws", params={query:"키워드"})`
     }
 
     return {

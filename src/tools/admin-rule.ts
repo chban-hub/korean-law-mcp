@@ -78,7 +78,7 @@ export async function searchAdminRule(
       resultText += `   - 소관부처: ${orgName}\n\n`
     }
 
-    resultText += `\n💡 상세 내용을 조회하려면 get_admin_rule Tool을 사용하세요.`
+    resultText += `\n💡 상세 조회: execute_tool(tool_name="get_admin_rule", params={adminRuleSeq:"일련번호"})`
 
     return {
       content: [{

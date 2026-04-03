@@ -105,7 +105,7 @@ export async function getLawTree(
       }
     }
 
-    output += `\n\n💡 상세한 위임 관계는 get_three_tier Tool을 사용하세요.`
+    output += `\n\n💡 위임관계: chain_law_system(query="법령명") 또는 execute_tool(tool_name="get_three_tier", params={mst:"법령MST"})`
 
     return {
       content: [{

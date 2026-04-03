@@ -68,7 +68,7 @@ export async function searchTreaties(
       output += `\n`
     }
 
-    output += `\n전문을 조회하려면 get_treaty_text Tool을 사용하세요.\n`
+    output += `\n전문 조회: execute_tool(tool_name="get_treaty_text", params={treatySeq:"조약번호"})\n`
 
     return { content: [{ type: "text", text: truncateResponse(output) }] }
   } catch (error) {

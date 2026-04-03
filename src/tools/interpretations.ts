@@ -92,7 +92,7 @@ export async function searchInterpretations(
       output += `\n`;
     }
 
-    output += `\n💡 전문을 조회하려면 get_interpretation_text Tool을 사용하세요.\n`;
+    output += `\n💡 전문 조회: execute_tool(tool_name="get_interpretation_text", params={id:"해석례ID"})\n`;
 
     return {
       content: [{

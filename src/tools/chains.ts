@@ -452,6 +452,15 @@ export async function chainOrdinanceCompare(
     const ordinances = await callTool(searchOrdinance, apiClient, { query: ordinanceQuery, display: 20, apiKey: input.apiKey })
     if (!ordinances.isError) parts.push(sec("전국 자치법규 검색 결과", ordinances.text))
 
+    // Step 3: 상위 1건 전문 자동 조회
+    if (!ordinances.isError) {
+      const seqMatch = ordinances.text.match(/\[(\d+)\]/)
+      if (seqMatch) {
+        const fullText = await callTool(getOrdinance, apiClient, { ordinSeq: seqMatch[1], apiKey: input.apiKey })
+        if (!fullText.isError) parts.push(sec("조례 전문 (상위 1건)", fullText.text))
+      }
+    }
+
     // 키워드 확장
     const exp = detectExpansions(input.query)
     if (exp.includes("interpretation")) {
