@@ -21,7 +21,7 @@ v2 structured 39 legal APIs into 89 MCP tools. v3 re-compresses them into **14 t
 
 | | Raw APIs | v2 | v3 |
 |---|:---:|:---:|:---:|
-| Tool count | 39 | 89 | **14** |
+| Tool count | 41 | 89 | **14** |
 | AI context cost | - | ~110 KB | **~20 KB** |
 | Coverage | - | 100% | **100%** |
 | Profile management | - | lite/full split | **Single (none needed)** |
