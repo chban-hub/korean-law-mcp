@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { truncateResponse } from "../lib/schemas.js";
 import { parseSearchXML, extractTag, stripHtml } from "../lib/xml-parser.js";
-import { formatToolError } from "../lib/errors.js";
+import { formatToolError, noResultHint } from "../lib/errors.js";
 
 // English law search tool - Search for English translations of Korean laws
 export const searchEnglishLawSchema = z.object({
@@ -53,15 +53,7 @@ export async function searchEnglishLaw(
     const laws = allLaws.filter(item => item.법령ID || item.영문법령명);
 
     if (totalCount === 0) {
-      let errorMsg = "검색 결과가 없습니다.";
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      };
+      return noResultHint(args.query || "", "영문법령")
     }
 
     let output = `영문법령 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;

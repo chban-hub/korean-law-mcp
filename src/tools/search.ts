@@ -7,7 +7,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import type { LawApiClient } from "../lib/api-client.js"
 import { lawCache } from "../lib/cache.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError } from "../lib/errors.js"
+import { formatToolError, noResultHint } from "../lib/errors.js"
 
 export const SearchLawSchema = z.object({
   query: z.string().describe("검색할 법령명 (예: '관세법', 'fta특례법', '화관법')"),
@@ -44,12 +44,7 @@ export async function searchLaw(
     const laws = doc.getElementsByTagName("law")
 
     if (laws.length === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: "검색 결과가 없습니다. 법령명을 확인해주세요."
-        }]
-      }
+      return noResultHint(input.query, "법령")
     }
 
     let resultText = `검색 결과 (총 ${laws.length}건):\n\n`

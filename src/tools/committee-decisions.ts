@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { truncateResponse } from "../lib/schemas.js";
 import { parseSearchXML, extractTag } from "../lib/xml-parser.js";
-import { formatToolError } from "../lib/errors.js";
+import { formatToolError, noResultHint } from "../lib/errors.js";
 
 // Common schema for committee decision search (query optional)
 const baseSearchSchemaOptionalQuery = {
@@ -186,15 +186,7 @@ async function searchCommitteeDecisions(
     const totalCount = totalCnt;
 
     if (totalCount === 0) {
-      let errorMsg = `검색 결과가 없습니다.`;
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      };
+      return noResultHint(args.query || "", committeeName)
     }
 
     let output = `${committeeName} 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;

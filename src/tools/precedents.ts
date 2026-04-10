@@ -59,8 +59,18 @@ export async function searchPrecedents(
 
   if (totalCount === 0) {
     const kw = args.query || "관련 키워드"
-    const hint = `검색 결과가 없습니다.\n제안:\n  1. 단순 키워드: search_precedents(query="${kw.split(/\s+/)[0]}")\n  2. 해석례 검색: search_interpretations(query="${kw}")\n  3. 법령 검색: search_law(query="${kw}")`
-    return { content: [{ type: "text", text: hint }], isError: true };
+    const keywords = kw.trim().split(/\s+/)
+    const lines = ["판례 검색 결과가 없습니다."]
+    if (keywords.length >= 2) {
+      lines.push("")
+      lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
+      lines.push(`재시도 제안: "${keywords[0]}" 또는 "${keywords.slice(0, 2).join(" ")}"`)
+    }
+    lines.push("")
+    lines.push("대안:")
+    lines.push(`  1. 해석례 검색: search_interpretations(query="${kw}")`)
+    lines.push(`  2. 법령 검색: search_law(query="${kw}")`)
+    return { content: [{ type: "text", text: lines.join("\n") }], isError: true };
   }
 
   let output = `판례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지)`;

@@ -2,7 +2,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { parseInterpretationXML } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError } from "../lib/errors.js"
+import { formatToolError, noResultHint } from "../lib/errors.js"
 
 export const searchInterpretationsSchema = z.object({
   query: z.string().describe("Search keyword (e.g., '자동차', '근로기준법')"),
@@ -54,15 +54,7 @@ export async function searchInterpretations(
     const totalCount = (args.fromDate || args.toDate) ? expcs.length : result.totalCnt;
 
     if (totalCount === 0) {
-      let errorMsg = "검색 결과가 없습니다."
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      };
+      return noResultHint(args.query || "", "해석례")
     }
 
     let output = `해석례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지)`;

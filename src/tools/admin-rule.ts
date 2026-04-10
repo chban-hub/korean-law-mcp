@@ -6,7 +6,7 @@ import { z } from "zod"
 import { DOMParser } from "@xmldom/xmldom"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError } from "../lib/errors.js"
+import { formatToolError, noResultHint } from "../lib/errors.js"
 
 // search_admin_rule 스키마
 export const SearchAdminRuleSchema = z.object({
@@ -35,15 +35,7 @@ export async function searchAdminRule(
     const rules = doc.getElementsByTagName("admrul")
 
     if (rules.length === 0) {
-      let errorMsg = "검색 결과가 없습니다."
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      }
+      return noResultHint(input.query || "", "행정규칙")
     }
 
     let resultText = `행정규칙 검색 결과 (총 ${rules.length}건):\n\n`
@@ -300,10 +292,7 @@ export async function compareAdminRuleOldNew(
 
     const rules = doc.getElementsByTagName("admrul")
     if (rules.length === 0) {
-      return {
-        content: [{ type: "text", text: "행정규칙 신구법 검색 결과가 없습니다." }],
-        isError: true
-      }
+      return noResultHint(input.query || "", "행정규칙 신구법")
     }
 
     let resultText = `행정규칙 신구법 검색 결과 (총 ${rules.length}건):\n\n`

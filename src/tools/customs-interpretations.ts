@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { truncateResponse } from "../lib/schemas.js";
 import { parseSearchXML, extractTag } from "../lib/xml-parser.js";
-import { formatToolError } from "../lib/errors.js";
+import { formatToolError, noResultHint } from "../lib/errors.js";
 
 // Customs legal interpretation search tool - Search for customs law interpretations
 export const searchCustomsInterpretationsSchema = z.object({
@@ -61,12 +61,7 @@ export async function searchCustomsInterpretations(
     const totalCount = totalCnt;
 
     if (totalCount === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: "검색 결과가 없습니다."
-        }]
-      };
+      return noResultHint(args.query || "", "관세청 법령해석")
     }
 
     let output = `관세청 법령해석 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;

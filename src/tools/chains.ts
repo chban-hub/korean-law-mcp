@@ -205,8 +205,17 @@ function secOrSkip(title: string, result: CallResult): string {
 }
 
 function noResult(query: string): ToolResponse {
+  const keywords = query.trim().split(/\s+/)
+  const lines = [`'${query}' 관련 법령을 찾을 수 없습니다.`]
+  if (keywords.length >= 2) {
+    lines.push("")
+    lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
+    lines.push(`재시도 제안: "${keywords[0]}" 또는 "${keywords.slice(0, 2).join(" ")}"`)
+  } else {
+    lines.push("검색어를 확인해주세요.")
+  }
   return {
-    content: [{ type: "text", text: `'${query}' 관련 법령을 찾을 수 없습니다. 검색어를 확인해주세요.` }],
+    content: [{ type: "text", text: lines.join("\n") }],
     isError: true,
   }
 }

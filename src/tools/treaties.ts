@@ -47,12 +47,17 @@ export async function searchTreaties(
 
     if (result.totalCnt === 0) {
       const kw = args.query || "관련 키워드"
-      const hint = [
-        "검색 결과가 없습니다.\n\n개선 방법:",
-        `  1. 단순 키워드: search_treaties(query="${kw.split(/\s+/)[0]}")`,
-        `  2. 법령 검색: search_law(query="${kw}")`,
-      ].join("\n")
-      return { content: [{ type: "text", text: hint }], isError: true }
+      const keywords = kw.trim().split(/\s+/)
+      const lines = ["조약 검색 결과가 없습니다."]
+      if (keywords.length >= 2) {
+        lines.push("")
+        lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
+        lines.push(`재시도 제안: "${keywords[0]}" 또는 "${keywords.slice(0, 2).join(" ")}"`)
+      }
+      lines.push("")
+      lines.push("대안:")
+      lines.push(`  1. 법령 검색: search_law(query="${kw}")`)
+      return { content: [{ type: "text", text: lines.join("\n") }], isError: true }
     }
 
     let output = `조약 검색 결과 (총 ${result.totalCnt}건, ${result.page}페이지):\n\n`

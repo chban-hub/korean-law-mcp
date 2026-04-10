@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { parseTaxTribunalXML } from "../lib/xml-parser.js";
 import { truncateResponse } from "../lib/schemas.js";
-import { formatToolError } from "../lib/errors.js";
+import { formatToolError, noResultHint } from "../lib/errors.js";
 
 // Tax tribunal decision search tool - Search for special administrative appeals decisions
 export const searchTaxTribunalDecisionsSchema = z.object({
@@ -50,12 +50,7 @@ export async function searchTaxTribunalDecisions(
     const deccs = result.items;
 
     if (totalCount === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: "검색 결과가 없습니다."
-        }]
-      };
+      return noResultHint(args.query || "", "조세심판원 재결례")
     }
 
     let output = `조세심판원 재결례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;

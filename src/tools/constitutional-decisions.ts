@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { parseConstitutionalXML } from "../lib/xml-parser.js";
 import { truncateResponse } from "../lib/schemas.js";
-import { formatToolError } from "../lib/errors.js";
+import { formatToolError, noResultHint } from "../lib/errors.js";
 
 // Constitutional Court decision search tool - Search for Constitutional Court rulings
 export const searchConstitutionalDecisionsSchema = z.object({
@@ -44,15 +44,7 @@ export async function searchConstitutionalDecisions(
     const decisions = result.items;
 
     if (totalCount === 0) {
-      let errorMsg = "검색 결과가 없습니다.";
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      };
+      return noResultHint(args.query || args.caseNumber || "", "헌법재판소 결정")
     }
 
     let output = `헌재결정례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;

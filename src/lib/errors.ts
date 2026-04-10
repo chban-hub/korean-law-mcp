@@ -52,6 +52,29 @@ export class LawApiError extends Error {
  *   🔧 도구: <toolName>
  *   💡 제안: ...
  */
+/**
+ * 검색 결과 없음 힌트 생성
+ * 법제처 API는 공백 키워드를 AND 조건으로 처리하므로, 키워드가 많으면 결과가 0건이 되기 쉬움
+ */
+export function noResultHint(query: string, label?: string): ToolResponse {
+  const prefix = label ? `${label} ` : ""
+  const keywords = query.trim().split(/\s+/)
+  const lines = [`${prefix}'${query}' 검색 결과가 없습니다.`]
+
+  if (keywords.length >= 2) {
+    lines.push("")
+    lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
+    lines.push(`재시도 제안: "${keywords[0]}" 또는 "${keywords.slice(0, 2).join(" ")}"`)
+  } else {
+    lines.push("다른 키워드로 재시도하세요.")
+  }
+
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    isError: true,
+  }
+}
+
 export function formatToolError(error: unknown, context?: string): ToolResponse {
   let code: string
   let msg: string

@@ -2,7 +2,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { parseAdminAppealXML as parseAdminAppealXMLShared } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError } from "../lib/errors.js"
+import { formatToolError, noResultHint } from "../lib/errors.js"
 
 // Administrative appeal decision search tool - Search for administrative tribunal rulings
 export const searchAdminAppealsSchema = z.object({
@@ -42,15 +42,7 @@ export async function searchAdminAppeals(
     const appeals = result.items;
 
     if (totalCount === 0) {
-      let errorMsg = "검색 결과가 없습니다.";
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      };
+      return noResultHint(args.query || "", "행정심판")
     }
 
     let output = `행정심판례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;

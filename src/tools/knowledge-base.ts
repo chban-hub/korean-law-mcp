@@ -2,7 +2,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { extractTag, parseKBXML, fallbackTermSearch } from "./kb-utils.js"
-import { formatToolError } from "../lib/errors.js"
+import { formatToolError, noResultHint } from "../lib/errors.js"
 
 // ============================================================================
 // 법령정보 지식베이스 API
@@ -46,10 +46,7 @@ export async function getLegalTermKB(
     const items = result.data;
 
     if (totalCount === 0 || items.length === 0) {
-      return {
-        content: [{ type: "text", text: `'${args.query}' 검색 결과가 없습니다.` }],
-        isError: true,
-      };
+      return noResultHint(args.query, "법령용어 지식베이스")
     }
 
     let output = `법령용어 지식베이스 (${totalCount}건):\n\n`;
@@ -155,13 +152,7 @@ export async function getDailyTerm(
     const items = result.data || [];
 
     if (totalCount === 0 || items.length === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: `'${args.query}' 일상용어 검색 결과가 없습니다.`
-        }],
-        isError: true,
-      };
+      return noResultHint(args.query, "일상용어")
     }
 
     let output = `일상용어 검색 결과 (${totalCount}건):\n\n`;

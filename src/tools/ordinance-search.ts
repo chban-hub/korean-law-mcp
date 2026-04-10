@@ -85,11 +85,16 @@ export async function searchOrdinance(
       // 확장 검색도 실패한 경우, 시도한 쿼리들 안내
       const { expanded } = expandOrdinanceQuery(input.query)
       const triedQueries = [normalizedQuery, ...expanded].slice(0, 3).join("', '")
+      const keywords = input.query.trim().split(/\s+/)
+      const hint = [`'${input.query}' 자치법규 검색 결과가 없습니다.`, `시도한 검색어: '${triedQueries}'`]
+      if (keywords.length >= 2) {
+        hint.push("")
+        hint.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
+        hint.push(`재시도 제안: "${keywords[0]}" 또는 "${keywords.slice(0, 2).join(" ")}"`)
+      }
       return {
-        content: [{
-          type: "text",
-          text: `'${input.query}' 검색 결과가 없습니다.\n\n시도한 검색어: '${triedQueries}'`
-        }]
+        content: [{ type: "text", text: hint.join("\n") }],
+        isError: true,
       }
     }
 

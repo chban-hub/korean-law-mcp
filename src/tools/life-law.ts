@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { truncateResponse, formatDateDot } from "../lib/schemas.js";
 import { parseSearchXML, extractTag as sharedExtractTag } from "../lib/xml-parser.js";
-import { formatToolError } from "../lib/errors.js";
+import { formatToolError, noResultHint } from "../lib/errors.js";
 
 // AI-powered intelligent law search tool
 // 이름은 searchAiLaw가 더 정확하지만, 호환성을 위해 searchLifeLaw alias 유지
@@ -99,15 +99,7 @@ export async function searchAiLaw(
     }
 
     if (totalCount === 0 || items.length === 0) {
-      let errorMsg = "검색 결과가 없습니다.";
-
-      return {
-        content: [{
-          type: "text",
-          text: errorMsg
-        }],
-        isError: true
-      };
+      return noResultHint(args.query || "", "생활법령")
     }
 
     const searchTypeNames: Record<string, string> = {
