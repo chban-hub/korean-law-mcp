@@ -15,12 +15,36 @@
 
 ---
 
-## What's New in v3.1.4
+## What's New in v3.2.0 — Smart Scenarios
 
-- **kordoc 2.2.4** — Document parsing engine upgrade. HTML `<table>` output for merged cells, markdownToHwpx formatting improvements, Form Auto-Fill support.
+**Same 14 tools, 7 new analysis scenarios.** Just ask in natural language — the AI detects what you need and runs extra analysis automatically.
+
+| Ask this | Get this |
+|----------|---------|
+| "Food Sanitation Act penalty reduction possible?" | Penalty schedule + violation clauses + appeal cases where penalties were reduced |
+| "Import customs FTA check" | Customs Act + customs interpretations + FTA treaties + tariff tables + tax tribunal rulings |
+| "Building Act permit procedure" | Legal basis (Act→Decree→Rule) + fees/forms + admin rules + local ordinance exceptions |
+| "National Health Insurance Act delegation" | Finds delegated provisions where implementing decrees haven't been created yet |
+| "Building Act impact analysis" | Subordinate laws + nationwide ordinances affected + related admin rules |
+| "Labor Standards Act amendment timeline" | Old/new comparison + article history + precedents/interpretations mapped chronologically |
+| "Parking ordinance compliance check" | Constitutional Court decisions + admin appeal cancellations + parent law basis |
+
+> **No changes to how you use it.** Ask naturally, get deeper analysis automatically.
 
 <details>
-<summary>v3.1.0~v3.1.3 changes</summary>
+<summary>v3.1.0~v3.1.5 changes</summary>
+
+**v3.1.5** — kordoc 2.2.4 + README modernization.
+
+**v3.1.4** — kordoc 2.2.4 update. HTML `<table>` for merged cells, markdownToHwpx improvements.
+
+**v3.1.3** — Empty search result hints for 18 tools. Session cleanup interval reduced.
+
+**v3.1.2** — kordoc 2.2.1 update. GFM table escaping.
+
+**v3.1.1** — kordoc 2.1→2.2 update.
+
+**v3.1.0** — Production hardening: 20 file fixes.
 
 **v3.1.3** — Empty search result hints for 18 tools. Session cleanup interval reduced (30min→10min).
 

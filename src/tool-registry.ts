@@ -582,13 +582,13 @@ export const allTools: McpTool[] = [
   // === 체인 도구 (다단계 자동 실행) ===
   {
     name: "chain_law_system",
-    description: "[⛓체인] 법령 구조·체계 질문 시 사용. 법령검색→3단비교(법률·시행령·시행규칙)→조문→별표 자동 연쇄. 예: '건축법 체계', '도로교통법 시행령 위임 구조'.",
+    description: "[⛓체인] 법령 구조·체계 질문 시 사용. 법령검색→3단비교(법률·시행령·시행규칙)→조문→별표 자동 연쇄. scenario='delegation'이면 위임입법 미이행 감시, 'impact'이면 개정 영향도 분석 추가. 예: '건축법 체계', '관세법 위임입법 현황', '국민건강보험법 영향도 분석'.",
     schema: chainLawSystemSchema,
     handler: chainLawSystem
   },
   {
     name: "chain_action_basis",
-    description: "[⛓체인] 허가·인가·처분·기준 질문 시 사용. 3단비교→해석례→판례→행정심판 병렬. 예: '건축허가 거부 근거', '영업정지 처분 기준'.",
+    description: "[⛓체인] 허가·인가·처분·기준 질문 시 사용. 3단비교→해석례→판례→행정심판 병렬. scenario='penalty'이면 처분기준표(별표)+감경판례+벌칙개정이력 추가. 예: '건축허가 거부 근거', '식품위생법 과태료 감경', '영업정지 처분 기준'.",
     schema: chainActionBasisSchema,
     handler: chainActionBasis
   },
@@ -600,25 +600,25 @@ export const allTools: McpTool[] = [
   },
   {
     name: "chain_amendment_track",
-    description: "[⛓체인] 법령 개정·변경·연혁 질문 시 사용. 신구대조+조문이력 자동 연쇄. 예: '민법 최근 개정', '근로기준법 변경 이력'.",
+    description: "[⛓체인] 법령 개정·변경·연혁 질문 시 사용. 신구대조+조문이력 자동 연쇄. scenario='timeline'이면 개정 구간별 판례·해석례 시계열 매핑 추가. 예: '민법 최근 개정', '관세법 개정이력 시계열'.",
     schema: chainAmendmentTrackSchema,
     handler: chainAmendmentTrack
   },
   {
     name: "chain_ordinance_compare",
-    description: "[⛓체인] 자치법규(조례·규칙) 검색·조회·비교 시 사용. 상위법령→위임체계→전국 조례검색 자동 연쇄. 예: '광진구 복무 조례', '서울시 주차 조례', '주민자치회 조례 비교'.",
+    description: "[⛓체인] 자치법규(조례·규칙) 검색·조회·비교 시 사용. 상위법령→위임체계→전국 조례검색 자동 연쇄. scenario='compliance'이면 상위법 적합성 검증(헌재·행심 위법판결+근거분석) 추가. 예: '광진구 복무 조례', '조례 상위법 위반 검증'.",
     schema: chainOrdinanceCompareSchema,
     handler: chainOrdinanceCompare
   },
   {
     name: "chain_full_research",
-    description: "[⛓체인] 복합 질문·종합 조사 시 사용. AI검색→법령→판례→해석례 병렬 수집. 주제가 넓거나 여러 법령에 걸칠 때. 예: '음주운전 처벌 기준', '부동산 임대차 분쟁'.",
+    description: "[⛓체인] 복합 질문·종합 조사 시 사용. AI검색→법령→판례→해석례 병렬 수집. scenario='customs'이면 관세·통관 종합(관세3법+해석례+FTA조약+세율표+조세심판) 추가. 예: '음주운전 처벌 기준', '수입 통관 법적 체크', 'FTA 원산지 규정'.",
     schema: chainFullResearchSchema,
     handler: chainFullResearch
   },
   {
     name: "chain_procedure_detail",
-    description: "[⛓체인] 신청·절차·비용·서식 질문 시 사용. 법령→3단비교→별표/서식 자동 연쇄. 예: '건축허가 절차', '사업자등록 신청 방법'.",
+    description: "[⛓체인] 신청·절차·비용·서식 질문 시 사용. 법령→3단비교→별표/서식 자동 연쇄. scenario='manual'이면 공무원 처리 매뉴얼(행정규칙+자치법규 특칙+해석례) 추가. 예: '건축허가 절차', '건축허가 처리 방법 매뉴얼'.",
     schema: chainProcedureDetailSchema,
     handler: chainProcedureDetail
   },

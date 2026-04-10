@@ -343,6 +343,57 @@ const routePatterns: Pattern[] = [
     priority: 17,
   },
 
+  // ── 17-1. 관세/통관 종합 (scenario: customs) ──
+  {
+    name: "customs_clearance",
+    patterns: [
+      /(?:관세|수입|수출|통관).*(?:법|절차|기준|체크|확인|검토)/,
+      /FTA.*(?:적용|원산지|세율|협정)/,
+      /HS\s*코드|품목\s*분류/,
+    ],
+    tool: "chain_full_research",
+    extract: (query) => ({ query, scenario: "customs" }),
+    reason: "관세·통관 키워드 → 종합 리서치 (관세 시나리오)",
+    priority: 13,
+  },
+
+  // ── 17-2. 처분·벌칙 기준 (scenario: penalty) ──
+  {
+    name: "penalty_check",
+    patterns: [
+      /(?:과태료|벌칙|과징금|영업\s*정지|행정\s*처분).*(?:기준|금액|감경|얼마)/,
+      /(?:위반|적발).*(?:처분|벌금|과태료)/,
+    ],
+    tool: "chain_action_basis",
+    extract: (query) => ({ query, scenario: "penalty" }),
+    reason: "처분·벌칙 키워드 → 처분근거 (벌칙 시나리오)",
+    priority: 13,
+  },
+
+  // ── 17-3. 위임입법 미이행 (scenario: delegation) ──
+  {
+    name: "delegation_audit",
+    patterns: [
+      /위임\s*입법|미이행|미제정|하위\s*법령\s*제정/,
+    ],
+    tool: "chain_law_system",
+    extract: (query) => ({ query, scenario: "delegation" }),
+    reason: "위임입법 키워드 → 법체계 (위임감시 시나리오)",
+    priority: 9,
+  },
+
+  // ── 17-4. 영향도 분석 (scenario: impact) ──
+  {
+    name: "regulation_impact",
+    patterns: [
+      /영향\s*도|영향\s*분석|연쇄\s*개정|파급\s*효과/,
+    ],
+    tool: "chain_law_system",
+    extract: (query) => ({ query, scenario: "impact" }),
+    reason: "영향도 키워드 → 법체계 (영향도 시나리오)",
+    priority: 9,
+  },
+
   // ── 18. "방법" 단독 — procedure 폴백 ──
   {
     name: "method_fallback",

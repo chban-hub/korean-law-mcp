@@ -27,7 +27,17 @@ export async function getLawSystemTree(
     if (args.mst) extraParams.MST = String(args.mst);
     if (args.lawName) extraParams.LM = String(args.lawName);
 
-    const responseText = await apiClient.fetchApi({
+    // XML로 요청 (JSON에서는 행정규칙 노드가 누락되므로)
+    const xmlText = await apiClient.fetchApi({
+      endpoint: "lawService.do",
+      target: "lsStmd",
+      type: "XML",
+      extraParams,
+      apiKey: args.apiKey,
+    });
+
+    // JSON 파싱도 시도 (상하위법/관련법령 구조는 JSON이 편리)
+    const jsonText = await apiClient.fetchApi({
       endpoint: "lawService.do",
       target: "lsStmd",
       type: "JSON",
@@ -37,7 +47,7 @@ export async function getLawSystemTree(
 
     let data: any;
     try {
-      data = JSON.parse(responseText);
+      data = JSON.parse(jsonText);
     } catch (err) {
       throw new Error("Failed to parse JSON response from API");
     }
@@ -48,6 +58,9 @@ export async function getLawSystemTree(
 
     const tree = data.법령체계도;
     const basicInfo = tree.기본정보 || {};
+
+    // XML에서 행정규칙 추출
+    const adminRules = parseAdminRulesFromXml(xmlText);
 
     let output = `=== 법령체계도 ===\n\n`;
 
@@ -117,6 +130,20 @@ export async function getLawSystemTree(
       }
     }
 
+    // 행정규칙 (훈령/예규/고시/지침 등)
+    if (adminRules.length > 0) {
+      output += `행정규칙 (${adminRules.length}건):\n`;
+      for (const rule of adminRules.slice(0, 20)) {
+        output += `  ├─ [${rule.type}] ${rule.name}`;
+        if (rule.date) output += ` (${rule.date})`;
+        output += `\n`;
+      }
+      if (adminRules.length > 20) {
+        output += `  └─ ... 외 ${adminRules.length - 20}건\n`;
+      }
+      output += `\n`;
+    }
+
     // Tree visualization
     output += `체계도 시각화:\n\n`;
     output += buildTreeVisualization(tree, lawName, lawType);
@@ -165,6 +192,44 @@ function buildTreeVisualization(tree: any, lawName: string, lawType: string): st
   }
 
   return viz;
+}
+
+interface AdminRuleInfo {
+  name: string
+  type: string  // 훈령, 예규, 고시, 지침, 공고, 기타
+  id: string
+  date: string
+}
+
+/** XML 응답에서 행정규칙 목록 추출 (JSON에서는 누락되므로 XML 파싱 필수) */
+function parseAdminRulesFromXml(xml: string): AdminRuleInfo[] {
+  const rules: AdminRuleInfo[] = []
+  const adminBlock = xml.match(/<행정규칙>([\s\S]*?)<\/행정규칙>/)
+  if (!adminBlock) return rules
+
+  const content = adminBlock[1]
+  const types = ["훈령", "예규", "고시", "지침", "공고", "기타"]
+
+  for (const type of types) {
+    const itemRegex = new RegExp(`<${type}>[\\s\\S]*?<기본정보>([\\s\\S]*?)<\\/기본정보>[\\s\\S]*?<\\/${type}>`, "g")
+    let match
+    while ((match = itemRegex.exec(content)) !== null) {
+      const info = match[1]
+      const nameMatch = info.match(/<행정규칙명>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/행정규칙명>/)
+      const idMatch = info.match(/<행정규칙일련번호>(.*?)<\/행정규칙일련번호>/)
+      const dateMatch = info.match(/<시행일자>(.*?)<\/시행일자>/)
+      if (nameMatch) {
+        rules.push({
+          name: nameMatch[1],
+          type,
+          id: idMatch?.[1] || "",
+          date: dateMatch?.[1] ? formatDateDot(dateMatch[1]) : "",
+        })
+      }
+    }
+  }
+
+  return rules
 }
 
 function truncate(str: string, maxLen: number): string {

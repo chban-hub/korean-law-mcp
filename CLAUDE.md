@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Korean Law MCP Server v3.1.4 - 법제처 41개 API → 14개 통합 도구 (내부 91개) + 자연어 CLI
+Korean Law MCP Server v3.2.0 - 법제처 41개 API → 14개 통합 도구 (내부 91개) + 7개 시나리오 확장 + 자연어 CLI
 
 ## Structure
 
@@ -121,6 +121,9 @@ get_law_text(mst, jo="006300") → 제63조(휴직) 조회
 | `lib/annex-file-parser.ts` | 별표 파싱 (kordoc 2.x 통합 파서) |
 | `lib/tool-profiles.ts` | 도구 카테고리 매핑 (discover_tools용) |
 | `tools/meta-tools.ts` | discover_tools + execute_tool (전문 도구 접근) |
+| `tools/chains.ts` | 8개 체인 도구 + scenario 분기 (자동감지/수동지정) |
+| `tools/scenarios/index.ts` | 시나리오 통합 실행기 + detectScenario() |
+| `tools/scenarios/*.ts` | 7개 시나리오 모듈 (penalty/customs/manual/delegation/impact/timeline/compliance) |
 | `lib/article-parser.ts` | 조문 파서 (cleanHtml, extractHangContent) |
 
 ## Docs

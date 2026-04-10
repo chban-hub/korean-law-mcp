@@ -9,6 +9,8 @@ import { extractTag } from "../lib/xml-parser.js"
 import { lawCache } from "../lib/cache.js"
 import type { LawApiClient } from "../lib/api-client.js"
 import type { ToolResponse, LooseToolResponse } from "../lib/types.js"
+import { runScenario, detectScenario, formatSections, formatSuggestedActions } from "./scenarios/index.js"
+import type { ScenarioType, ScenarioContext } from "./scenarios/index.js"
 
 // Tool handler imports
 import { analyzeDocument } from "./document-analysis.js"
@@ -67,7 +69,7 @@ async function callTool(
 }
 
 /** 법령명이 아닌 부가 키워드 제거 (법제처 lawSearch API는 법령명 검색이므로) */
-const NON_LAW_NAME_RE = /\s*(과태료|절차|비용|처벌|기준|허가|신청|부과|근거|위반|방법|요건|조건|처분|수수료|신고|등록|면허|인가|승인|취소|정지|벌칙|벌금|과징금|이행강제금|시정명령|체계|구조|3단|판례|해석|개정|별표|시행령|시행규칙|서식|수입|수출|통관|반환|납부|감면|면제|제한|금지|의무|권리|자격|종류|기간|대상|범위|적용)\s*/g
+const NON_LAW_NAME_RE = /\s*(과태료|절차|비용|처벌|기준|허가|신청|부과|근거|위반|방법|요건|조건|처분|수수료|신고|등록|면허|인가|승인|취소|정지|벌칙|벌금|과징금|이행강제금|시정명령|체계|구조|3단|판례|해석|개정|별표|시행령|시행규칙|서식|수입|수출|통관|반환|납부|감면|면제|제한|금지|의무|권리|자격|종류|기간|대상|범위|적용|감경|영향도|영향|분석|위임입법|위임|현황|미이행|미제정|시계열|타임라인|변화|처리|민원|매뉴얼|업무|담당|적합성|상위법|저촉|검증|파급|연쇄|불복|소송|쟁송|FTA|원산지|HS코드|품목분류|관세사)\s*/g
 
 function stripNonLawKeywords(query: string): string {
   return query.replace(NON_LAW_NAME_RE, " ").trim()
@@ -120,6 +122,21 @@ async function findLaws(
     if (stripped && stripped !== query) {
       try {
         const xmlText = await apiClient.searchLaw(stripped, apiKey)
+        results = parseLawXml(xmlText, max)
+      } catch (e) {
+        if (e instanceof Error && /429|401|403|API 키/.test(e.message)) throw e
+      }
+    }
+  }
+
+  // 3차: 법령명 패턴 직접 추출 (strip이 법령명을 파괴하는 경우 대비)
+  // 예: "근로기준법 개정이력" → strip이 "기준" 제거 → "근로 법" 실패 → 패턴으로 "근로기준법" 추출
+  if (results.length === 0) {
+    const lawNameMatch = query.match(/[가-힣]+(법|시행령|시행규칙|규칙|규정|령)(?:\s|$)/)
+    if (lawNameMatch) {
+      const extracted = lawNameMatch[0].trim()
+      try {
+        const xmlText = await apiClient.searchLaw(extracted, apiKey)
         results = parseLawXml(xmlText, max)
       } catch (e) {
         if (e instanceof Error && /429|401|403|API 키/.test(e.message)) throw e
@@ -239,6 +256,8 @@ function wrapError(error: unknown, toolName?: string): ToolResponse {
 export const chainLawSystemSchema = z.object({
   query: z.string().describe("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
   articles: z.array(z.string()).optional().describe("조회할 조문 번호 (예: ['제38조', '제39조'])"),
+  scenario: z.enum(["delegation", "impact"]).optional()
+    .describe("확장 시나리오. delegation=위임입법 미이행 감시, impact=개정 영향도 분석. 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
 })
 
@@ -277,6 +296,15 @@ export async function chainLawSystem(
       if (!annexes.isError) parts.push(sec("별표/서식", annexes.text))
     }
 
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_law_system")) as ScenarioType | null
+    if (scenario) {
+      const ctx: ScenarioContext = { apiClient, query: input.query, law: p, apiKey: input.apiKey }
+      const sr = await runScenario(scenario, ctx)
+      parts.push(formatSections(sr.sections))
+      parts.push(formatSuggestedActions(sr.suggestedActions))
+    }
+
     return wrapResult(parts.join("\n"))
   } catch (error) {
     return wrapError(error)
@@ -289,6 +317,8 @@ export async function chainLawSystem(
 
 export const chainActionBasisSchema = z.object({
   query: z.string().describe("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
+  scenario: z.enum(["penalty"]).optional()
+    .describe("확장 시나리오. penalty=처분·벌칙 기준 종합 (별표 처분기준표 + 감경 판례 + 개정이력). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
 })
 
@@ -308,10 +338,12 @@ export async function chainActionBasis(
     parts.push(secOrSkip("법령 체계 (법률·시행령·시행규칙)", threeTier))
 
     // Step 2: 해석례 + 판례 + 행정심판 (병렬)
+    // 법령명 기반 검색 (input.query는 AND 키워드 과다로 결과 없을 수 있음)
+    const searchQuery = p.lawName
     const [interpR, precR, appealR] = await Promise.all([
-      callTool(searchInterpretations, apiClient, { query: input.query, display: 5, apiKey: input.apiKey }),
-      callTool(searchPrecedents, apiClient, { query: input.query, display: 5, apiKey: input.apiKey }),
-      callTool(searchAdminAppeals, apiClient, { query: input.query, display: 5, apiKey: input.apiKey }),
+      callTool(searchInterpretations, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+      callTool(searchPrecedents, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+      callTool(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
     ])
 
     parts.push(secOrSkip("법령 해석례", interpR))
@@ -323,6 +355,15 @@ export async function chainActionBasis(
     if (exp.includes("annex_fee") || exp.includes("annex_table")) {
       const annexes = await callTool(getAnnexes, apiClient, { lawName: p.lawName, apiKey: input.apiKey })
       if (!annexes.isError) parts.push(sec("별표 (과태료/기준표)", annexes.text))
+    }
+
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_action_basis")) as ScenarioType | null
+    if (scenario) {
+      const ctx: ScenarioContext = { apiClient, query: input.query, law: p, apiKey: input.apiKey }
+      const sr = await runScenario(scenario, ctx)
+      parts.push(formatSections(sr.sections))
+      parts.push(formatSuggestedActions(sr.suggestedActions))
     }
 
     return wrapResult(parts.join("\n"))
@@ -399,6 +440,8 @@ export const chainAmendmentTrackSchema = z.object({
   query: z.string().describe("법령명 (예: '관세법', '지방세특례제한법')"),
   mst: z.string().optional().describe("법령일련번호 (알고 있으면)"),
   lawId: z.string().optional().describe("법령ID (알고 있으면)"),
+  scenario: z.enum(["timeline"]).optional()
+    .describe("확장 시나리오. timeline=시계열 종합 타임라인 (개정 구간별 판례·해석례 매핑). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
 })
 
@@ -437,6 +480,16 @@ export async function chainAmendmentTrack(
       }
     }
 
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_amendment_track")) as ScenarioType | null
+    if (scenario) {
+      const law = mst ? { lawName, lawId: lawId || "", mst, lawType: "" } : undefined
+      const ctx: ScenarioContext = { apiClient, query: input.query, law, apiKey: input.apiKey }
+      const sr = await runScenario(scenario, ctx)
+      parts.push(formatSections(sr.sections))
+      parts.push(formatSuggestedActions(sr.suggestedActions))
+    }
+
     return wrapResult(parts.join("\n"))
   } catch (error) {
     return wrapError(error)
@@ -450,6 +503,8 @@ export async function chainAmendmentTrack(
 export const chainOrdinanceCompareSchema = z.object({
   query: z.string().describe("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
   parentLaw: z.string().optional().describe("상위 법령명 (예: '지방자치법'). 미지정 시 자동 검색."),
+  scenario: z.enum(["compliance"]).optional()
+    .describe("확장 시나리오. compliance=조례 상위법 적합성 검증 (헌재·행심 위법 판결 + 상위법 근거 분석). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
 })
 
@@ -495,6 +550,16 @@ export async function chainOrdinanceCompare(
       if (!interp.isError) parts.push(sec("법령 해석례", interp.text))
     }
 
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_ordinance_compare")) as ScenarioType | null
+    if (scenario) {
+      const law = laws.length > 0 ? laws[0] : undefined
+      const ctx: ScenarioContext = { apiClient, query: input.query, law, apiKey: input.apiKey }
+      const sr = await runScenario(scenario, ctx)
+      parts.push(formatSections(sr.sections))
+      parts.push(formatSuggestedActions(sr.suggestedActions))
+    }
+
     return wrapResult(parts.join("\n"))
   } catch (error) {
     return wrapError(error)
@@ -507,6 +572,8 @@ export async function chainOrdinanceCompare(
 
 export const chainFullResearchSchema = z.object({
   query: z.string().describe("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준')"),
+  scenario: z.enum(["customs"]).optional()
+    .describe("확장 시나리오. customs=관세·통관 종합 (관세3법 + 해석례 + FTA조약 + 세율표 + 조세심판). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
 })
 
@@ -551,6 +618,16 @@ export async function chainFullResearch(
       }
     }
 
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_full_research")) as ScenarioType | null
+    if (scenario) {
+      const law = lawsResult.length > 0 ? lawsResult[0] : undefined
+      const ctx: ScenarioContext = { apiClient, query: input.query, law, apiKey: input.apiKey }
+      const sr = await runScenario(scenario, ctx)
+      parts.push(formatSections(sr.sections))
+      parts.push(formatSuggestedActions(sr.suggestedActions))
+    }
+
     return wrapResult(parts.join("\n"))
   } catch (error) {
     return wrapError(error)
@@ -563,6 +640,8 @@ export async function chainFullResearch(
 
 export const chainProcedureDetailSchema = z.object({
   query: z.string().describe("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
+  scenario: z.enum(["manual"]).optional()
+    .describe("확장 시나리오. manual=공무원 처리 매뉴얼 (행정규칙 + 자치법규 특칙 + 해석례 추가). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
 })
 
@@ -609,6 +688,15 @@ export async function chainProcedureDetail(
     // Step 4: AI 검색으로 보완 (절차 상세)
     const aiResult = await callTool(searchAiLaw, apiClient, { query: input.query, display: 5, apiKey: input.apiKey })
     if (!aiResult.isError) parts.push(sec("AI 검색 보완 정보", aiResult.text))
+
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_procedure_detail")) as ScenarioType | null
+    if (scenario) {
+      const ctx: ScenarioContext = { apiClient, query: input.query, law: p, apiKey: input.apiKey }
+      const sr = await runScenario(scenario, ctx)
+      parts.push(formatSections(sr.sections))
+      parts.push(formatSuggestedActions(sr.suggestedActions))
+    }
 
     return wrapResult(parts.join("\n"))
   } catch (error) {
