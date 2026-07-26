@@ -54,18 +54,36 @@ const LAW_NAME_REGEX = /([가-힣][가-힣·ㆍ\s]{0,30}?(?:법률|법|시행령
 // 법령명 앞에 붙는 한국어 접속사·부사·수식어 제거 — "또한 상법" → "상법"
 const LAW_NAME_STOPWORDS = /^(또한|그리고|하며|따라서|따라|위해|위하여|의한|의하여|따른|해당|관련|이에|아울러|본|이|저|그|또|및|또는|혹은|한편|더불어|이어|이는|즉|결국|결과적으로|실제로|특히)\s+/u
 
+// 그 자체로는 법령명이 될 수 없는 접미사 어절. 후보 축약이 앞 어절을 다 떼고 나면
+// 이런 토큰만 남는데("같은 법 시행규칙" → "시행규칙"), 검색에 넣으면 어떤 문서에서든
+// 무관한 법령을 물어온다(#70: "시행규칙" → '119긴급신고의 관리 및 운영에 관한 법률 시행규칙').
+const LAW_NAME_SUFFIX_TOKENS = new Set(["법", "법률", "시행령", "시행규칙", "규칙", "규정", "조례"])
+
 // 캡처된 법령명 앞에 내용어 수식어가 남을 수 있음(예: "절도죄는 형법", "이혼시 재산분할은 민법").
 // 앞 어절을 하나씩 떼며 검색 후보를 만든다. 전체(full)를 먼저 두어 다어절 법령명
 // ("전자상거래 등에서의 소비자보호에 관한 법률")은 그대로 매칭되고, 수식어만 붙은 경우는
 // 뒤쪽 후보에서 실제 법령명("형법"·"민법")이 매칭된다. 붙어쓴 법령명은 어절 분리되지 않아 보존.
+//
+// 모든 어절이 접미사뿐인 후보는 버린다(#70). 후보가 하나도 남지 않으면 빈 배열을 반환하며,
+// 이는 "법령명을 특정할 수 없음" 신호다 — 호출자는 검색을 시도하지 말고 ⚠로 보고해야 한다.
 export function lawNameCandidates(lawName: string): string[] {
   const tokens = lawName.split(/\s+/).filter(Boolean)
   const candidates: string[] = []
   for (let i = 0; i < tokens.length; i++) {
-    const cand = tokens.slice(i).join(" ")
+    const slice = tokens.slice(i)
+    if (slice.every((t) => LAW_NAME_SUFFIX_TOKENS.has(t))) continue
+    const cand = slice.join(" ")
     if (cand.length >= 2) candidates.push(cand)
   }
-  return candidates.length > 0 ? candidates : [lawName]
+  if (candidates.length > 0) return candidates
+  // 어절 분해가 무의미한 경우(공백 없는 단일 토큰 등)는 원본을 그대로 후보로 쓴다.
+  // 단, 원본 자체가 접미사뿐이면 후보 없음 — 무관 법령을 물어오는 것보다 모른다고 하는 게 맞다.
+  const whole = lawName.trim()
+  const wholeIsSuffixOnly = whole
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((t) => LAW_NAME_SUFFIX_TOKENS.has(t))
+  return whole.length >= 2 && !wholeIsSuffixOnly ? [whole] : []
 }
 
 // looseMatchLawName은 lib/law-search로 승격됨 (applicable_law/impact_map 가드와 공용).
@@ -85,6 +103,35 @@ export function extractLawName(lookbackRaw: string): string | undefined {
   return name.length >= 2 ? name : undefined
 }
 
+// "같은 법"·"동법" 조응(anaphora). 「A법」 제N조 및 같은 법 시행규칙 제M조 는 법제처 조문·
+// 행정규칙·관공서 서식의 표준 표기다. 조응을 해소하지 않으면 법령명이 "같은 법 시행규칙"으로
+// 남아 조문 검증에 진입하지 못한다(#70).
+const LAW_ANAPHORA_REGEX = /^(?:같은|동)\s*법(?:률)?(?=\s|$)/
+// 조응 판별은 **추출된 법령명이 아니라 인용 직전 문맥의 꼬리**를 본다. LAW_NAME_REGEX의 문자
+// 클래스가 공백·개행을 포함해서 앞 인용의 잔재를 삼키는 경우가 있고("제250조\n\n같은 법 시행령"
+// → "조 같은 법 시행령"), 그러면 조응인데도 조응으로 안 보인다.
+// 선행 `(?:^|[^가-힣])`은 "노동법"의 '동법'을 조응으로 오인하지 않기 위한 경계다.
+const LAW_ANAPHORA_TAIL_REGEX =
+  /(?:^|[^가-힣])((?:같은|동)\s*법(?:률)?(?:\s*(?:시행령|시행규칙))?)\s*$/
+// 조응이 가리키는 것은 모법이므로, 선행 법령명이 시행령·시행규칙이면 모법으로 되돌린 뒤
+// 이번 인용의 접미사를 붙인다. ("A법 시행령" + "같은 법 시행규칙" → "A법 시행규칙")
+const SUBORDINATE_SUFFIX_REGEX = /\s*(?:시행령|시행규칙)$/
+
+/**
+ * "같은 법 시행규칙" 류의 조응을 선행 법령명으로 해소한다.
+ * @param antecedent 같은 문서에서 직전에 추출된 법령명. 없으면 해소 불가.
+ * @returns 해소된 법령명. 조응이 아니면 입력 그대로, 해소 불가면 undefined
+ *   (선행 법령명 없이 "같은 법"만 있는 텍스트는 법령명을 특정할 수 없다는 게 정직한 답이다).
+ */
+export function resolveLawAnaphora(lawName: string, antecedent?: string): string | undefined {
+  if (!LAW_ANAPHORA_REGEX.test(lawName)) return lawName
+  if (!antecedent) return undefined
+  const suffix = lawName.replace(LAW_ANAPHORA_REGEX, "").trim()
+  const base = antecedent.replace(SUBORDINATE_SUFFIX_REGEX, "").trim()
+  if (!base) return undefined
+  return suffix ? `${base} ${suffix}` : base
+}
+
 // 인용 바로 뒤 "(제목)"에서 조문 제목 claim 추출 — 내용검증용.
 // 개정이력·날짜·항호 참조 괄호는 조문 제목이 아니므로 제외.
 function extractClaimTitle(after: string): string | undefined {
@@ -98,9 +145,13 @@ function extractClaimTitle(after: string): string | undefined {
   return t
 }
 
-function parseCitations(text: string, maxCitations: number): ParsedCitation[] {
+// export: 조응 해소·법령명 역추적이 순회 상태에 의존하므로 단위 테스트로 고정한다.
+export function parseCitations(text: string, maxCitations: number): ParsedCitation[] {
   const citations: ParsedCitation[] = []
   const seen = new Set<string>()
+  // "같은 법"·"동법" 조응 해소용 — 문서 순서대로 순회하므로 직전에 추출된 법령명을 들고 간다.
+  let antecedent: string | undefined
+  let antecedentEnd = 0
 
   ARTICLE_REGEX.lastIndex = 0
   let m: RegExpExecArray | null
@@ -110,7 +161,23 @@ function parseCitations(text: string, maxCitations: number): ParsedCitation[] {
 
     // 직전 30자에서 법령명 역추적
     const lookbackStart = Math.max(0, m.index - 30)
-    const lawName = extractLawName(text.slice(lookbackStart, m.index))
+    const lookback = text.slice(lookbackStart, m.index)
+
+    let lawName: string | undefined
+    const anaphora = lookback.match(LAW_ANAPHORA_TAIL_REGEX)
+    if (anaphora) {
+      // 문단이 바뀌면 승계하지 않는다 — 빈 줄 뒤는 다른 법령을 다루는 단락일 수 있어
+      // 잘못 승계하면 무관한 법령을 근거로 ✓/✗를 내는 더 나쁜 오답이 된다.
+      const paragraphBroke = /\n\s*\n/.test(text.slice(antecedentEnd, m.index))
+      lawName = resolveLawAnaphora(anaphora[1].trim(), paragraphBroke ? undefined : antecedent)
+      antecedentEnd = m.index
+    } else {
+      lawName = extractLawName(lookback)
+      if (lawName) {
+        antecedent = lawName
+        antecedentEnd = m.index
+      }
+    }
 
     const jo = parseInt(joStr, 10)
     const joBranch = branchStr ? parseInt(branchStr, 10) : undefined
@@ -175,8 +242,14 @@ async function verifyOne(
   // 앞 수식어가 남은 캡처("절도죄는 형법")도 후보를 순차 축약하며 실제 법령명을 찾는다.
   let chosen: LawInfo | undefined
   let fallback: LawInfo | undefined   // 어떤 후보도 looseMatch 실패 시 ⚠ 메시지용 (전체 캡처 기준)
+  // 후보가 하나도 없으면(접미사뿐인 캡처, #70) 검색을 시도하지 않는다 — 시도하면 무관 법령이
+  // 물려오고, 검색 결과가 0이면 ✗ NOT_FOUND 로 낙인돼 '법령명 미상'이 '환각'으로 오보된다.
+  const candidates = lawNameCandidates(cite.lawName)
+  if (candidates.length === 0) {
+    return `⚠ ${inputLabel} — 법령명 불명확 ('${cite.lawName}'은(는) 법령명으로 특정할 수 없음. 앞 문맥에 법령명 명시 필요)`
+  }
   try {
-    for (const cand of lawNameCandidates(cite.lawName)) {
+    for (const cand of candidates) {
       // searchDisplay=100: "상법"처럼 짧은 법령명이 부분매칭에 밀려 기본 20건에 안 들어올 때 대비
       const results = await findLaws(apiClient, cand, apiKey, 5, 100)
       if (results.length === 0) continue
@@ -189,7 +262,7 @@ async function verifyOne(
     if (!fallback) {
       // 현행(target=law)에 없음 → 폐지된 법령인지 연혁(eflaw)에서 확인.
       // '지어낸 인용(환각)'과 '실존했으나 폐지된 법령'을 구분(존재≠생존).
-      for (const cand of lawNameCandidates(cite.lawName)) {
+      for (const cand of candidates) {
         const repealed = await findRepealedLaw(apiClient, cand, apiKey)
         if (repealed) {
           const d = formatYmd(repealed.effectiveDate)

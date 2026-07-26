@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest"
-import { lawNameCandidates, looseMatchLawName, extractLawName } from "./verify-citations.js"
+import {
+  lawNameCandidates,
+  looseMatchLawName,
+  extractLawName,
+  resolveLawAnaphora,
+  parseCitations,
+} from "./verify-citations.js"
 
 describe("extractLawName — 인용 직전 문맥에서 법령명 추출", () => {
   // 회귀: 「법령명」 제N조 는 법제처·판결문·실무 문서의 표준 표기인데, 닫는 낫표가
@@ -50,6 +56,72 @@ describe("lawNameCandidates", () => {
   it("2자 미만 후보는 제외", () => {
     // 마지막 어절이 1자면 후보에서 빠지고, 유효 후보가 없으면 원문 유지
     expect(lawNameCandidates("가 나")).toEqual(["가 나"])
+  })
+
+  // 회귀(#70): 앞 어절을 다 떼면 "시행규칙"·"법 시행규칙" 처럼 접미사만 남는 후보가 생기는데,
+  // 이것들은 그 자체로 법령명이 될 수 없고 검색에 넣으면 무관한 법령을 물어온다
+  // (관측: "시행규칙" → '119긴급신고의 관리 및 운영에 관한 법률 시행규칙').
+  it("접미사뿐인 후보는 만들지 않는다", () => {
+    expect(lawNameCandidates("같은 법 시행규칙")).toEqual(["같은 법 시행규칙"])
+    expect(lawNameCandidates("노인장기요양보험법 시행규칙")).toEqual(["노인장기요양보험법 시행규칙"])
+    expect(lawNameCandidates("전자상거래 등에서의 소비자보호에 관한 법률")).not.toContain("법률")
+  })
+
+  it("캡처가 접미사뿐이면 후보 없음 — 모른다고 하는 게 무관 법령보다 낫다", () => {
+    expect(lawNameCandidates("시행규칙")).toEqual([])
+    expect(lawNameCandidates("법 시행규칙")).toEqual([])
+    expect(lawNameCandidates("법률")).toEqual([])
+  })
+})
+
+describe("resolveLawAnaphora — '같은 법'·'동법' 조응 해소 (#70)", () => {
+  it("선행 법령명을 승계하고 접미사를 붙인다", () => {
+    expect(resolveLawAnaphora("같은 법 시행규칙", "노인장기요양보험법")).toBe(
+      "노인장기요양보험법 시행규칙"
+    )
+    expect(resolveLawAnaphora("동법 시행령", "관세법")).toBe("관세법 시행령")
+    expect(resolveLawAnaphora("같은 법", "형법")).toBe("형법")
+    expect(resolveLawAnaphora("같은 법률", "상법")).toBe("상법")
+  })
+
+  it("선행 법령명이 시행령·시행규칙이면 모법으로 되돌린 뒤 붙인다", () => {
+    expect(resolveLawAnaphora("같은 법 시행규칙", "노인장기요양보험법 시행령")).toBe(
+      "노인장기요양보험법 시행규칙"
+    )
+  })
+
+  it("선행 법령명이 없으면 해소 불가 — 법령명 미상이 정직한 답", () => {
+    expect(resolveLawAnaphora("같은 법 시행규칙", undefined)).toBeUndefined()
+  })
+
+  it("조응이 아닌 법령명은 그대로 통과 ('노동법'처럼 '동'으로 시작해도 건드리지 않음)", () => {
+    expect(resolveLawAnaphora("형법", "민법")).toBe("형법")
+    expect(resolveLawAnaphora("노동법", "민법")).toBe("노동법")
+    expect(resolveLawAnaphora("협동조합기본법", undefined)).toBe("협동조합기본법")
+  })
+})
+
+describe("parseCitations — 조응 인용의 법령명 승계 (#70)", () => {
+  it("「A법」 제N조 및 같은 법 시행규칙 제M조 를 둘 다 해소한다", () => {
+    const cites = parseCitations(
+      "「노인장기요양보험법」 제38조제1항 및 같은 법 시행규칙 제30조에 따라 장기요양급여비용을 청구합니다.",
+      15
+    )
+    expect(cites.map((c) => c.lawName)).toEqual([
+      "노인장기요양보험법",
+      "노인장기요양보험법 시행규칙",
+    ])
+  })
+
+  it("문단이 바뀌면 승계하지 않는다 — 무관 법령을 근거로 판정하는 게 더 나쁘다", () => {
+    const cites = parseCitations("「형법」 제250조\n\n같은 법 시행령 제3조", 15)
+    expect(cites[0].lawName).toBe("형법")
+    expect(cites[1].lawName).toBeUndefined()
+  })
+
+  it("선행 법령명 없이 '같은 법'만 있으면 법령명 미상", () => {
+    const cites = parseCitations("같은 법 시행규칙 제30조에 따라 청구한다.", 15)
+    expect(cites[0].lawName).toBeUndefined()
   })
 })
 
