@@ -177,13 +177,14 @@ get_annexes(lawName="여권법 시행령", bylSeq="000000")
 - **fly.toml**: `nrt` 리전, 256MB 메모리, auto suspend/resume
 - **Dockerfile**: multi-stage build (node:20-alpine)
 - **Health check**: `GET /health` (30초 간격)
-- **Endpoint**: `https://korean-law-mcp.fly.dev/mcp`
+- **Endpoint**: `https://mcp.gomdori.app/law`
+  - 구 `https://korean-law-mcp.fly.dev/mcp` 도 하위호환으로 계속 동작한다 — 통합 호스트가 이 fly 앱 위에 떠 있고, 프리픽스 없는 요청을 law 로 원경로 전달하기 때문. 신규 안내는 공식 주소로.
 
 ```json
 {
   "mcpServers": {
     "korean-law": {
-      "url": "https://korean-law-mcp.fly.dev/mcp"
+      "url": "https://mcp.gomdori.app/law"
     }
   }
 }
