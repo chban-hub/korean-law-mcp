@@ -72,6 +72,19 @@ export function lawNameCandidates(lawName: string): string[] {
 // 기존 import 경로 호환을 위해 재수출.
 export { looseMatchLawName }
 
+// 인용 직전 문맥에서 법령명을 추출.
+// 「법령명」 제8조 는 법제처·판결문·실무 문서의 표준 인용 표기인데, 닫는 낫표가
+// LAW_NAME_REGEX의 $ 앵커를 막아 법령명이 **전혀** 추출되지 않았다(→ "법령명 추출 실패").
+// 이 경우 조문 실존 검증에 진입하지 못해 없는 조문·없는 항도 ✗로 잡히지 않는다.
+// = 환각 탐지가 조용히 미가동. 따라서 닫는 인용기호를 먼저 벗긴다.
+export function extractLawName(lookbackRaw: string): string | undefined {
+  const lookback = lookbackRaw.replace(/[\s」』】〕>]+$/, "")
+  const m = lookback.match(LAW_NAME_REGEX)
+  if (!m) return undefined
+  const name = m[1].replace(/\s+/g, " ").trim().replace(LAW_NAME_STOPWORDS, "").trim()
+  return name.length >= 2 ? name : undefined
+}
+
 // 인용 바로 뒤 "(제목)"에서 조문 제목 claim 추출 — 내용검증용.
 // 개정이력·날짜·항호 참조 괄호는 조문 제목이 아니므로 제외.
 function extractClaimTitle(after: string): string | undefined {
@@ -97,12 +110,7 @@ function parseCitations(text: string, maxCitations: number): ParsedCitation[] {
 
     // 직전 30자에서 법령명 역추적
     const lookbackStart = Math.max(0, m.index - 30)
-    const lookback = text.slice(lookbackStart, m.index).replace(/\s+$/, "")
-    const lawMatch = lookback.match(LAW_NAME_REGEX)
-    let lawName: string | undefined = lawMatch
-      ? lawMatch[1].replace(/\s+/g, " ").trim().replace(LAW_NAME_STOPWORDS, "").trim()
-      : undefined
-    if (lawName && lawName.length < 2) lawName = undefined
+    const lawName = extractLawName(text.slice(lookbackStart, m.index))
 
     const jo = parseInt(joStr, 10)
     const joBranch = branchStr ? parseInt(branchStr, 10) : undefined

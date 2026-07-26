@@ -70,4 +70,22 @@ describe("looseMatchLawName (lib 승격 후 동작 유지)", () => {
     expect(looseMatchLawName("자본시장과 금융투자업에 관한 법률", "자본시장과금융투자업에관한법률")).toBe(true)
     expect(looseMatchLawName("상법", "보상법")).toBe(false)
   })
+
+  // 회귀: 법제처 공식 법령명은 한글 가운뎃점 'ㆍ'(U+318D)인데 실무 문서·LLM 텍스트는
+  // 라틴 중점 '·'(U+00B7)를 쓴다. 표기 차이만으로 불일치가 되면 verify_citations는
+  // ⚠ 부분매칭에 머물러 조문 검증에 진입하지 못하고 환각 탐지가 미가동된다.
+  it("가운뎃점 표기 차이를 흡수한다 (·/ㆍ/‧/•/・)", () => {
+    expect(looseMatchLawName("식품 등의 표시·광고에 관한 법률", "식품 등의 표시ㆍ광고에 관한 법률")).toBe(true)
+    expect(looseMatchLawName("식품ㆍ의약품분야 시험ㆍ검사 등에 관한 법률", "식품·의약품분야 시험·검사 등에 관한 법률")).toBe(true)
+    expect(looseMatchLawName("agri·food", "agri‧food")).toBe(true)
+  })
+
+  it("가운뎃점 정규화가 무관 법령을 통과시키지는 않는다", () => {
+    expect(looseMatchLawName("민법", "난민법")).toBe(false)
+    expect(looseMatchLawName("식품·의약품분야 시험·검사 등에 관한 법률", "식품위생법")).toBe(false)
+  })
+
+  it("가운뎃점 포함 법령명도 resolvedLawMatches 가드를 통과한다", () => {
+    expect(resolvedLawMatches("식품 등의 표시·광고에 관한 법률", "식품 등의 표시ㆍ광고에 관한 법률")).toBe(true)
+  })
 })
