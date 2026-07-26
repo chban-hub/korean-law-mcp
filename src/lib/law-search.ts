@@ -20,11 +20,18 @@ export interface LawInfo {
   effectiveDate?: string // 시행일자 (YYYYMMDD)
 }
 
-// 후보 법령명과 법제처 공식 법령명의 느슨한 일치 — 공백 무시 + 접두/약칭 허용.
+// 법령명 구분점(가운뎃점) 표기 흔들림. 법제처 공식 법령명은 **한글 가운뎃점 'ㆍ'(U+318D)**
+// 를 쓰지만("식품 등의 표시ㆍ광고에 관한 법률"), 실무 문서·판결문·LLM 출력은 라틴 중점
+// '·'(U+00B7)를 쓰는 것이 보통이고 '‧'(U+2027)·'•'(U+2022)·'・'(U+30FB)도 섞인다.
+// 표기만 다른 같은 법을 불일치로 판정하면 verify_citations는 조문 검증에 진입조차 못 하고
+// (⚠ 부분매칭), applicable_law·impact_map은 resolvedLawMatches 가드에서 NOT_FOUND가 된다.
+const INTERPUNCT_RE = /[·ㆍ‧•・]/g
+
+// 후보 법령명과 법제처 공식 법령명의 느슨한 일치 — 공백·가운뎃점 무시 + 접두/약칭 허용.
 // findLaws가 관련도 정렬은 해도 매칭이 전혀 다른 법령일 수 있어 최종 방어선으로 사용.
 // (verify-citations에서 쓰던 것을 lib로 승격 — applicable_law/impact_map 가드 공용)
 export function looseMatchLawName(target: string, official: string): boolean {
-  const normalize = (s: string) => s.replace(/\s+/g, "")
+  const normalize = (s: string) => s.replace(/\s+/g, "").replace(INTERPUNCT_RE, "")
   const targetNorm = normalize(target)
   const officialNorm = normalize(official)
   return officialNorm === targetNorm
