@@ -31,6 +31,28 @@
 
 ---
 
+## v4.9.0 — Three notations that made citation verification **silently skip** (current)
+
+When `verify_citations` is wired into a pipeline as a hallucination gate, the dangerous failure is not "verification failed" but **verification never ran**. Without a law name it never reaches article-existence checking, yet the output only shows a warning (⚠) — so a fabricated article in the same text still produces no `✗`. Users read that as "passed". Three notations, all found via real-world reports:
+
+```
+「노인장기요양보험법」 제38조제1항 및 같은 법 시행규칙 제30조
+  ("Article 38(1) of the Long-Term Care Insurance Act and Article 30 of the
+    Enforcement Rule of the same Act")
+
+before  ⚠ 0 verified / 2 needs-check — matched only '119 Emergency Report ... Enforcement Rule'
+after   ✓ Article 38(1) verified · ✓ Enforcement Rule Article 30 verified
+        └ Article 999 in the same text → ✗ NOT_FOUND (range: 1–44) — gate actually fires
+```
+
+- **Extraction failure inside `「…」`** (#69, @BW-YU): `LAW_NAME_REGEX` anchors the law-name ending with `$`, but the **closing bracket left at the end of the lookback** blocked the anchor (only trailing whitespace was stripped).
+- **Interpunct mismatch** (#69, @BW-YU): official statute names use the Hangul interpunct `ㆍ`(U+318D) while real documents, judgments and LLM output use `·`(U+00B7). Now absorbs `·ㆍ‧•・` — unrelated-law blocking (`민법`→`난민법`) is unchanged.
+- **`같은 법` (same Act) anaphora** (#70, @gonnarun): the standard notation in statutes and government forms. Candidate shrinking produced suffix-only candidates (`시행규칙`) that pull in unrelated statutes, and the preceding law name was never inherited. Now inherited — but **not across a blank line, and never without an antecedent**: judging on the wrong statute is worse than not judging. With no viable candidate it reports `⚠ law name unclear` instead of labelling zero search hits as `✗ NOT_FOUND`.
+
+### + v4.8.0 — Five external contributions (#63–#67)
+
+Point-in-time law determination, history parsing, search resolver, retries, repealed-law handling.
+
 ## v4.7.0 — Ordinance revision radar (`ordinance_radar`)
 
 **"The parent statute changed — is our ordinance stale?"** One call answers the question local-government officials chase every year.
@@ -40,7 +62,7 @@
 - The official ordinance-linkage API (lnkOrd) has poor coverage, so this parses the standard citation format in ordinance text instead.
 - Also in this release: JSON-RPC batch requests now count each `tools/call` against rate/fallback quotas (amplification fix, per-request cap 20 via `MCP_MAX_BATCH_CALLS`), clean graceful shutdown, and exact-match-first law resolution in `get_article_history`.
 
-### + v4.7.1–v4.7.4 — Search accuracy & citation-verification patches (current: 4.7.4)
+### + v4.7.1–v4.7.4 — Search accuracy & citation-verification patches
 
 - **v4.7.4**: Stop `search_law` from returning the wrong statute. The common name "인공지능법" isn't a substring of the official title 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」, so the LIKE search returned 0 hits and the expanded query ("AI법") got back **50 unrelated statutes with the query ignored**. Registers the aliases and adds a `hasRelatedHit` guard: if no result's title or alias overlaps the query, the response is rejected instead of accepted.
 - **v4.7.2**: `verify_citations` degraded to `PARTIAL_VERIFIED` — and thus **missed hallucinations** — when a modifier preceded the statute name ("절도죄는 형법 제329조…"). Fixed by retrying `findLaws` while progressively trimming leading words (#55). Also patches hono (5 HIGH advisories, #54).

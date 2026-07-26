@@ -7,7 +7,7 @@
 > - **반영 절차**: 이 레포 커밋·푸시 → `npm publish` → `~/workspace/gomdori-mcp/Dockerfile`의 `korean-law-mcp@X.Y.Z` 핀 갱신 → `cd ~/workspace/gomdori-mcp && fly deploy -c fly.production.toml`
 > - **🚫 이 레포에서 `fly deploy` 직접 실행 절대 금지** — 통합 이미지를 law 단독 이미지로 덮어써 stats·patent·archhub·school까지 전부 죽는다. 자세한 배경: [docs/FLY-COST.md](docs/FLY-COST.md)
 
-Korean Law MCP Server v4.7.0 - 법제처 42개 API → 10개 통합 도구 (내부 98개) + 9개 시나리오 + 자연어 CLI + HTTP stateless + 판례 토큰 74% 감축 + **legal_research (체인 8종 통합, task 파라미터)** + **legal_analysis (인용검증·판례생사·행위시법·영향그래프 통합, mode 파라미터)** + **time_travel (시점 diff)** + **action_plan (이럴 땐 이렇게, 5단계 안내)** + **시행예정 감지 (search_law가 제명변경·미시행 개정 자동 병기)** + **ordinance_radar (조례 정비 레이더 — 근거 상위법 개정 자동 대조, v4.7.0)**
+Korean Law MCP Server v4.9.0 - 법제처 42개 API → 10개 통합 도구 (내부 98개) + 9개 시나리오 + 자연어 CLI + HTTP stateless + 판례 토큰 74% 감축 + **legal_research (체인 8종 통합, task 파라미터)** + **legal_analysis (인용검증·판례생사·행위시법·영향그래프 통합, mode 파라미터)** + **time_travel (시점 diff)** + **action_plan (이럴 땐 이렇게, 5단계 안내)** + **시행예정 감지 (search_law가 제명변경·미시행 개정 자동 병기)** + **ordinance_radar (조례 정비 레이더 — 근거 상위법 개정 자동 대조, v4.7.0)** + **인용 검증 표기 내성 (낫표·가운뎃점·`같은 법` 조응, v4.9.0)**
 
 ## Structure
 
