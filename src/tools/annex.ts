@@ -524,7 +524,9 @@ function filterByRelatedLawName(annexList: AnnexItem[], queryName: string): Anne
 
   // 각 항목에 관련법규명 단어 매칭 점수 부여
   const scored = annexList.map((annex: AnnexItem) => {
-    const relatedName = String(annex.관련자치법규명 || annex.관련법령명 || "")
+    // 관련행정규칙명도 본다 — 빠뜨리면 admbyl 폴백 결과가 전부 0점이라 필터를 그대로
+    // 통과해, 요청 법령명을 부분 포함하는 무관 행정규칙의 별표가 함께 섞여 나온다
+    const relatedName = String(annex.관련자치법규명 || annex.관련법령명 || annex.관련행정규칙명 || "")
       .replace(/<[^>]+>/g, "")   // HTML 태그 제거
     const relatedWords = relatedName.split(/\s+/).filter((w) => w.length > 0)
     // 쿼리 단어가 관련법규명에 정확히 포함되는 수

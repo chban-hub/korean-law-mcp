@@ -17,6 +17,7 @@ import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { toArray, parseSearchXML, extractTag } from "../lib/xml-parser.js"
 import { normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js"
+import { resolvedLawMatches } from "../lib/law-search.js"
 
 export const OrdinanceRadarSchema = z.object({
   ordinSeq: z.string().optional().describe("자치법규 일련번호 (search_ordinance 결과의 [번호])"),
@@ -114,7 +115,11 @@ async function fetchLawStatus(apiClient: LawApiClient, lawName: string, apiKey?:
       break
     }
   }
-  return exact || first
+  // 정확매칭이 없으면 LIKE 1위를 그대로 쓰지 않는다 — 조례 원문의 근거법명이 구명칭이거나
+  // 가운뎃점 표기가 다르면 무관 법령의 시행일로 정비 플래그가 계산된다.
+  // (#66에서 applicable_law·impact_map에 넣은 가드와 같은 기준)
+  if (exact) return exact
+  return first && resolvedLawMatches(lawName, first.name) ? first : null
 }
 
 function notFound(text: string): { content: Array<{ type: string, text: string }>, isError?: boolean } {
