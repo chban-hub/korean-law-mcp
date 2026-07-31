@@ -25,7 +25,11 @@ export interface LawInfo {
 // '·'(U+00B7)를 쓰는 것이 보통이고 '‧'(U+2027)·'•'(U+2022)·'・'(U+30FB)도 섞인다.
 // 표기만 다른 같은 법을 불일치로 판정하면 verify_citations는 조문 검증에 진입조차 못 하고
 // (⚠ 부분매칭), applicable_law·impact_map은 resolvedLawMatches 가드에서 NOT_FOUND가 된다.
-const INTERPUNCT_RE = /[·ㆍ‧•・]/g
+/** 법령명에 쓰이는 가운뎃점 변형 전체. 법령명 추출 정규식(verify-citations)과
+ *  정규화(아래 INTERPUNCT_RE)가 같은 집합을 봐야 한다 — 어긋나면 추출 단계에서
+ *  법령명이 절단돼 정규화가 손쓸 기회조차 없어진다. */
+export const INTERPUNCT_CHARS = "·ㆍ‧•・"
+const INTERPUNCT_RE = new RegExp(`[${INTERPUNCT_CHARS}]`, "g")
 
 // 후보 법령명과 법제처 공식 법령명의 느슨한 일치 — 공백·가운뎃점 무시 + 접두/약칭 허용.
 // findLaws가 관련도 정렬은 해도 매칭이 전혀 다른 법령일 수 있어 최종 방어선으로 사용.

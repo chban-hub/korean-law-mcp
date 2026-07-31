@@ -18,7 +18,7 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { buildJO } from "../lib/law-parser.js"
-import { findLaws, findRepealedLaw, looseMatchLawName, type LawInfo } from "../lib/law-search.js"
+import { findLaws, findRepealedLaw, looseMatchLawName, INTERPUNCT_CHARS, type LawInfo } from "../lib/law-search.js"
 import { parseHangNumber } from "../lib/article-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
@@ -48,8 +48,12 @@ interface ParsedCitation {
 // 조문 인용 패턴 — "제N조", "제N조의M", "제N조 제K항 제L호"
 const ARTICLE_REGEX = /제\s*(\d+)\s*조(?:\s*의\s*(\d+))?(?:\s*제\s*(\d+)\s*항)?(?:\s*제\s*(\d+)\s*호)?/g
 
-// 조문 인용 직전 30자에서 법령명 스캔 — "XX법/법률/시행령/시행규칙/규칙/규정/조례"로 끝나는 것
-const LAW_NAME_REGEX = /([가-힣][가-힣·ㆍ\s]{0,30}?(?:법률|법|시행령|시행규칙|규칙|규정|조례))$/
+// 조문 인용 직전 30자에서 법령명 스캔 — "XX법/법률/시행령/시행규칙/규칙/규정/조례"로 끝나는 것.
+// 가운뎃점은 INTERPUNCT_CHARS 전체를 허용 — 일부만 넣으면 '표시‧광고에 관한 법률'이
+// '광고에 관한 법률'로 절단 추출돼 매칭에 실패한다(정규화는 추출 뒤라 못 살린다).
+const LAW_NAME_REGEX = new RegExp(
+  `([가-힣][가-힣${INTERPUNCT_CHARS}\\s]{0,30}?(?:법률|법|시행령|시행규칙|규칙|규정|조례))$`
+)
 
 // 법령명 앞에 붙는 한국어 접속사·부사·수식어 제거 — "또한 상법" → "상법"
 const LAW_NAME_STOPWORDS = /^(또한|그리고|하며|따라서|따라|위해|위하여|의한|의하여|따른|해당|관련|이에|아울러|본|이|저|그|또|및|또는|혹은|한편|더불어|이어|이는|즉|결국|결과적으로|실제로|특히)\s+/u
@@ -169,7 +173,10 @@ export function parseCitations(text: string, maxCitations: number): ParsedCitati
       // 문단이 바뀌면 승계하지 않는다 — 빈 줄 뒤는 다른 법령을 다루는 단락일 수 있어
       // 잘못 승계하면 무관한 법령을 근거로 ✓/✗를 내는 더 나쁜 오답이 된다.
       const paragraphBroke = /\n\s*\n/.test(text.slice(antecedentEnd, m.index))
-      lawName = resolveLawAnaphora(anaphora[1].trim(), paragraphBroke ? undefined : antecedent)
+      // 경계를 넘은 선행 법령명은 완전히 버린다 — antecedentEnd만 갱신하고 남겨두면
+      // 같은 단락의 두 번째 조응부터는 구간에 빈 줄이 없어 stale 법령명을 승계한다.
+      if (paragraphBroke) antecedent = undefined
+      lawName = resolveLawAnaphora(anaphora[1].trim(), antecedent)
       antecedentEnd = m.index
     } else {
       lawName = extractLawName(lookback)
@@ -259,9 +266,14 @@ async function verifyOne(
         break
       }
     }
-    if (!fallback) {
-      // 현행(target=law)에 없음 → 폐지된 법령인지 연혁(eflaw)에서 확인.
+    if (!chosen) {
+      // 현행(target=law)에서 이 법령을 특정하지 못함 → 폐지된 법령인지 연혁(eflaw)에서 확인.
       // '지어낸 인용(환각)'과 '실존했으나 폐지된 법령'을 구분(존재≠생존).
+      //
+      // fallback 유무와 무관하게 확인한다 — 후보 축약이 만드는 꼬리 후보('기본법',
+      // '관한 법률')는 어떤 문서에서든 무언가를 물어와 fallback을 세우므로, fallback을
+      // 조건으로 걸면 다어절 폐지 법령이 ⌛ 대신 ⚠로 강등된다(pickRepealed가 완전일치·
+      // 접두만 허용해 꼬리 후보가 엉뚱한 폐지본을 물어올 여지는 없다).
       for (const cand of candidates) {
         const repealed = await findRepealedLaw(apiClient, cand, apiKey)
         if (repealed) {
@@ -269,9 +281,9 @@ async function verifyOne(
           return `⌛ ${formatCitationLabel(cite, repealed.lawName)} — [REPEALED] 「${repealed.lawName}」은(는) 폐지된 법령입니다(연혁${d ? `, 최종시행 ${d}` : ""}). 실존했으나 현행 법령이 아님 — 후속·대체 법령 확인 필요`
         }
       }
-      return `✗ ${inputLabel} — [NOT_FOUND] 법제처 DB에 해당 법령 없음 (법령명 오탈자 또는 존재하지 않는 법령)`
-    }
-    if (!chosen) {
+      if (!fallback) {
+        return `✗ ${inputLabel} — [NOT_FOUND] 법제처 DB에 해당 법령 없음 (법령명 오탈자 또는 존재하지 않는 법령)`
+      }
       return `⚠ ${inputLabel} — 법제처 검색은 '${fallback.lawName}'(으)로만 매칭됨. 법령명 정확성 재확인 필요`
     }
   } catch (e) {
@@ -286,7 +298,14 @@ async function verifyOne(
     const json = JSON.parse(jsonText)
     const rawUnits = json?.법령?.조문?.조문단위
     const units = toArray<any>(rawUnits)
-    const found = units.find((u: any) => u.조문여부 === "조문")
+    // JO 파라미터가 무시된 열화 응답(#64)에서 첫 조문(제1조 등)을 요청 조문으로 오인하면
+    // 없는 조문 인용이 ✓ 실존으로 통과한다 — applicable-law.extractJoText와 같은 가드
+    const found = units.find((u: any) => {
+      if (u.조문여부 !== "조문") return false
+      const num = parseInt(String(u.조문번호 ?? ""), 10)
+      const branch = parseInt(String(u.조문가지번호 ?? "0"), 10) || 0
+      return num === cite.jo && branch === (cite.joBranch || 0)
+    })
 
     if (!found) {
       // 전체 조회로 범위 힌트

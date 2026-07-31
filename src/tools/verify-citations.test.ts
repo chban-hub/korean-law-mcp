@@ -146,3 +146,36 @@ describe("looseMatchLawName", () => {
     expect(looseMatchLawName("형법", "민법")).toBe(false)
   })
 })
+
+describe("법령명 추출 — 가운뎃점 변형 (#75 후속)", () => {
+  // looseMatch 정규화는 5종을 흡수하는데 추출 정규식이 2종만 통과시켜, U+2027 등으로
+  // 표기된 법령명이 '광고에 관한 법률'로 절단 추출돼 조문 검증에 진입조차 못 했다.
+  const 표기 = { "U+00B7": "·", "U+318D": "ㆍ", "U+2027": "‧", "U+2022": "•", "U+30FB": "・" }
+  for (const [name, ch] of Object.entries(표기)) {
+    it(`${name} 표기의 법령명을 온전히 추출한다`, () => {
+      const cites = parseCitations(`「식품 등의 표시${ch}광고에 관한 법률」 제8조에 따라`, 15)
+      expect(cites[0].lawName).toBe(`식품 등의 표시${ch}광고에 관한 법률`)
+    })
+  }
+})
+
+describe("'같은 법' 조응 — 문단 경계 이후", () => {
+  // 경계로 승계가 거부돼도 antecedent를 남겨두면, 같은 단락의 두 번째 조응부터는
+  // 검사 구간(직전 인용~현재)에 빈 줄이 없어 이전 문단의 법령명을 물려받았다.
+  // 그 결과 '형법 시행령'(비실존)이 만들어져 ✗ 환각으로 오탐된다.
+  it("문단이 바뀐 뒤 연속된 조응 모두 승계하지 않는다", () => {
+    const cites = parseCitations(
+      "「형법」 제250조에 따른다.\n\n같은 법 시행령 제3조와 같은 법 시행령 제4조를 본다.",
+      15
+    )
+    expect(cites[0].lawName).toBe("형법")
+    expect(cites[1].lawName).toBeUndefined()
+    expect(cites[2].lawName).toBeUndefined()
+  })
+
+  it("같은 문단 안에서는 종전대로 승계한다", () => {
+    const cites = parseCitations("「형법」 제250조와 같은 법 제251조를 본다.", 15)
+    expect(cites[0].lawName).toBe("형법")
+    expect(cites[1].lawName).toBe("형법")
+  })
+})

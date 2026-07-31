@@ -6,7 +6,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { buildJO } from "../lib/law-parser.js"
-import { cleanHtml, flattenContent } from "../lib/article-parser.js"
+import { cleanHtml, flattenContent, groupMokByReset } from "../lib/article-parser.js"
 import { formatToolError } from "../lib/errors.js"
 import { toArray } from "../lib/xml-parser.js"
 
@@ -106,36 +106,42 @@ export async function getArticleDetail(
         if (content) resultText += `${cleanHtml(content)}\n`
       }
 
-      // 항 내용
+      // 항 내용 — 항내용/호내용/목내용도 조문내용과 같이 (중첩)배열로 올 수 있어 flattenContent 필수
       if (unit.항) {
         const hangList = Array.isArray(unit.항) ? unit.항 : [unit.항]
+        const renderMok = (mokList: any[]) => {
+          for (const mok of mokList) {
+            const mokContent = flattenContent(mok.목내용)
+            if (mokContent) resultText += `      ${mok.목번호 || ""} ${cleanHtml(mokContent)}\n`
+          }
+        }
         for (const hang of hangList) {
           const hangNum = hang.항번호 || ""
-          const hangContent = hang.항내용 || ""
+          const hangContent = flattenContent(hang.항내용)
           if (hangContent) {
             resultText += `  ${hangNum ? `(${hangNum})` : ""} ${cleanHtml(hangContent)}\n`
           }
 
-          if (hang.호) {
-            const hoList = Array.isArray(hang.호) ? hang.호 : [hang.호]
-            for (const ho of hoList) {
-              const hoNum = ho.호번호 || ""
-              const hoContent = ho.호내용 || ""
-              if (hoContent) {
-                resultText += `    ${hoNum}. ${cleanHtml(hoContent)}\n`
-              }
+          const hoList = hang.호 ? (Array.isArray(hang.호) ? hang.호 : [hang.호]) : []
+          // 법제처 JSON은 목을 호가 아닌 항 레벨 형제 배열로 준다 (article-parser.groupMokByReset 참조)
+          const hangMokList = hang.목 ? (Array.isArray(hang.목) ? hang.목 : [hang.목]) : []
+          const mokGroups = groupMokByReset(hangMokList)
+          const alignable = hoList.length > 0 && mokGroups.length === hoList.length
 
-              if (ho.목) {
-                const mokList = Array.isArray(ho.목) ? ho.목 : [ho.목]
-                for (const mok of mokList) {
-                  const mokNum = mok.목번호 || ""
-                  const mokContent = mok.목내용 || ""
-                  if (mokContent) {
-                    resultText += `      ${mokNum}. ${cleanHtml(mokContent)}\n`
-                  }
-                }
-              }
+          for (let i = 0; i < hoList.length; i++) {
+            const ho = hoList[i]
+            const hoContent = flattenContent(ho.호내용)
+            if (hoContent) {
+              resultText += `    ${ho.호번호 || ""} ${cleanHtml(hoContent)}\n`
             }
+
+            if (ho.목) renderMok(Array.isArray(ho.목) ? ho.목 : [ho.목])
+            if (alignable) renderMok(mokGroups[i])
+          }
+
+          if (!alignable && hangMokList.length > 0) {
+            resultText += `  [참고] 아래 목은 위 각 호의 세부 항목이나 API 응답 구조상 소속 호를 특정할 수 없어 일괄 표시합니다.\n`
+            renderMok(hangMokList)
           }
         }
       }

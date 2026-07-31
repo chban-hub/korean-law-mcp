@@ -20,6 +20,34 @@ export function flattenContent(value: any): string {
   return result.join("\n")
 }
 
+/** 목 배열을 소속 호별로 그룹핑.
+ *  법제처 JSON은 목(目)을 호의 자식이 아니라 **항 레벨 형제 배열**로 주고 목 객체에
+ *  소속 호 정보가 없다(키는 목번호·목내용뿐). 목번호가 '가'로 리셋되는 지점을 새 호의
+ *  목 시작으로 보고 순서를 복원한다 — 조판 규칙상 각 호의 목은 항상 '가'부터 시작한다. */
+export function groupMokByReset(mokArray: any[]): any[][] {
+  const groups: any[][] = []
+  for (const mok of mokArray) {
+    if (!mok || typeof mok !== "object") continue
+    const num = String(mok.목번호 ?? "").trim()
+    if (num.startsWith("가") || groups.length === 0) groups.push([])
+    groups[groups.length - 1].push(mok)
+  }
+  return groups
+}
+
+/** 목 배열 → 텍스트 (앞에 개행 포함) */
+function renderMok(mokArray: any[]): string {
+  let out = ""
+  for (const mok of mokArray) {
+    if (!mok || typeof mok !== "object") continue
+    if (mok.목내용) {
+      const mokContent = flattenContent(mok.목내용)
+      if (mokContent) out += "\n" + mokContent
+    }
+  }
+  return out
+}
+
 /** 항 배열에서 내용 추출 (재귀적으로 호/목 처리) */
 export function extractHangContent(hangInput: any[] | any): string {
   // API가 단일 항을 객체로 반환하는 경우 배열로 정규화
@@ -38,7 +66,13 @@ export function extractHangContent(hangInput: any[] | any): string {
 
     // 호도 단일 객체일 수 있으므로 정규화
     const hoArray = hang.호 ? (Array.isArray(hang.호) ? hang.호 : [hang.호]) : []
-    for (const ho of hoArray) {
+    // 항 레벨 목 — 그룹 수가 호 수와 같을 때만 각 호 뒤에 배치(원문 순서 복원)
+    const hangMokArray = hang.목 ? (Array.isArray(hang.목) ? hang.목 : [hang.목]) : []
+    const mokGroups = groupMokByReset(hangMokArray)
+    const alignable = hoArray.length > 0 && mokGroups.length === hoArray.length
+
+    for (let i = 0; i < hoArray.length; i++) {
+      const ho = hoArray[i]
       if (!ho || typeof ho !== "object") continue
 
       if (ho.호내용) {
@@ -48,17 +82,19 @@ export function extractHangContent(hangInput: any[] | any): string {
         }
       }
 
-      // 목도 단일 객체일 수 있으므로 정규화
+      // 호 안에 목이 실려 오는 응답도 있어 기존 경로는 유지
       const mokArray = ho.목 ? (Array.isArray(ho.목) ? ho.목 : [ho.목]) : []
-      for (const mok of mokArray) {
-        if (!mok || typeof mok !== "object") continue
+      content += renderMok(mokArray)
 
-        if (mok.목내용) {
-          const mokContent = flattenContent(mok.목내용)
-          if (mokContent) {
-            content += "\n" + mokContent
-          }
-        }
+      if (alignable) content += renderMok(mokGroups[i])
+    }
+
+    // 호에 배정하지 못한 항 레벨 목 — 누락시키지 않고 항 말미에 모아 출력
+    if (!alignable && hangMokArray.length > 0) {
+      const rest = renderMok(hangMokArray)
+      if (rest) {
+        content += "\n[참고] 아래 목은 위 각 호의 세부 항목이나 API 응답 구조상 소속 호를 특정할 수 없어 일괄 표시합니다."
+        content += rest
       }
     }
   }
