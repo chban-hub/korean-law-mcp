@@ -336,10 +336,18 @@ async function fetchManualRedirect(
   }
 }
 
+/** 판례 본문 fallback 경로에서 따라가도 되는 호스트 (법제처·국세청만) */
+function isAllowedFallbackHost(hostname: string): boolean {
+  return /(^|\.)law\.go\.kr$/i.test(hostname) || /(^|\.)nts\.go\.kr$/i.test(hostname)
+}
+
 async function resolveTaxlawDetailUrl(iframeUrl: string): Promise<string> {
   let currentUrl = iframeUrl
   const proxyConfig = getExternalHttpsProxyConfig()
   for (let redirectCount = 0; redirectCount < 3; redirectCount++) {
+    if (!isAllowedFallbackHost(new URL(currentUrl).hostname)) {
+      throw new Error("precedent fallback redirect target is not an allowed host")
+    }
     const iframeResponse = await fetchManualRedirect(currentUrl, proxyConfig)
     const location = iframeResponse.location
     if (!location) {
@@ -348,6 +356,9 @@ async function resolveTaxlawDetailUrl(iframeUrl: string): Promise<string> {
 
     const nextUrl = normalizeUrl(location, currentUrl)
     const parsedNextUrl = new URL(nextUrl)
+    if (!isAllowedFallbackHost(parsedNextUrl.hostname)) {
+      throw new Error("precedent fallback redirect target is not an allowed host")
+    }
     if (parsedNextUrl.searchParams.get("ntstDcmId")) {
       return nextUrl
     }

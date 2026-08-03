@@ -410,7 +410,10 @@ User: "산업안전보건법 별표1 내용"
 |----------|----------|---------|-------------|
 | `LAW_OC` | Yes | — | 법제처 API key ([get one free](https://open.law.go.kr/LSO/openApi/guideResult.do)) |
 | `PORT` | No | 3000 | HTTP server port |
-| `CORS_ORIGIN` | No | `*` | CORS allowed origin |
+| `CORS_ORIGIN` | No | `*` | CORS allowed origin. Setting it explicitly also allows that origin to pass Origin validation |
+| `ALLOWED_ORIGINS` | No | — | Comma-separated origin allowlist. Requests carrying an `Origin` header are rejected unless listed (DNS rebinding defense) |
+| `MCP_AUTH_TOKEN` | No | — | When set, `/mcp` requires `x-mcp-token` or `Authorization: Bearer`. Required for closed-network / intranet deployments |
+| `ALLOW_QUERY_API_KEY` | No | `1` | Set to `0` to reject the `?oc=` query-string API key (it leaks into proxy access logs) |
 | `RATE_LIMIT_RPM` | No | 60 | Requests per minute per IP |
 
 ## Documentation

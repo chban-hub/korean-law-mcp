@@ -85,7 +85,10 @@ korean-law get_law_text --mst 160001 --jo "제1조"
 
 - `LAW_OC`: 법제처 API 키 (필수) - https://open.law.go.kr/LSO/openApi/guideResult.do
 - `TRUST_PROXY`: Express trust proxy (기본 `1`, 첫 프록시만 신뢰). 다단 프록시는 숫자 증가, CIDR/IP 리스트도 패스스루. `true`/`all`은 XFF 스푸핑 위험으로 명시적 opt-in 필요
-- `CORS_ORIGIN`: CORS 허용 도메인 (기본 `*` — 프로덕션 명시 권장)
+- `CORS_ORIGIN`: CORS 허용 도메인 (기본 `*` — 프로덕션 명시 권장). **명시 설정 시 Origin 검증의 허용 목록으로도 취급**
+- `ALLOWED_ORIGINS`: Origin 허용 목록(쉼표 구분). `Origin` 헤더가 붙은 요청은 이 목록에 없으면 403 — DNS rebinding 방어. 미설정 + `CORS_ORIGIN` 미설정이면 Origin 있는 요청은 전부 차단(비브라우저 클라이언트는 영향 없음)
+- `MCP_AUTH_TOKEN`: 설정 시 `/mcp`에 `x-mcp-token` 또는 `Authorization: Bearer` 인증 요구. **폐쇄망·사내망 배포 필수** (미설정이면 기존처럼 공개 동작)
+- `ALLOW_QUERY_API_KEY`: `0`이면 `?oc=` 쿼리스트링 API 키를 무시 (프록시 액세스 로그 유출 차단). 기본 `1`
 - `RATE_LIMIT_RPM`: IP당 분당 요청 한도 (기본 `60`)
 - `FALLBACK_RATE_LIMIT_RPM`: 자체 키 없는 요청의 서버 LAW_OC 폴백 전역 상한 (기본 `120`, `0`이면 폴백 비활성)
 - `MCP_BODY_LIMIT`: POST body 한도 (기본 `100kb`)

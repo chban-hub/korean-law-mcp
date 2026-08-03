@@ -7,12 +7,26 @@
  */
 
 import express from "express"
+import { timingSafeEqual } from "node:crypto"
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { requestContext } from "../lib/session-state.js"
 import { maskSensitiveUrl } from "../lib/fetch-with-retry.js"
 import { TOOL_COUNTS } from "../tool-registry.js"
 import { VERSION } from "../version.js"
+
+/** 타이밍 공격 내성 문자열 비교 (길이가 달라도 throw하지 않음) */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a)
+  const bufB = Buffer.from(b)
+  if (bufA.length !== bufB.length) return false
+  return timingSafeEqual(bufA, bufB)
+}
+
+/** `Authorization: Bearer x` → `x` (Bearer 접두사가 없으면 원문) */
+function bearerValue(raw: string | undefined): string {
+  return raw ? raw.replace(/^Bearer\s+/i, "") : ""
+}
 
 /**
  * 에러 메시지에서 민감 정보(API 키 포함 URL) scrub.
@@ -51,6 +65,78 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
       next()
     })
   }
+
+  // ── Origin 검증 (DNS rebinding 방어) ──────────────────────────────────────
+  // MCP 명세는 로컬/원격 HTTP 트랜스포트에 Origin 검증을 요구한다. 브라우저가 심은
+  // Origin을 그대로 통과시키면, 사용자가 악성 페이지를 여는 것만으로 그 페이지가
+  // 이 서버를 대신 호출하고 응답까지 읽어갈 수 있다(CORS가 '*'면 특히).
+  // 정책: Origin 헤더가 없는 요청(일반 MCP 클라이언트·서버간 호출)은 그대로 통과.
+  //       Origin이 있으면 ALLOWED_ORIGINS 화이트리스트에 있어야 한다.
+  //       CORS_ORIGIN을 명시적으로 설정한 경우 그 값도 허용 목록으로 취급한다.
+  const corsOriginConfigured = process.env.CORS_ORIGIN !== undefined
+  const corsOrigin = process.env.CORS_ORIGIN || "*"
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(o => o.trim())
+    .filter(Boolean)
+  if (!corsOriginConfigured && allowedOrigins.length === 0) {
+    console.error("ℹ️  ALLOWED_ORIGINS 미설정 — Origin 헤더가 붙은 브라우저 요청은 차단됩니다 (DNS rebinding 방어). 웹 클라이언트를 쓰려면 ALLOWED_ORIGINS를 설정하세요.")
+  }
+
+  /** 이 Origin을 허용할지 판정. 반환값은 응답에 실을 ACAO 값(null이면 거부) */
+  function resolveOrigin(origin: string | undefined): string | null {
+    if (!origin) return corsOrigin // 브라우저가 아닌 클라이언트
+    if (allowedOrigins.includes(origin)) return origin
+    if (allowedOrigins.length === 0 && corsOriginConfigured) {
+      if (corsOrigin === "*") return "*"
+      if (corsOrigin === origin) return origin
+    }
+    return null
+  }
+
+  app.use((req, res, next) => {
+    if (req.path === "/health" || req.path === "/") return next()
+    const origin = req.headers.origin as string | undefined
+    const allowed = resolveOrigin(origin)
+    if (allowed === null) {
+      res.status(403).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Origin not allowed." },
+        id: null,
+      })
+      return
+    }
+    res.header("Access-Control-Allow-Origin", allowed)
+    if (allowed !== "*") res.header("Vary", "Origin")
+    next()
+  })
+
+  // ── 접근 인증 (MCP_AUTH_TOKEN 설정 시에만 활성) ────────────────────────────
+  // 폐쇄망·사내망 배포처럼 서버 자체에 접근 통제가 필요한 환경에서 설정한다.
+  // 미설정이면 기존처럼 공개 동작 (법제처 API 키는 인가 수단이 아니다).
+  const authToken = process.env.MCP_AUTH_TOKEN || ""
+  if (!authToken) {
+    console.error("⚠️  MCP_AUTH_TOKEN 미설정 — /mcp 엔드포인트에 접근 인증이 없습니다. 폐쇄망/사내 배포에서는 반드시 설정하세요.")
+  }
+  app.use((req, res, next) => {
+    if (!authToken) return next()
+    if (req.method === "OPTIONS") return next() // 프리플라이트는 인증 헤더를 못 싣는다
+    if (req.path === "/health" || req.path === "/") return next()
+
+    const presented =
+      (req.headers["x-mcp-token"] as string | undefined) ||
+      bearerValue(req.headers["authorization"] as string | undefined)
+
+    if (!presented || !safeEqual(presented, authToken)) {
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Unauthorized." },
+        id: null,
+      })
+      return
+    }
+    next()
+  })
 
   app.use(express.json({ limit: process.env.MCP_BODY_LIMIT || "100kb" }))
 
@@ -108,15 +194,10 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
     }, 5 * 60 * 1000).unref()
   }
 
-  // CORS 및 보안 헤더 설정 (CORS_ORIGIN 미설정 시 경고)
-  const corsOrigin = process.env.CORS_ORIGIN || "*"
-  if (corsOrigin === "*") {
-    console.error("⚠️  CORS_ORIGIN 미설정 — 모든 도메인 허용 중. 프로덕션에서는 CORS_ORIGIN 환경변수를 설정하세요.")
-  }
+  // 보안 헤더 (Access-Control-Allow-Origin은 위 Origin 검증 미들웨어가 설정)
   app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", corsOrigin)
     res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-    res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, last-event-id")
+    res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, last-event-id, apikey, x-api-key, x-mcp-token, authorization")
     res.header("X-Content-Type-Options", "nosniff")
     res.header("X-Frame-Options", "DENY")
     res.header("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -169,15 +250,20 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
   // POST /mcp - stateless 요청 처리
   app.post("/mcp", async (req, res) => {
     // Extract API key: header > URL query
-    // 쿼리스트링 키는 프록시/엣지 액세스 로그에 평문으로 남으므로 헤더 사용 권장 (하위호환용 유지)
+    // 쿼리스트링 키는 프록시/엣지 액세스 로그에 평문으로 남으므로 헤더 사용 권장.
+    // ALLOW_QUERY_API_KEY=0 으로 쿼리 경로를 차단할 수 있다 (폐쇄망 권장).
+    // 인증이 켜진 경우 Authorization 헤더는 접근 토큰이므로 법제처 키로 오인하면 안 된다.
+    const authHeader = bearerValue(req.headers["authorization"] as string | undefined)
+    const authHeaderIsAccessToken = Boolean(authToken) && authHeader && safeEqual(authHeader, authToken)
+    const queryKey = process.env.ALLOW_QUERY_API_KEY === "0" ? undefined : (req.query.oc as string | undefined)
     const apiKey =
       (req.headers["apikey"] as string | undefined) ||
       (req.headers["law_oc"] as string | undefined) ||
       (req.headers["law-oc"] as string | undefined) ||
       (req.headers["x-api-key"] as string | undefined) ||
-      (req.headers["authorization"] as string | undefined)?.replace(/^Bearer\s+/i, "") ||
+      (authHeaderIsAccessToken ? undefined : authHeader || undefined) ||
       (req.headers["x-law-oc"] as string | undefined) ||
-      (req.query.oc as string | undefined)
+      queryKey
 
     // 자체 키 없는 요청은 서버 LAW_OC로 폴백 — 전역 상한 적용
     // initialize/tools/list 등 핸드셰이크는 법제처 쿼터를 안 쓰므로 tools/call만 게이트
@@ -247,6 +333,23 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
       jsonrpc: "2.0",
       error: { code: -32000, message: "Method not allowed. Server runs in stateless mode." },
       id: null
+    })
+  })
+
+  // 최종 에러 핸들러 — Express 기본 핸들러는 스택 트레이스와 설치 경로를 그대로
+  // 본문에 실어 보낸다(NODE_ENV 미설정 시). body-parser의 413/400도 여기로 온다.
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = typeof err?.status === "number" ? err.status : 500
+    const scrubbed = scrubError(err)
+    console.error(`[express] ${status} ${scrubbed.message}`)
+    if (res.headersSent) return
+    res.status(status).json({
+      jsonrpc: "2.0",
+      error: {
+        code: status === 413 ? -32600 : -32603,
+        message: status === 413 ? "Request entity too large." : "Internal server error",
+      },
+      id: null,
     })
   })
 

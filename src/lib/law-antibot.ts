@@ -81,9 +81,15 @@ export async function followLawAntibot(
     if (!path) return hopped ? current : null
 
     // path는 보통 절대경로(/DRF/...). 원본 URL의 origin에 붙인다.
+    // path가 절대 URL이면 base가 무시되므로, 홉 대상이 원본과 같은 호스트인지
+    // 반드시 확인한다 — 아니면 응답 하나로 임의 호스트 요청을 유도할 수 있다.
     let nextUrl: string
     try {
-      nextUrl = new URL(path, originalUrl).toString()
+      const parsed = new URL(path, originalUrl)
+      if (parsed.hostname !== new URL(originalUrl).hostname) {
+        return hopped ? current : null
+      }
+      nextUrl = parsed.toString()
     } catch {
       return hopped ? current : null
     }

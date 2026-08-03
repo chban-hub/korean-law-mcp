@@ -46,10 +46,17 @@ export function getExternalHttpsProxyConfig(): ExternalHttpsProxyConfig | null {
     ? `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
     : undefined
 
+  // TLS 검증 비활성화는 진단용 임시 우회다. 운영(NODE_ENV=production)에서는
+  // 무시하고 항상 검증한다 — 끄면 프록시 구간이 중간자 공격에 무방비가 된다.
+  const disableTls = process.env.LAW_EXTERNAL_TLS_REJECT_UNAUTHORIZED === "0"
+  if (disableTls && process.env.NODE_ENV === "production") {
+    console.error("⚠️  LAW_EXTERNAL_TLS_REJECT_UNAUTHORIZED=0 은 운영 환경에서 무시됩니다 (TLS 검증 유지).")
+  }
+
   return {
     host: proxyUrl.hostname,
     port: proxyUrl.port ? Number(proxyUrl.port) : 80,
-    rejectUnauthorized: process.env.LAW_EXTERNAL_TLS_REJECT_UNAUTHORIZED !== "0",
+    rejectUnauthorized: !disableTls || process.env.NODE_ENV === "production",
     proxyAuthorization,
   }
 }

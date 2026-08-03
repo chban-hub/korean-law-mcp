@@ -6,7 +6,7 @@
  */
 
 import { createInterface } from "node:readline/promises"
-import { readFile, writeFile, mkdir } from "node:fs/promises"
+import { readFile, writeFile, mkdir, chmod } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { homedir, platform } from "node:os"
@@ -110,7 +110,12 @@ async function writeJsonFile(path: string, data: Record<string, unknown>): Promi
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true })
   }
-  await writeFile(path, JSON.stringify(data, null, 2) + "\n", "utf-8")
+  // 설정 파일에는 LAW_OC가 평문으로 들어간다 → 소유자만 읽도록 제한.
+  // mode 옵션은 새로 만들 때만 먹으므로, 기존 파일에는 chmod로 다시 적용한다.
+  await writeFile(path, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 })
+  try {
+    await chmod(path, 0o600)
+  } catch { /* 권한 변경 실패는 설치를 막지 않는다 (Windows 등) */ }
 }
 
 function buildServerEntry(apiKey: string, lawApiProtocol = getLawApiProtocol()): Record<string, unknown> {
