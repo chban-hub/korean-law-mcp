@@ -174,7 +174,7 @@ get_annexes(lawName="여권법 시행령", bylSeq="000000")
 
 ### Remote (Fly.io)
 
-- **fly.toml**: `nrt` 리전, 256MB 메모리, auto suspend/resume
+- **fly.toml**: 256MB 메모리, auto suspend/resume
 - **Dockerfile**: multi-stage build (node:20-alpine)
 - **Health check**: `GET /health` (30초 간격)
 - **Endpoint**: `https://mcp.gomdori.app/law`

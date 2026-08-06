@@ -21,6 +21,6 @@
 9. 검증: `curl https://mcp.gomdori.app/healthz` (5개 서비스 up) + `/law` initialize 응답에 새 버전 확인
 
 ## 배포 환경
-- 통합 호스트: fly 앱 `korean-law-mcp` (nrt, 512MB+swap) — [gomdori-mcp/fly.production.toml](https://github.com/chrisryugj/gomdori-mcp)
+- 통합 호스트: fly 앱 `korean-law-mcp` (512MB+swap) — [gomdori-mcp/fly.production.toml](https://github.com/chrisryugj/gomdori-mcp)
 - 공식 URL: `https://mcp.gomdori.app/law` (구 `https://korean-law-mcp.fly.dev/mcp` 하위호환 유지)
 - 롤백: `fly releases -a korean-law-mcp` → `fly deploy -a korean-law-mcp -i <직전 이미지>`
