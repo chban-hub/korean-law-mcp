@@ -9,6 +9,7 @@ import { parseAnnexFile } from "../lib/annex-file-parser.js"
 import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
+import { fetchLawAnnexUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
 
 /** 법제처 별표/서식 API 응답 개별 항목 */
 interface AnnexItem {
@@ -26,6 +27,7 @@ interface AnnexItem {
   소관부처?: string
   소관부처명?: string
   지자체기관명?: string
+  관련법령일련번호?: string
 }
 
 const LAW_BASE_URL = getLawSiteBaseUrl()
@@ -154,7 +156,7 @@ export async function getAnnexes(
 
     // 별표 선택값 지정 시 → 해당 별표 파일 다운로드 + 텍스트 추출
     if (annexSelector) {
-      return await extractAnnexContent(filtered, annexSelector, normalizedLawName, input.knd)
+      return await extractAnnexContent(apiClient, filtered, annexSelector, normalizedLawName, lawType, input)
     }
 
     // 별표 선택값 미지정 → 기존 목록 반환
@@ -167,13 +169,46 @@ export async function getAnnexes(
 // ─── 별표 텍스트 추출 ─────────────────────────────────
 
 async function extractAnnexContent(
+  apiClient: LawApiClient,
   annexList: AnnexItem[],
   annexSelector: string,
   normalizedLawName: string,
-  knd?: string
+  lawType: string,
+  input: GetAnnexesInput
 ): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
+  const knd = input.knd
   // bylSeq / annexNo / lawName 내 힌트로 유연 매칭 (별표/서식 구분 위해 knd 전달)
-  const matched = findMatchingAnnex(annexList, annexSelector, knd)
+  let matched = findMatchingAnnex(annexList, annexSelector, knd)
+
+  // 법령은 현행 본문(lawService)의 별표단위 링크를 정본으로 우선 사용 (#77 — licbyl
+  // 인덱스가 구본/결함 파일을 가리키거나 신설 별표를 누락하는 사례). 실패 시 licbyl 폴백.
+  if (lawType === "law") {
+    const mst = matched?.관련법령일련번호 || annexList[0]?.관련법령일련번호
+    if (mst) {
+      try {
+        const units = await fetchLawAnnexUnits(apiClient, String(mst), input.apiKey)
+        const unit = pickAnnexUnit(units, {
+          code6: matched?.별표번호 ? String(matched.별표번호).trim() : undefined,
+          kind: matched?.별표종류 ? String(matched.별표종류) : undefined,
+          selectorCandidates: matched ? undefined : buildSelectorCandidates(annexSelector),
+          knd,
+        })
+        if (unit) {
+          matched = {
+            ...(matched ?? {}),
+            별표번호: matched?.별표번호 || unit.code6,
+            별표명: matched?.별표명 || unit.title,
+            별표종류: matched?.별표종류 || unit.kind,
+            별표서식파일링크: unit.hwpLink || matched?.별표서식파일링크,
+            별표서식PDF파일링크: unit.pdfLink || matched?.별표서식PDF파일링크,
+          }
+        }
+      } catch {
+        // 정본 조회 실패 → licbyl 링크로 진행
+      }
+    }
+  }
+
   if (!matched) {
     const availableBylSeq = annexList.map((a) => a.별표번호).filter(Boolean).slice(0, 20).join(", ")
     return notFoundResponse(
