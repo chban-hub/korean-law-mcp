@@ -85,6 +85,20 @@ export function pickAnnexUnit(
   )
 }
 
+/**
+ * 목록 표시용 병합: licbyl 목록에 없는 별표단위(개정 신설 별표 등)를 골라 반환.
+ * code6+구분이 모두 일치하는 항목은 이미 목록에 있는 것으로 본다.
+ */
+export function findMissingUnits(
+  list: ReadonlyArray<{ 별표번호?: string; 별표종류?: string }>,
+  units: LawAnnexUnit[]
+): LawAnnexUnit[] {
+  const known = new Set(
+    list.map((a) => `${String(a.별표번호 || "").trim()}|${String(a.별표종류 || "").trim()}`)
+  )
+  return units.filter((u) => !known.has(`${u.code6}|${u.kind}`))
+}
+
 /** 현행 법령 본문에서 별표단위 목록 조회 */
 export async function fetchLawAnnexUnits(
   apiClient: LawApiClient,

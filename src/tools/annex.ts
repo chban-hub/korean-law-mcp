@@ -9,7 +9,7 @@ import { parseAnnexFile } from "../lib/annex-file-parser.js"
 import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
-import { fetchLawAnnexUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
+import { fetchLawAnnexUnits, findMissingUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
 
 /** 법제처 별표/서식 API 응답 개별 항목 */
 interface AnnexItem {
@@ -159,8 +159,33 @@ export async function getAnnexes(
       return await extractAnnexContent(apiClient, filtered, annexSelector, normalizedLawName, lawType, input)
     }
 
-    // 별표 선택값 미지정 → 기존 목록 반환
-    return formatAnnexList(filtered, lawType, input, normalizedLawName)
+    // 별표 선택값 미지정 → 목록 반환. 법령은 현행 본문 별표단위와 대조해
+    // licbyl 인덱스에 없는 항목(개정 신설 별표 등)을 병합 표시 (#77 후속)
+    let listForDisplay = filtered
+    if (lawType === "law") {
+      const msts = new Set(filtered.map((a) => String(a.관련법령일련번호 || "")))
+      const mst = msts.size === 1 ? [...msts][0] : ""
+      if (mst) {
+        try {
+          const units = await fetchLawAnnexUnits(apiClient, mst, input.apiKey)
+          const missing = findMissingUnits(filtered, units)
+          listForDisplay = [
+            ...filtered,
+            ...missing.map((u): AnnexItem => ({
+              별표번호: u.code6,
+              별표명: `${u.title} [현행 본문 신규 — 검색 인덱스 미등재]`,
+              별표종류: u.kind,
+              별표서식파일링크: u.hwpLink,
+              별표서식PDF파일링크: u.pdfLink,
+              관련법령명: normalizedLawName,
+            })),
+          ]
+        } catch {
+          // 정본 목록 조회 실패 → licbyl 목록만 표시
+        }
+      }
+    }
+    return formatAnnexList(listForDisplay, lawType, input, normalizedLawName)
   } catch (error) {
     return formatToolError(error, "get_annexes")
   }

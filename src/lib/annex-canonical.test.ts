@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { parseLawAnnexUnits, pickAnnexUnit } from "./annex-canonical.js"
+import { findMissingUnits, parseLawAnnexUnits, pickAnnexUnit } from "./annex-canonical.js"
 
 // #77 실증 응답 축소판: 각급 법원의 설치와 관할구역에 관한 법률 (MST 284429)
 const FIXTURE = JSON.stringify({
@@ -82,6 +82,16 @@ describe("pickAnnexUnit — 후보 선택", () => {
   it("매칭 없으면 undefined", () => {
     expect(pickAnnexUnit(units, { code6: "999900" })).toBeUndefined()
     expect(pickAnnexUnit(units, {})).toBeUndefined()
+  })
+
+  it("findMissingUnits — licbyl 목록에 없는 신설 별표만 반환 (번호+구분 일치 시 기등재)", () => {
+    const units = parseLawAnnexUnits(FIXTURE) // 000300 별표, 001100 별표
+    const licbylList = [{ 별표번호: "000300", 별표종류: "별표" }]
+    const missing = findMissingUnits(licbylList, units)
+    expect(missing).toHaveLength(1)
+    expect(missing[0].code6).toBe("001100")
+    // 번호 같아도 구분이 다르면(서식) 누락으로 판단
+    expect(findMissingUnits([{ 별표번호: "000300", 별표종류: "서식" }], units)).toHaveLength(2)
   })
 
   it("같은 번호에 별표/서식 공존 시 kind·knd로 구분", () => {
