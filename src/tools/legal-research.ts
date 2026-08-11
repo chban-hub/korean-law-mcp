@@ -22,6 +22,7 @@ import {
   chainProcedureDetail, chainProcedureDetailSchema,
   chainDocumentReview,
 } from "./chains.js"
+import { throwIfRequestCancelled } from "../lib/session-state.js"
 
 const TASK_VALUES = new Set([
   "full_research", "law_system", "action_basis", "dispute_prep",
@@ -126,6 +127,7 @@ export async function legalResearch(
   apiClient: LawApiClient,
   input: LegalResearchInput
 ): Promise<ToolResponse> {
+  throwIfRequestCancelled()
   const task = input.task ?? "full_research"
 
   if (task === "document_review") {

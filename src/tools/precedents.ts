@@ -4,6 +4,7 @@ import { cleanHtml } from "../lib/article-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { fetchWithRetry } from "../lib/fetch-with-retry.js"
+import { readResponseText } from "../lib/response-body.js"
 import {
   type ExternalHttpsProxyConfig,
   getExternalHttpsProxyConfig,
@@ -261,7 +262,7 @@ function isMissingPrecedentJson(data: unknown): boolean {
 }
 
 async function fetchText(response: Response, context: string): Promise<string> {
-  const text = await response.text()
+  const text = await readResponseText(response)
   if (!response.ok) {
     throw new Error(`${context} failed with HTTP ${response.status}`)
   }
@@ -515,4 +516,3 @@ export async function getPrecedentText(
     return formatToolError(error, "get_precedent_text")
   }
 }
-

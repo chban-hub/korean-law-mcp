@@ -5,6 +5,7 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { fetchWithRetry } from "../lib/fetch-with-retry.js"
+import { readResponseArrayBuffer } from "../lib/response-body.js"
 import { parseAnnexFile } from "../lib/annex-file-parser.js"
 import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
@@ -266,7 +267,7 @@ async function extractAnnexContent(
     }
   }
 
-  const buffer = await response.arrayBuffer()
+  const buffer = await readResponseArrayBuffer(response)
   const result = await parseAnnexFile(buffer)
 
   if (result.fileType === "pdf" && result.isImageBased) {

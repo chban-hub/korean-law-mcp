@@ -28,7 +28,8 @@
     "korean-law": "build/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node ./scripts/clean-build.mjs",
+    "build": "npm run clean && tsc",
     "watch": "tsc --watch",
     "start": "node build/index.js",
     "cli": "node build/cli.js",
@@ -37,7 +38,9 @@
     "typecheck": "tsc --noEmit",
     "dead-code": "knip",
     "gc": "npm run typecheck && npm run dead-code && npm test && npm run build",
-    "prepublishOnly": "npm run build",
+    "verify:package": "node ./scripts/verify-package.mjs",
+    "prepack": "npm run build && npm run verify:package",
+    "prepublishOnly": "npm run build && npm run verify:package",
     "prepare": "husky"
   },
   "keywords": [
@@ -61,7 +64,6 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "kordoc": "^4.7.2",
-    "pdfjs-dist": "^5.5.207",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -73,7 +75,8 @@
     "vitest": "^4.1.9"
   },
   "overrides": {
-    "hono": "^4.12.29",
+    "hono": "^4.13.1",
+    "ip-address": "^10.5.0",
     "sharp": "^0.35.3",
     "adm-zip": "^0.6.0",
     "onnxruntime-node": "^1.27.0"
@@ -89,6 +92,6 @@
     "url": "git+https://github.com/chrisryugj/korean-law-mcp.git"
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.12.0"
   }
 }

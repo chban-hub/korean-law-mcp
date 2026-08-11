@@ -1,6 +1,7 @@
 import http from "node:http"
 import net from "node:net"
 import tls from "node:tls"
+import { getRequestSignal, requestCancelledError, requestContext, throwIfRequestCancelled } from "./session-state.js"
 
 const DEFAULT_TIMEOUT = 30000
 
@@ -69,6 +70,8 @@ export async function requestExternalHttps(
   if (!config) {
     throw new Error("LAW_EXTERNAL_HTTPS_PROXY is not configured")
   }
+  throwIfRequestCancelled()
+  requestContext.getStore()?.budget?.consumeUpstreamRequest()
 
   const targetUrl = new URL(url)
   if (targetUrl.protocol !== "https:") {
@@ -101,8 +104,21 @@ export async function requestExternalHttps(
       timeout,
     }, (response) => {
       const chunks: Buffer[] = []
-      response.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      let bodyBytes = 0
+      response.on("data", (chunk) => {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        bodyBytes += bytes.byteLength
+        try {
+          const budget = requestContext.getStore()?.budget
+          budget?.ensureResponseBodySize(bodyBytes)
+          budget?.consumeUpstreamBody(bytes.byteLength)
+          chunks.push(bytes)
+        } catch (error) {
+          request.destroy(error instanceof Error ? error : new Error(String(error)))
+        }
+      })
       response.on("end", () => {
+        cleanupAbort()
         resolve({
           ok: response.statusCode ? response.statusCode >= 200 && response.statusCode < 300 : false,
           status: response.statusCode || 0,
@@ -110,12 +126,28 @@ export async function requestExternalHttps(
           text: Buffer.concat(chunks).toString("utf8"),
         })
       })
+      response.on("error", (error) => {
+        cleanupAbort()
+        reject(error)
+      })
     })
+
+    const signal = getRequestSignal()
+    const onAbort = () => request.destroy(requestCancelledError(signal?.reason))
+    const cleanupAbort = () => signal?.removeEventListener("abort", onAbort)
+    if (signal?.aborted) {
+      request.destroy(requestCancelledError(signal.reason))
+    } else {
+      signal?.addEventListener("abort", onAbort, { once: true })
+    }
 
     request.on("timeout", () => {
       request.destroy(new Error(`External HTTPS request timeout after ${timeout}ms`))
     })
-    request.on("error", reject)
+    request.on("error", (error) => {
+      cleanupAbort()
+      reject(error)
+    })
     if (body) request.write(body)
     request.end()
   })

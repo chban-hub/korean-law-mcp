@@ -5,6 +5,9 @@
  */
 
 import { followLawAntibot } from "./law-antibot.js"
+import { ExecutionLimitError } from "./execution-limits.js"
+import { readResponseText } from "./response-body.js"
+import { combineAbortSignals, getRequestSignal, requestCancelledError, requestContext, throwIfRequestCancelled } from "./session-state.js"
 
 /**
  * URL에서 민감 정보(API 키) 마스킹 — 에러 메시지/로그 노출 방지.
@@ -84,24 +87,35 @@ export async function fetchWithRetry(
     retryDelay = DEFAULT_RETRY_DELAY,
     retryOn = DEFAULT_RETRY_ON,
     allowHtmlBody = false,
+    signal: callerSignal,
     ...fetchOptions
   } = options
+  const externalSignal = callerSignal ?? undefined
 
   let lastError: Error | null = null
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    throwIfRequestCancelled()
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), timeout)
+    let timedOut = false
+    const timeoutId = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, timeout)
+    const signal = combineAbortSignals(controller.signal, externalSignal, getRequestSignal())
 
     const headers = new Headers(fetchOptions.headers)
     if (!headers.has("user-agent")) headers.set("user-agent", DEFAULT_USER_AGENT)
     if (!headers.has("referer") && isLawGoKrHost(url)) headers.set("referer", DEFAULT_REFERER)
 
     try {
+      // This is intentionally charged per *attempt*: retry and anti-bot work
+      // must not turn one tool call into unbounded upstream activity.
+      requestContext.getStore()?.budget?.consumeUpstreamRequest()
       let response = await fetch(url, {
         ...fetchOptions,
         headers,
-        signal: controller.signal,
+        signal,
       })
 
       clearTimeout(timeoutId)
@@ -114,20 +128,32 @@ export async function fetchWithRetry(
           try {
             const bypassed = await followLawAntibot(response, url, headers, timeout)
             if (bypassed) response = bypassed
-          } catch { /* 우회 실패 시 원본 응답으로 진행 */ }
+          } catch (error) {
+            // Cancellation and budget exhaustion must stop the request rather
+            // than silently falling through to more work.
+            if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted || externalSignal?.aborted) {
+              throw error
+            }
+            // 우회 실패 시 원본 응답으로 진행
+          }
         }
         // 200인데 빈 본문/HTML(법제처 점검·과부하 페이지)이면 일시 장애로 보고 재시도.
         // 이를 막지 않으면 XML 파서가 "missing root element"로 터진다.
         if (response.ok && attempt < retries) {
           let bodyText: string | null = null
-          try { bodyText = await response.clone().text() } catch { /* clone 실패 시 정상 처리 */ }
+          try { bodyText = await readResponseText(response.clone()) } catch (error) {
+            if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted || externalSignal?.aborted) {
+              throw error
+            }
+            // clone 실패 시 정상 처리
+          }
           if (bodyText !== null) {
             const bad = detectBadBody(bodyText)
             if (bad === "empty" || (bad === "html" && !allowHtmlBody)) {
               lastError = new Error(
                 `법제처 API 비정상 응답(${bad === "empty" ? "빈 본문" : "HTML 페이지"}) - ${maskSensitiveUrl(url)}`
               )
-              await sleep(getRetryDelay(response, retryDelay, attempt))
+              await sleep(getRetryDelay(response, retryDelay, attempt), combineAbortSignals(externalSignal, getRequestSignal()))
               continue
             }
           }
@@ -147,9 +173,14 @@ export async function fetchWithRetry(
     } catch (error) {
       clearTimeout(timeoutId)
 
+      if (getRequestSignal()?.aborted || externalSignal?.aborted) {
+        throw requestCancelledError(getRequestSignal()?.reason ?? externalSignal?.reason)
+      }
+      if (error instanceof ExecutionLimitError) throw error
+
       // Timeout or network error — URL에서 API 키 제거 후 에러 생성
       if (error instanceof Error) {
-        if (error.name === "AbortError") {
+        if (error.name === "AbortError" && timedOut) {
           lastError = new Error(`Request timeout after ${timeout}ms for ${maskSensitiveUrl(url)}`)
         } else {
           // fetch 네이티브 에러 메시지에도 URL이 포함될 수 있음
@@ -161,7 +192,7 @@ export async function fetchWithRetry(
       // Retry on network errors
       if (attempt < retries) {
         const delay = getRetryDelay(null, retryDelay, attempt)
-        await sleep(delay)
+        await sleep(delay, combineAbortSignals(externalSignal, getRequestSignal()))
         continue
       }
     }
@@ -185,6 +216,20 @@ function getRetryDelay(response: Response | null, retryDelay: number, attempt: n
   return baseDelay + Math.random() * baseDelay * 0.5
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms))
+  if (signal.aborted) return Promise.reject(requestCancelledError(signal.reason))
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeoutId)
+      signal.removeEventListener("abort", onAbort)
+      reject(requestCancelledError(signal.reason))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
 }

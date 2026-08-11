@@ -4,6 +4,7 @@
 
 import { normalizeLawSearchText, resolveLawAlias } from "./search-normalizer.js"
 import { fetchWithRetry } from "./fetch-with-retry.js"
+import { readResponseText } from "./response-body.js"
 
 // 법제처 DRF는 정상 파라미터에도 연속 호출 버스트에 간헐 404를 낸다
 // (2026-07-19 행위시법 골드셋 R1에서 19콜 중 10콜 관측, 수초 내 자연 회복 —
@@ -42,7 +43,7 @@ export class LawApiClient {
   private async throwIfError(response: Response, endpoint: string): Promise<void> {
     if (!response.ok) {
       // body stream 리크 방지: throw 전에 body consume
-      try { await response.text() } catch { /* ignore */ }
+      try { await readResponseText(response) } catch { /* ignore */ }
       const status = response.status
       if (status === 429) throw new Error(`API 요청 한도 초과 (429) - 잠시 후 다시 시도하세요.`)
       if (status >= 500) throw new Error(`법제처 서버 오류 (${status}) - ${endpoint}`)
@@ -99,7 +100,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "searchLaw")
 
-    const text = await response.text()
+    const text = await readResponseText(response)
     this.checkEmptyResponse(text, "법령 검색")
     this.checkHtmlError(text, "법령 검색 결과를 받지 못했습니다")
     return text
@@ -130,7 +131,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getLawText")
 
-    const text = await response.text()
+    const text = await readResponseText(response)
 
     this.checkHtmlError(text, params.jo
       ? `법령 조문(${params.jo})을 찾을 수 없습니다. MST/lawId와 조문번호를 확인해주세요.`
@@ -164,7 +165,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "compareOldNew")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 
   /**
@@ -190,7 +191,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getThreeTier")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 
   /**
@@ -214,7 +215,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "searchAdminRule")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 
   /**
@@ -232,7 +233,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getAdminRule")
 
-    const text = await response.text()
+    const text = await readResponseText(response)
     this.checkHtmlError(text, "행정규칙을 찾을 수 없습니다. ID를 확인해주세요")
 
     return text
@@ -274,7 +275,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getAnnexes")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 
   /**
@@ -321,7 +322,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "searchOrdinance")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 
   /**
@@ -340,7 +341,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getOrdinance")
 
-    const text = await response.text()
+    const text = await readResponseText(response)
     this.checkHtmlError(text, "자치법규를 찾을 수 없습니다. ordinSeq를 확인해주세요")
 
     return text
@@ -377,7 +378,7 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getArticleHistory")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 
   /**
@@ -412,7 +413,7 @@ export class LawApiClient {
     )
     await this.throwIfError(response, `fetchApi(${params.target})`)
 
-    const text = await response.text()
+    const text = await readResponseText(response)
     // type=HTML 응답은 HTML이 정상 — checkHtmlError(XML/JSON 응답에 HTML이 오면 에러) 우회
     if (params.type !== "HTML") {
       this.checkHtmlError(text, "API 응답 오류 - 파라미터를 확인해주세요")
@@ -446,6 +447,6 @@ export class LawApiClient {
     const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getLawHistory")
 
-    return await response.text()
+    return await readResponseText(response)
   }
 }

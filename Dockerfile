@@ -1,21 +1,26 @@
 # Korean Law MCP Server - Docker 배포용
 
 # --- Build Stage ---
-FROM node:20-alpine AS builder
+# Node 22.12.0 LTS, pinned by immutable multi-architecture manifest digest.
+FROM node:22.12.0-alpine@sha256:51eff88af6dff26f59316b6e356188ffa2c422bd3c3b76f2556a2e7e89d080bd AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# Kordoc keeps native OCR/ML helpers optional.  This server does not import
+# them, so do not run transitive postinstall downloaders during image builds.
+# Pure-JS annex parsing remains installed and is verified in CI.
+RUN npm ci --ignore-scripts
 
 COPY src ./src
+COPY scripts ./scripts
 COPY tsconfig.json ./
 
 RUN npm run build
-RUN npm prune --production
+RUN npm prune --omit=dev --ignore-scripts
 
 # --- Runtime Stage ---
-FROM node:20-alpine
+FROM node:22.12.0-alpine@sha256:51eff88af6dff26f59316b6e356188ffa2c422bd3c3b76f2556a2e7e89d080bd
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 

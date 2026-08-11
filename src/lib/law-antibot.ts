@@ -13,6 +13,10 @@
  * 원본 재시도 성공" 경로는 제한적이다. 주 경로는 토큰 URL 직접 파싱이다.
  */
 
+import { readResponseText } from "./response-body.js"
+import { ExecutionLimitError } from "./execution-limits.js"
+import { combineAbortSignals, getRequestSignal, requestContext, throwIfRequestCancelled } from "./session-state.js"
+
 /**
  * 안티봇 JS의 두 난독화 패턴에서 리다이렉트 경로를 복원한다.
  *
@@ -41,10 +45,12 @@ export function parseAntibotUrl(html: string): string | null {
 
 /** timeout이 걸린 단발 fetch */
 async function fetchOnce(url: string, headers: Headers, timeout: number): Promise<Response> {
+  throwIfRequestCancelled()
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
   try {
-    return await fetch(url, { headers, signal: controller.signal })
+    requestContext.getStore()?.budget?.consumeUpstreamRequest()
+    return await fetch(url, { headers, signal: combineAbortSignals(controller.signal, getRequestSignal()) })
   } finally {
     clearTimeout(timeoutId)
   }
@@ -67,8 +73,9 @@ export async function followLawAntibot(
   for (let hop = 0; hop < maxHops; hop++) {
     let text: string
     try {
-      text = await current.clone().text()
-    } catch {
+      text = await readResponseText(current.clone())
+    } catch (error) {
+      if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted) throw error
       return hopped ? current : null
     }
 

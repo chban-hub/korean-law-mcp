@@ -195,7 +195,8 @@ flyctl deploy
 
 ```bash
 docker build -t korean-law-mcp .
-docker run -e LAW_OC=your-key -p 3000:3000 korean-law-mcp
+docker run -e LAW_OC=your-key -e MCP_HTTP_HOST=0.0.0.0 \
+  -e MCP_AUTH_TOKEN=replace-with-a-secret -p 3000:3000 korean-law-mcp
 ```
 
 ---

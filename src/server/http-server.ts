@@ -11,9 +11,11 @@ import { timingSafeEqual } from "node:crypto"
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { requestContext } from "../lib/session-state.js"
+import { RequestExecutionBudget, type ExecutionLimits } from "../lib/execution-limits.js"
 import { maskSensitiveUrl } from "../lib/fetch-with-retry.js"
 import { TOOL_COUNTS } from "../tool-registry.js"
 import { VERSION } from "../version.js"
+import { readHttpServerConfig } from "./http-config.js"
 
 /** 타이밍 공격 내성 문자열 비교 (길이가 달라도 throw하지 않음) */
 function safeEqual(a: string, b: string): boolean {
@@ -42,21 +44,29 @@ function scrubError(error: unknown): { message: string; stack?: string } {
   return { message: maskSensitiveUrl(String(error)) }
 }
 
-export async function startHTTPServer(createServer: () => Server, port: number) {
+/** Count executable calls in an already-parsed JSON-RPC envelope. */
+export function countToolCalls(body: unknown): number {
+  const messages = Array.isArray(body) ? body : [body]
+  return messages.filter(message =>
+    typeof message === "object" && message !== null && (message as { method?: unknown }).method === "tools/call",
+  ).length
+}
+
+export function exceedsBatchLimit(body: unknown, maxBatchCalls: number): boolean {
+  return countToolCalls(body) > maxBatchCalls
+}
+
+export async function startHTTPServer(
+  createServer: (executionLimits: ExecutionLimits) => Server,
+  port: number,
+) {
+  // Parse every security boundary before the listener is opened.  A bad value
+  // must fail startup, not degrade into NaN and disable a comparison later.
+  const config = readHttpServerConfig()
   const app = express()
-  // trust proxy: TRUST_PROXY 환경변수로 조정 (기본 '1' = 첫 프록시만 신뢰).
-  // 'true' 또는 'all'은 X-Forwarded-For 스푸핑으로 rate limit 우회 위험.
-  // Fly.io는 edge proxy 1단 → '1' 권장. 다단 프록시면 숫자 증가.
-  const trustProxyRaw = process.env.TRUST_PROXY ?? "1"
-  const trustProxy: number | boolean | string =
-    trustProxyRaw === "true" || trustProxyRaw === "all"
-      ? true
-      : trustProxyRaw === "false"
-      ? false
-      : /^\d+$/.test(trustProxyRaw)
-      ? parseInt(trustProxyRaw, 10)
-      : trustProxyRaw // CIDR/IP 리스트 패스스루
-  app.set("trust proxy", trustProxy)
+  // Direct deployments must not trust a spoofable X-Forwarded-For header.
+  // A reverse-proxy deployment opts in with a bounded numeric hop count.
+  app.set("trust proxy", config.trustProxy)
 
   // ACCESS_LOG=1 일 때만 요청 로그 — req.path만 기록 (쿼리스트링의 oc= API 키 유출 방지)
   if (process.env.ACCESS_LOG === "1") {
@@ -114,9 +124,13 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
   // ── 접근 인증 (MCP_AUTH_TOKEN 설정 시에만 활성) ────────────────────────────
   // 폐쇄망·사내망 배포처럼 서버 자체에 접근 통제가 필요한 환경에서 설정한다.
   // 미설정이면 기존처럼 공개 동작 (법제처 API 키는 인가 수단이 아니다).
-  const authToken = process.env.MCP_AUTH_TOKEN || ""
+  const authToken = config.authToken
   if (!authToken) {
-    console.error("⚠️  MCP_AUTH_TOKEN 미설정 — /mcp 엔드포인트에 접근 인증이 없습니다. 폐쇄망/사내 배포에서는 반드시 설정하세요.")
+    if (config.allowUnauthenticatedRemote) {
+      console.error("⚠️  MCP_ALLOW_UNAUTHENTICATED_REMOTE=1 — non-loopback /mcp is intentionally unauthenticated.")
+    } else {
+      console.error("ℹ️  MCP_AUTH_TOKEN 미설정 — loopback HTTP only. Remote exposure requires MCP_AUTH_TOKEN or an explicit override.")
+    }
   }
   app.use((req, res, next) => {
     if (!authToken) return next()
@@ -138,53 +152,56 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
     next()
   })
 
-  app.use(express.json({ limit: process.env.MCP_BODY_LIMIT || "100kb" }))
+  app.use(express.json({ limit: config.bodyLimitBytes }))
 
   // Rate Limiting (RATE_LIMIT_RPM 환경변수, 기본: 60 req/min per IP)
-  const rateLimitRpm = parseInt(process.env.RATE_LIMIT_RPM || "60", 10)
+  const rateLimitRpm = config.rateLimitRpm
   const rateBuckets = new Map<string, { count: number; resetAt: number }>()
 
   // 단일 POST에 담을 수 있는 tools/call 상한. JSON-RPC 배치는 배열의 요청을
   // 전부 디스패치하므로(SDK 확인), 카운트 없이 두면 한 요청으로 rate limit·폴백
   // 쿼터를 배수만큼 우회할 수 있다. 배치 크기를 제한해 증폭을 원천 차단한다.
-  const maxBatchCalls = parseInt(process.env.MCP_MAX_BATCH_CALLS || "20", 10)
+  const maxBatchCalls = config.maxBatchCalls
+
+  // Batch work is bounded whether or not the optional per-IP rate limiter is
+  // enabled.  Otherwise RATE_LIMIT_RPM=0 accidentally turns off this guard.
+  app.use((req, res, next) => {
+    if (req.path === "/health" || req.path === "/") return next()
+
+    // 핸드셰이크(initialize)·도구목록(tools/list)·알림은 rate limit 제외.
+    // 이들이 429를 맞으면 클라이언트가 도구 목록을 못 받아 "도구 못 찾음"이 된다.
+    // claude.ai 커넥터는 소수 egress IP로 트래픽이 몰려 IP 버킷을 공유하므로,
+    // 비용 소모 요청(tools/call)에만 게이트한다. (v4.6.2 폴백 게이트와 동일 원칙)
+    // 배치는 tools/call '개수'만큼 카운트한다 (요청당 1회가 아님 — 배치 증폭 방지).
+    const callCount = countToolCalls(req.body)
+    if (callCount === 0) return next()
+
+    if (exceedsBatchLimit(req.body, maxBatchCalls)) {
+      res.status(429).json({ error: `Too many tool calls in one request (max ${maxBatchCalls}).` })
+      return
+    }
+
+    if (rateLimitRpm === 0) return next()
+
+    const ip = req.ip || req.socket.remoteAddress || "unknown"
+    const now = Date.now()
+    let bucket = rateBuckets.get(ip)
+
+    if (!bucket || now >= bucket.resetAt) {
+      bucket = { count: 0, resetAt: now + 60_000 }
+      rateBuckets.set(ip, bucket)
+    }
+
+    bucket.count += callCount
+
+    if (bucket.count > rateLimitRpm) {
+      res.status(429).json({ error: "Too many requests. Try again later." })
+      return
+    }
+    next()
+  })
 
   if (rateLimitRpm > 0) {
-    app.use((req, res, next) => {
-      if (req.path === "/health" || req.path === "/") return next()
-
-      // 핸드셰이크(initialize)·도구목록(tools/list)·알림은 rate limit 제외.
-      // 이들이 429를 맞으면 클라이언트가 도구 목록을 못 받아 "도구 못 찾음"이 된다.
-      // claude.ai 커넥터는 소수 egress IP로 트래픽이 몰려 IP 버킷을 공유하므로,
-      // 비용 소모 요청(tools/call)에만 게이트한다. (v4.6.2 폴백 게이트와 동일 원칙)
-      // 배치는 tools/call '개수'만큼 카운트한다 (요청당 1회가 아님 — 배치 증폭 방지).
-      const msgs = Array.isArray(req.body) ? req.body : [req.body]
-      const callCount = msgs.filter(m => m?.method === "tools/call").length
-      if (callCount === 0) return next()
-
-      if (callCount > maxBatchCalls) {
-        res.status(429).json({ error: `Too many tool calls in one request (max ${maxBatchCalls}).` })
-        return
-      }
-
-      const ip = req.ip || req.socket.remoteAddress || "unknown"
-      const now = Date.now()
-      let bucket = rateBuckets.get(ip)
-
-      if (!bucket || now >= bucket.resetAt) {
-        bucket = { count: 0, resetAt: now + 60_000 }
-        rateBuckets.set(ip, bucket)
-      }
-
-      bucket.count += callCount
-
-      if (bucket.count > rateLimitRpm) {
-        res.status(429).json({ error: "Too many requests. Try again later." })
-        return
-      }
-      next()
-    })
-
     // 5분마다 만료된 버킷 정리
     setInterval(() => {
       const now = Date.now()
@@ -232,7 +249,7 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
 
   // 서버 LAW_OC 폴백 사용량 전역 상한 — 키 없는 분산 요청이 서버 키의 법제처 quota를
   // 소진시키는 것 방지 (IP당 limit만으로는 막을 수 없음). 0이면 폴백 비활성.
-  const fallbackRpm = parseInt(process.env.FALLBACK_RATE_LIMIT_RPM || "120", 10)
+  const fallbackRpm = config.fallbackRpm
   const fallbackBucket = { count: 0, resetAt: 0 }
   // n = 이 요청이 소모하는 tools/call 개수 (배치는 배열 길이만큼 서버 키를 쓴다)
   function fallbackAllowed(n: number): boolean {
@@ -268,8 +285,7 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
     // 자체 키 없는 요청은 서버 LAW_OC로 폴백 — 전역 상한 적용
     // initialize/tools/list 등 핸드셰이크는 법제처 쿼터를 안 쓰므로 tools/call만 게이트
     // (핸드셰이크까지 429로 막으면 claude.ai 커넥터가 도구 목록 자체를 못 싣는다)
-    const bodyMessages = Array.isArray(req.body) ? req.body : [req.body]
-    const fallbackCallCount = bodyMessages.filter((m) => m?.method === "tools/call").length
+    const fallbackCallCount = countToolCalls(req.body)
     if (!apiKey && fallbackCallCount > 0 && !fallbackAllowed(fallbackCallCount)) {
       res.status(429).json({
         jsonrpc: "2.0",
@@ -283,14 +299,24 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
     let transport: StreamableHTTPServerTransport | undefined
 
     try {
-      server = createServer()
+      server = createServer(config.executionLimits)
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,  // ← stateless 모드
         enableJsonResponse: true,
       })
 
+      // Disconnecting the HTTP client must stop its upstream work.  This is
+      // deliberately separate from MCP's item cancellation signal: sibling
+      // batch items share a budget but retain separate cancellation signals.
+      const connectionAbort = new AbortController()
+      const abortConnection = () => {
+        if (!connectionAbort.signal.aborted) connectionAbort.abort("HTTP client disconnected")
+      }
+      req.once("aborted", abortConnection)
+
       // 요청 종료 시 리소스 정리
       res.on("close", () => {
+        if (!res.writableEnded) abortConnection()
         try { transport?.close() } catch { /* ignore */ }
         server?.close().catch(() => {})
       })
@@ -298,7 +324,11 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
       await server.connect(transport)
 
       // ALS로 요청 단위 API 키 격리 (동시 요청 안전)
-      await requestContext.run({ apiKey }, async () => {
+      await requestContext.run({
+        apiKey,
+        signal: connectionAbort.signal,
+        budget: new RequestExecutionBudget(config.executionLimits),
+      }, async () => {
         await transport!.handleRequest(req, res, req.body)
       })
     } catch (error) {
@@ -353,11 +383,12 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
     })
   })
 
-  // 서버 시작 (0.0.0.0으로 바인딩하여 외부 접속 허용)
-  const expressServer = app.listen(port, "0.0.0.0", () => {
+  // 서버 시작.  Loopback is the safe default; remote exposure is an explicit
+  // MCP_HTTP_HOST configuration validated above.
+  const expressServer = app.listen(port, config.host, () => {
     console.error(`✓ Korean Law MCP server (HTTP stateless) listening on port ${port}`)
-    console.error(`✓ MCP endpoint: http://0.0.0.0:${port}/mcp`)
-    console.error(`✓ Health check: http://0.0.0.0:${port}/health`)
+    console.error(`✓ MCP endpoint: http://${config.host}:${port}/mcp`)
+    console.error(`✓ Health check: http://${config.host}:${port}/health`)
   })
 
   // 종료 처리 — in-flight 요청 완료 대기 (최대 10초), 이후 강제 종료

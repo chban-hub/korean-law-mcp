@@ -906,6 +906,16 @@ v4.4.0에서 노출 도구를 통폐합했습니다 (컨텍스트 52% 감축). �
 
 ---
 
+## HTTP·실행 경계 설정
+
+- HTTP 기본 바인딩은 `MCP_HTTP_HOST=127.0.0.1`, 프록시 신뢰 기본값은 `TRUST_PROXY=false`입니다. 외부 바인딩은 `MCP_AUTH_TOKEN`을 설정해야 하며, 의도적으로 공개할 때만 `MCP_ALLOW_UNAUTHENTICATED_REMOTE=1`을 명시합니다. 프록시 뒤에서는 `TRUST_PROXY=1`처럼 정확한 hop 수를 설정하세요.
+- `RATE_LIMIT_RPM=0`은 IP별 제한만 끕니다. `MCP_MAX_BATCH_CALLS`(기본 20), 요청 본문, upstream 시도/응답 본문, 도구 응답 제한은 계속 적용됩니다.
+- `MCP_MAX_BODY_BYTES`, `MCP_MAX_UPSTREAM_REQUESTS`(기본 48), `MCP_MAX_UPSTREAM_BODY_BYTES`, `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES`, `MCP_MAX_TOOL_RESPONSE_CHARS`는 시작 시 정수로 검증되며 잘못된 값은 서버 시작을 실패시킵니다. 기존 `MCP_BODY_LIMIT=100kb`도 호환됩니다.
+- `get_batch_articles`는 최대 20개 법령·총 100개 조문으로 제한됩니다. HTTP 연결 종료 또는 MCP 취소는 fetch, 재시도 대기, 응답 본문 읽기까지 전파됩니다. JSON-RPC 배치 항목은 예산만 공유하고 취소 신호는 서로 분리됩니다.
+- publish 전 `build/`를 삭제하고 실제 pack 파일과 exports를 검증합니다. 직접 사용하지 않는 `pdfjs-dist`는 제거했지만, `kordoc`는 별표 PDF/HWP 파싱에 실제 사용되므로 유지합니다. CI/Docker는 `--ignore-scripts`로 optional native postinstall downloader를 실행하지 않으며 PDF 별표 smoke test를 실행합니다. transitive scanner 경고는 실제 도달 가능한 서버 경로와 구분해 평가합니다.
+
+---
+
 ## 문서
 
 - [docs/API.md](docs/API.md) — 도구 레퍼런스
