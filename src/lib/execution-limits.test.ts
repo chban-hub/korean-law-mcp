@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { DEFAULT_EXECUTION_LIMITS, ExecutionLimitError, RequestExecutionBudget, readExecutionLimits } from "./execution-limits.js"
-import { sleep } from "./fetch-with-retry.js"
+import { fetchWithRetry, sleep } from "./fetch-with-retry.js"
 import { readResponseText } from "./response-body.js"
 import { requestContext, runWithRequestContext } from "./session-state.js"
 
@@ -51,6 +51,31 @@ describe("request-wide execution limits", () => {
     const pending = sleep(10_000, controller.signal)
     controller.abort("client cancelled")
     await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+  })
+
+  it("cancels a discarded retry response and its status backoff", async () => {
+    const controller = new AbortController()
+    const cancelBody = vi.fn()
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      new ReadableStream<Uint8Array>({ cancel: cancelBody }),
+      { status: 503, headers: { "Retry-After": "10" } },
+    ))
+    vi.stubGlobal("fetch", fetchMock)
+
+    try {
+      const pending = requestContext.run({ signal: controller.signal }, () => fetchWithRetry(
+        "https://example.invalid/retry",
+        { retries: 1 },
+      ))
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+      controller.abort("client cancelled")
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+      expect(cancelBody).toHaveBeenCalledTimes(1)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("keeps MCP cancellation item-scoped while batch accounting is shared", () => {

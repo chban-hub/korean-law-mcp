@@ -249,7 +249,7 @@ This project wraps that entire legal system into **14 structured tools** that an
 **Auto setup (recommended):**
 
 ```bash
-npx korean-law-mcp setup
+npx --ignore-scripts --omit=optional korean-law-mcp setup
 ```
 
 Interactive wizard handles API key input, client selection, and config file registration.
@@ -258,7 +258,7 @@ Supports Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Gemini CLI, Zed
 **Manual setup:**
 
 ```bash
-npm install -g korean-law-mcp
+npm install --ignore-scripts --omit=optional -g korean-law-mcp
 ```
 
 Add to your MCP client config:
@@ -334,7 +334,7 @@ Get your free API key at [법제처 Open API](https://open.law.go.kr/LSO/openApi
 ### Option 3: CLI
 
 ```bash
-npm install -g korean-law-mcp
+npm install --ignore-scripts --omit=optional -g korean-law-mcp
 export LAW_OC=your-api-key
 
 korean-law search_law --query "관세법"
@@ -441,7 +441,7 @@ MCP_HTTP_HOST=0.0.0.0 TRUST_PROXY=1 MCP_AUTH_TOKEN=replace-with-a-secret \
 
 ### Dependency and install boundary
 
-The unused direct `pdfjs-dist` dependency is not shipped. `kordoc` remains because annex parsing is a reachable server feature; its optional OCR/ML/native helpers are not imported by this server. CI and Docker install with `--ignore-scripts`, so optional transitive native postinstall downloaders do not run in those build environments; the pure-JS PDF annex parser is covered by a smoke test. Scanner reports for transitive HTTP-framework packages should be evaluated against the reachable server path rather than treated as proof that the server exposes the affected middleware.
+`kordoc` remains because annex parsing is a reachable server feature. Its known-good pure-JS `pdfjs-dist@4.10.38` runtime is pinned as a normal dependency; optional OCR/ML/native helpers are not needed by this server. Plugin, documented, and Docker installs use `--omit=optional --ignore-scripts`. CI and publishing retain optional development-tool bindings with scripts disabled during validation, then prune to the production graph and run the PDF annex smoke test. Scanner reports for transitive HTTP-framework packages should be evaluated against the reachable server path rather than treated as proof that the server exposes the affected middleware.
 
 ## Documentation
 

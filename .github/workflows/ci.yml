@@ -29,7 +29,8 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # Do not execute optional transitive native postinstall downloaders in CI.
+        # Dev tooling has platform-specific optional bindings; install them but
+        # never execute transitive lifecycle scripts.
         run: npm ci --ignore-scripts
 
       - name: Build
@@ -40,3 +41,8 @@ jobs:
 
       - name: Verify packed artifact
         run: npm run verify:package
+
+      - name: Verify production graph without optional dependencies
+        run: |
+          npm prune --omit=dev --omit=optional --ignore-scripts
+          npm run verify:annex-runtime

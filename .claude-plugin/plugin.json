@@ -21,7 +21,7 @@
   "mcpServers": {
     "korean-law": {
       "command": "npx",
-      "args": ["-y", "korean-law-mcp@latest"],
+      "args": ["-y", "--ignore-scripts", "--omit=optional", "korean-law-mcp@latest"],
       "env": {
         "LAW_OC": "${user_config.api_key}"
       }

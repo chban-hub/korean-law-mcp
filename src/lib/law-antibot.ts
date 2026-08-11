@@ -67,25 +67,43 @@ export async function followLawAntibot(
   timeout: number,
   maxHops = 3
 ): Promise<Response | null> {
+  const root = response
   let current = response
   let hopped = false
 
+  const finishWith = async (replacement: Response): Promise<Response> => {
+    if (replacement !== root) await root.body?.cancel().catch(() => {})
+    return replacement
+  }
+
   for (let hop = 0; hop < maxHops; hop++) {
     let text: string
+    const inspection = current.clone()
     try {
-      text = await readResponseText(current.clone())
+      text = await readResponseText(inspection)
     } catch (error) {
-      if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted) throw error
-      return hopped ? current : null
+      if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted) {
+        // `clone()` tees the body; cancelling one branch can wait for the
+        // other. Release both concurrently on terminal request errors.
+        await Promise.allSettled([
+          inspection.body?.cancel(),
+          current.body?.cancel(),
+        ])
+        throw error
+      }
+      // Keep `current` readable for the caller. Cancellation of the discarded
+      // inspection branch is initiated but must not block on the live tee.
+      void inspection.body?.cancel().catch(() => {})
+      return hopped ? await finishWith(current) : null
     }
 
     // 안티봇 페이지가 아니면 종료 (첫 홉이면 변경 없음 = null)
     if (!text.includes("location.assign")) {
-      return hopped ? current : null
+      return hopped ? await finishWith(current) : null
     }
 
     const path = parseAntibotUrl(text)
-    if (!path) return hopped ? current : null
+    if (!path) return hopped ? await finishWith(current) : null
 
     // path는 보통 절대경로(/DRF/...). 원본 URL의 origin에 붙인다.
     // path가 절대 URL이면 base가 무시되므로, 홉 대상이 원본과 같은 호스트인지
@@ -94,23 +112,44 @@ export async function followLawAntibot(
     try {
       const parsed = new URL(path, originalUrl)
       if (parsed.hostname !== new URL(originalUrl).hostname) {
-        return hopped ? current : null
+        return hopped ? await finishWith(current) : null
       }
       nextUrl = parsed.toString()
     } catch {
-      return hopped ? current : null
+      return hopped ? await finishWith(current) : null
     }
 
-    const next = await fetchOnce(nextUrl, headers, timeout)
+    let next: Response
+    try {
+      next = await fetchOnce(nextUrl, headers, timeout)
+    } catch (error) {
+      // An intermediate token response is no longer useful after its next
+      // hop fails. Keep only `root` intact for fetchWithRetry's fallback.
+      if (current !== root) await current.body?.cancel().catch(() => {})
+      throw error
+    }
     hopped = true
 
     // 토큰 URL이 404면 원본을 한 번 더 시도 (홉이 세션을 세팅했을 수 있음)
     if (next.status === 404) {
-      return await fetchOnce(originalUrl, headers, timeout)
+      try {
+        const fallback = await fetchOnce(originalUrl, headers, timeout)
+        await next.body?.cancel().catch(() => {})
+        if (current !== root) await current.body?.cancel().catch(() => {})
+        return await finishWith(fallback)
+      } catch (error) {
+        await next.body?.cancel().catch(() => {})
+        if (current !== root) await current.body?.cancel().catch(() => {})
+        throw error
+      }
     }
 
+    // A successful hop replaces only the previous intermediate. The root is
+    // retained until a final usable response exists, so outer fallback never
+    // receives a cancelled body.
+    if (current !== root) await current.body?.cancel().catch(() => {})
     current = next
   }
 
-  return current
+  return await finishWith(current)
 }

@@ -8,8 +8,8 @@
 
 ### 요구사항
 
-- **Node.js**: 18.0.0 이상
-- **npm**: 9.0.0 이상
+- **Node.js**: 22.12.0 이상
+- **npm**: Node.js 22.12.0에 포함된 버전 이상
 - **TypeScript**: 5.7+ (프로젝트 종속성에 포함)
 
 ### 초기 설정
@@ -17,7 +17,7 @@
 ```bash
 git clone https://github.com/chrisryugj/korean-law-mcp.git
 cd korean-law-mcp
-npm install
+npm ci --ignore-scripts
 npm run build
 LAW_OC=your-api-key node build/index.js
 ```
@@ -181,9 +181,11 @@ Conventional Commits:
 
 ```bash
 npm version patch  # 버전 bump
-npm run build
-npm publish
+git push --follow-tags
+gh release create v$(node -p 'require("./package.json").version') --generate-notes
 ```
+
+GitHub Release가 `.github/workflows/publish.yml`을 실행합니다. npm 패키지 설정에서 이 저장소와 `publish.yml`을 trusted publisher로 먼저 등록해야 하며, workflow는 OIDC로 게시하고 provenance attestation을 자동 생성합니다. 로컬 `npm publish`와 장기 npm 토큰은 사용하지 않습니다.
 
 ### Fly.io
 

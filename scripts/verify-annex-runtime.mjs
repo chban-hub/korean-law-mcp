@@ -1,8 +1,6 @@
-import { describe, expect, it } from "vitest"
-import { parseAnnexFile } from "./annex-file-parser.js"
+import { parseAnnexFile } from "../build/lib/annex-file-parser.js"
 
-/** Construct a tiny valid text PDF without adding a PDF-generation dependency. */
-function minimalPdf(text: string): ArrayBuffer {
+function minimalPdf(text) {
   const stream = `BT\n/F1 12 Tf\n72 720 Td\n(${text}) Tj\nET\n`
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
@@ -24,14 +22,12 @@ function minimalPdf(text: string): ArrayBuffer {
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
 
   const bytes = new TextEncoder().encode(pdf)
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
 }
 
-describe("annex file parser", () => {
-  it("parses a text PDF when the optional native dependency graph is omitted", async () => {
-    const result = await parseAnnexFile(minimalPdf("Annex parser smoke test"))
-    expect(result.fileType).toBe("pdf")
-    expect(result.success).toBe(true)
-    expect(result.markdown).toContain("Annex parser smoke test")
-  })
-})
+const result = await parseAnnexFile(minimalPdf("Annex runtime smoke test"))
+if (!result.success || result.fileType !== "pdf" || !result.markdown?.includes("Annex runtime smoke test")) {
+  throw new Error(`Annex runtime smoke test failed: ${JSON.stringify(result)}`)
+}
+
+console.log("annex runtime verified without optional dependencies")

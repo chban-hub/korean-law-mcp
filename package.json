@@ -38,6 +38,7 @@
     "typecheck": "tsc --noEmit",
     "dead-code": "knip",
     "gc": "npm run typecheck && npm run dead-code && npm test && npm run build",
+    "verify:annex-runtime": "node ./scripts/verify-annex-runtime.mjs",
     "verify:package": "node ./scripts/verify-package.mjs",
     "prepack": "npm run build && npm run verify:package",
     "prepublishOnly": "npm run build && npm run verify:package",
@@ -64,6 +65,7 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "kordoc": "^4.7.2",
+    "pdfjs-dist": "4.10.38",
     "zod": "^4.0.0"
   },
   "devDependencies": {

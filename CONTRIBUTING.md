@@ -16,7 +16,7 @@ npm run build
 npm run verify:package
 ```
 
-`--ignore-scripts` is the supported CI-safe install path: it avoids optional transitive native postinstall downloaders while retaining the pure-JS annex/PDF parser used by this server. See the development guide for local API configuration, CLI use, and Docker details.
+Developer tooling needs platform-specific optional bindings, so contributor installs retain optional packages but suppress every lifecycle script with `--ignore-scripts`. Supported plugin, global, Docker, and published-runtime paths additionally use `--omit=optional`: Kordoc's optional OCR/ML/native graph is absent, while the required pure-JS PDF runtime remains a normal pinned dependency. CI prunes to that production graph and runs `npm run verify:annex-runtime`. See the development guide for local API configuration, CLI use, and Docker details.
 
 ## Change scope and pull requests
 

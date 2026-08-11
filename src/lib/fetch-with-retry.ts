@@ -132,6 +132,7 @@ export async function fetchWithRetry(
             // Cancellation and budget exhaustion must stop the request rather
             // than silently falling through to more work.
             if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted || externalSignal?.aborted) {
+              await response.body?.cancel().catch(() => {})
               throw error
             }
             // 우회 실패 시 원본 응답으로 진행
@@ -141,10 +142,16 @@ export async function fetchWithRetry(
         // 이를 막지 않으면 XML 파서가 "missing root element"로 터진다.
         if (response.ok && attempt < retries) {
           let bodyText: string | null = null
-          try { bodyText = await readResponseText(response.clone()) } catch (error) {
+          const inspection = response.clone()
+          try { bodyText = await readResponseText(inspection) } catch (error) {
             if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted || externalSignal?.aborted) {
+              await Promise.allSettled([
+                inspection.body?.cancel(),
+                response.body?.cancel(),
+              ])
               throw error
             }
+            void inspection.body?.cancel().catch(() => {})
             // clone 실패 시 정상 처리
           }
           if (bodyText !== null) {
@@ -153,6 +160,7 @@ export async function fetchWithRetry(
               lastError = new Error(
                 `법제처 API 비정상 응답(${bad === "empty" ? "빈 본문" : "HTML 페이지"}) - ${maskSensitiveUrl(url)}`
               )
+              await response.body?.cancel().catch(() => {})
               await sleep(getRetryDelay(response, retryDelay, attempt), combineAbortSignals(externalSignal, getRequestSignal()))
               continue
             }
@@ -164,7 +172,11 @@ export async function fetchWithRetry(
       // Retryable error - check if we have retries left
       if (attempt < retries) {
         const delay = getRetryDelay(response, retryDelay, attempt)
-        await sleep(delay)
+        // This response will never be returned to a caller. Dispose its body
+        // before backoff so the connection can be reused, and let either MCP
+        // item cancellation or HTTP disconnect interrupt the wait.
+        await response.body?.cancel().catch(() => {})
+        await sleep(delay, combineAbortSignals(externalSignal, getRequestSignal()))
         continue
       }
 

@@ -564,7 +564,7 @@ MCP 도구 설계에서 **도구 수 ≠ 기능 수**입니다.
 /plugin marketplace update korean-law-marketplace
 ```
 
-> 내부적으로 `npx korean-law-mcp@latest`를 실행하므로 npm에 배포된 최신 버전이 항상 사용됩니다.
+> 내부적으로 `npx --ignore-scripts --omit=optional korean-law-mcp@latest`를 실행하므로 npm에 배포된 최신 버전을 사용하되, 선택적 OCR·ML·네이티브 의존성은 설치하지 않고 설치 스크립트도 실행하지 않습니다.
 
 #### Troubleshooting: `Permission denied (publickey)` 에러
 
@@ -688,12 +688,12 @@ Claude Desktop은 원격 HTTP MCP 서버를 직접 연결하지 못하므로 `mc
 
 인터넷 없이 쓰고 싶거나, 원격 서버를 거치지 않으려면 직접 설치할 수 있습니다.
 
-**사전 준비:** [Node.js](https://nodejs.org) 18 이상이 설치되어 있어야 합니다.
+**사전 준비:** [Node.js](https://nodejs.org) 22.12 이상이 설치되어 있어야 합니다.
 
 **자동 설치 (추천):**
 
 ```bash
-npx korean-law-mcp setup
+npx --ignore-scripts --omit=optional korean-law-mcp setup
 ```
 
 설치 마법사가 API 키 입력 → AI 클라이언트 선택 → 설정 파일 자동 등록까지 한 번에 처리합니다.
@@ -702,7 +702,7 @@ Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Gemini CLI, Zed, Antigra
 **수동 설치:**
 
 ```bash
-npm install -g korean-law-mcp
+npm install --ignore-scripts --omit=optional -g korean-law-mcp
 ```
 
 AI 앱 설정 파일에 아래 내용을 추가합니다 (`honggildong`을 본인 인증키로 바꾸세요):
@@ -730,7 +730,7 @@ AI 앱 설정 파일에 아래 내용을 추가합니다 (`honggildong`을 본�
 
 ```bash
 # 설치
-npm install -g korean-law-mcp
+npm install --ignore-scripts --omit=optional -g korean-law-mcp
 
 # 인증키 설정 (honggildong을 본인 키로 바꾸세요)
 export LAW_OC=honggildong        # Mac/Linux
@@ -912,7 +912,7 @@ v4.4.0에서 노출 도구를 통폐합했습니다 (컨텍스트 52% 감축). �
 - `RATE_LIMIT_RPM=0`은 IP별 제한만 끕니다. `MCP_MAX_BATCH_CALLS`(기본 20), 요청 본문, upstream 시도/응답 본문, 도구 응답 제한은 계속 적용됩니다.
 - `MCP_MAX_BODY_BYTES`, `MCP_MAX_UPSTREAM_REQUESTS`(기본 48), `MCP_MAX_UPSTREAM_BODY_BYTES`, `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES`, `MCP_MAX_TOOL_RESPONSE_CHARS`는 시작 시 정수로 검증되며 잘못된 값은 서버 시작을 실패시킵니다. 기존 `MCP_BODY_LIMIT=100kb`도 호환됩니다.
 - `get_batch_articles`는 최대 20개 법령·총 100개 조문으로 제한됩니다. HTTP 연결 종료 또는 MCP 취소는 fetch, 재시도 대기, 응답 본문 읽기까지 전파됩니다. JSON-RPC 배치 항목은 예산만 공유하고 취소 신호는 서로 분리됩니다.
-- publish 전 `build/`를 삭제하고 실제 pack 파일과 exports를 검증합니다. 직접 사용하지 않는 `pdfjs-dist`는 제거했지만, `kordoc`는 별표 PDF/HWP 파싱에 실제 사용되므로 유지합니다. CI/Docker는 `--ignore-scripts`로 optional native postinstall downloader를 실행하지 않으며 PDF 별표 smoke test를 실행합니다. transitive scanner 경고는 실제 도달 가능한 서버 경로와 구분해 평가합니다.
+- publish 전 `build/`를 삭제하고 실제 pack 파일과 exports를 검증합니다. `kordoc`는 별표 PDF/HWP 파싱에 실제 사용되므로 유지하고, 필요한 pure-JS `pdfjs-dist@4.10.38`만 일반 의존성으로 고정합니다. 플러그인·문서·Docker 설치는 `--omit=optional --ignore-scripts`로 OCR/ML/native 선택 의존성을 제외합니다. CI·게시 workflow는 개발 도구의 optional binding을 설치하되 script는 끈 상태로 검증한 뒤, production graph로 prune하고 PDF 별표 smoke test를 실행합니다. transitive scanner 경고는 실제 도달 가능한 서버 경로와 구분해 평가합니다.
 
 ---
 
