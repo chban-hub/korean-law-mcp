@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.9.7] - 2026-08-12
+
+### Fixed
+
+- **공용 키 폴백 쿼터의 429 폭증**: 서버 LAW_OC 폴백 게이트가 고정창(fixed window)이라, 무키 사용자 전원이 공유하는 전역 한도가 창 초반에 소진되면 나머지 사용자가 남은 창 내내 429를 맞았다. 프로덕션 실측에서 무키 요청 3건 중 2건이 즉시 429(`Shared API quota exceeded`). 토큰버킷(연속 리필)으로 교체해 같은 평균 처리율에서 버스트를 흡수한다 (`src/lib/rate-limit.ts` 신설, `http-server.ts` 배선)
+- **429 응답의 클라이언트 처리 불가**: IP 한도 초과 응답이 `{"error":"Too many requests..."}` 평문이라 MCP 클라이언트가 JSON-RPC 에러로 파싱하지 못했다. JSON-RPC 형식으로 통일하고, 폴백·IP 양쪽 429에 `Retry-After` 헤더와 본문 대기 초 안내를 추가
+
+### Added
+
+- **`FALLBACK_DAILY_CAP`**: 서버 키 폴백의 롤링 24시간 총량 캡 (기본 `0` = 비활성). 분당 한도를 완화하면서 하루 총 호출량은 묶어 법제처 서버 키 quota를 보호한다
+- **`FALLBACK_RATE_LIMIT_BURST`**: 폴백 토큰버킷 용량 (기본 = `FALLBACK_RATE_LIMIT_RPM`, 즉 1분치)
+- `rate-limit.test.ts` 11 케이스 (리필·용량 상한·배치 차감·일일 캡 롤링·거부분 미소모)
+
+### Changed
+
+- 공개 서버(`mcp.gomdori.app/law`) 설정: `FALLBACK_RATE_LIMIT_RPM` 30 → 120, `FALLBACK_DAILY_CAP` 43,200 (종전 30rpm의 24시간 이론 총량 — 총량 유지, 버스트 4배 완화). gomdori-mcp `fly.production.toml`
+
 ## [4.9.6] - 2026-08-08
 
 ### Fixed

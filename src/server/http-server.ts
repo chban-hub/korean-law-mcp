@@ -11,6 +11,7 @@ import { timingSafeEqual } from "node:crypto"
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { requestContext } from "../lib/session-state.js"
+import { createTokenBucket, createDailyCap } from "../lib/rate-limit.js"
 import { maskSensitiveUrl } from "../lib/fetch-with-retry.js"
 import { TOOL_COUNTS } from "../tool-registry.js"
 import { VERSION } from "../version.js"
@@ -179,7 +180,13 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
       bucket.count += callCount
 
       if (bucket.count > rateLimitRpm) {
-        res.status(429).json({ error: "Too many requests. Try again later." })
+        const retryAfterSec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))
+        res.setHeader("Retry-After", String(retryAfterSec))
+        res.status(429).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: `Too many requests — retry in ${retryAfterSec}s.` },
+          id: null,
+        })
         return
       }
       next()
@@ -232,19 +239,23 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
 
   // 서버 LAW_OC 폴백 사용량 전역 상한 — 키 없는 분산 요청이 서버 키의 법제처 quota를
   // 소진시키는 것 방지 (IP당 limit만으로는 막을 수 없음). 0이면 폴백 비활성.
+  //
+  // 이 게이트는 자체 키 없는 사용자 '전원'이 공유한다. 고정창이던 시절엔 창 초반
+  // 몇 명이 다 쓰면 나머지가 남은 창 내내 429를 맞았다 — 실측으로 무키 요청의
+  // 2/3가 즉시 429였다(2026-08-12). 토큰버킷으로 바꿔 같은 평균 처리율에서
+  // 버스트를 흡수하고, 총량 보호는 일일 캡으로 따로 건다.
   const fallbackRpm = parseInt(process.env.FALLBACK_RATE_LIMIT_RPM || "120", 10)
-  const fallbackBucket = { count: 0, resetAt: 0 }
+  const fallbackBurst = parseInt(process.env.FALLBACK_RATE_LIMIT_BURST || String(fallbackRpm), 10)
+  const fallbackDailyLimit = parseInt(process.env.FALLBACK_DAILY_CAP || "0", 10)
+  const fallbackMinute = createTokenBucket(fallbackRpm, fallbackBurst)
+  const fallbackDay = createDailyCap(fallbackDailyLimit)
   // n = 이 요청이 소모하는 tools/call 개수 (배치는 배열 길이만큼 서버 키를 쓴다)
-  function fallbackAllowed(n: number): boolean {
-    if (fallbackRpm <= 0) return false
-    const now = Date.now()
-    if (now >= fallbackBucket.resetAt) {
-      fallbackBucket.count = 0
-      fallbackBucket.resetAt = now + 60_000
-    }
-    if (fallbackBucket.count + n > fallbackRpm) return false
-    fallbackBucket.count += n
-    return true
+  function fallbackAllowed(n: number): { ok: boolean; retryAfterSec: number; daily: boolean } {
+    const minute = fallbackMinute.take(n)
+    if (!minute.ok) return { ...minute, daily: false }
+    // 분당 게이트를 통과한 요청만 일일 총량을 소모한다 (거부분 낭비 방지)
+    const day = fallbackDay.take(n)
+    return { ok: day.ok, retryAfterSec: day.retryAfterSec, daily: !day.ok }
   }
 
   // POST /mcp - stateless 요청 처리
@@ -270,13 +281,22 @@ export async function startHTTPServer(createServer: () => Server, port: number) 
     // (핸드셰이크까지 429로 막으면 claude.ai 커넥터가 도구 목록 자체를 못 싣는다)
     const bodyMessages = Array.isArray(req.body) ? req.body : [req.body]
     const fallbackCallCount = bodyMessages.filter((m) => m?.method === "tools/call").length
-    if (!apiKey && fallbackCallCount > 0 && !fallbackAllowed(fallbackCallCount)) {
-      res.status(429).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "Shared API quota exceeded. Provide your own key via 'apiKey' header (free: https://open.law.go.kr)." },
-        id: null,
-      })
-      return
+    if (!apiKey && fallbackCallCount > 0) {
+      const verdict = fallbackAllowed(fallbackCallCount)
+      if (!verdict.ok) {
+        res.setHeader("Retry-After", String(verdict.retryAfterSec))
+        res.status(429).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: verdict.daily
+              ? "Shared API daily cap reached. Provide your own key via 'apiKey' header (free: https://open.law.go.kr)."
+              : `Shared API quota exceeded — retry in ${verdict.retryAfterSec}s, or provide your own key via 'apiKey' header (free: https://open.law.go.kr).`,
+          },
+          id: null,
+        })
+        return
+      }
     }
 
     let server: Server | undefined

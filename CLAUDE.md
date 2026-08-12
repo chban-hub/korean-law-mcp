@@ -22,6 +22,7 @@ src/
 │   ├── query-router.ts   # 자연어 → 도구 라우팅 엔진 (verify/비교/시간필터 패턴 포함)
 │   ├── fetch-with-retry.ts  # 타임아웃/재시도 + maskSensitiveUrl (API키 로그 유출 방지)
 │   ├── session-state.ts  # 요청별 API 키 격리 (AsyncLocalStorage, stateless)
+│   ├── rate-limit.ts     # 토큰버킷 + 롤링 일일 캡 (폴백 쿼터 게이트, now 주입 테스트)
 │   ├── xml-parser.ts     # 공통 XML 파싱
 │   ├── errors.ts         # 에러 표준화
 │   ├── schemas.ts        # 날짜/응답크기 검증 (truncateResponse)
@@ -89,8 +90,10 @@ korean-law get_law_text --mst 160001 --jo "제1조"
 - `ALLOWED_ORIGINS`: Origin 허용 목록(쉼표 구분). `Origin` 헤더가 붙은 요청은 이 목록에 없으면 403 — DNS rebinding 방어. 미설정 + `CORS_ORIGIN` 미설정이면 Origin 있는 요청은 전부 차단(비브라우저 클라이언트는 영향 없음)
 - `MCP_AUTH_TOKEN`: 설정 시 `/mcp`에 `x-mcp-token` 또는 `Authorization: Bearer` 인증 요구. **폐쇄망·사내망 배포 필수** (미설정이면 기존처럼 공개 동작)
 - `ALLOW_QUERY_API_KEY`: `0`이면 `?oc=` 쿼리스트링 API 키를 무시 (프록시 액세스 로그 유출 차단). 기본 `1`
-- `RATE_LIMIT_RPM`: IP당 분당 요청 한도 (기본 `60`)
-- `FALLBACK_RATE_LIMIT_RPM`: 자체 키 없는 요청의 서버 LAW_OC 폴백 전역 상한 (기본 `120`, `0`이면 폴백 비활성)
+- `RATE_LIMIT_RPM`: IP당 분당 요청 한도 (기본 `60`, 고정창). claude.ai 커넥터는 소수 egress IP를 공유하므로 넉넉히 잡을 것
+- `FALLBACK_RATE_LIMIT_RPM`: 자체 키 없는 요청의 서버 LAW_OC 폴백 전역 상한 (기본 `120`, `0`이면 폴백 비활성). **토큰버킷** — 소진 후 연속 리필되며 429에 `Retry-After` 동반
+- `FALLBACK_RATE_LIMIT_BURST`: 폴백 토큰버킷 용량 (기본 = `FALLBACK_RATE_LIMIT_RPM` = 1분치)
+- `FALLBACK_DAILY_CAP`: 폴백의 롤링 24시간 총량 캡 (기본 `0` = 비활성). 분당을 풀되 하루 총량으로 서버 키 quota 보호
 - `MCP_BODY_LIMIT`: POST body 한도 (기본 `100kb`)
 - `MCP_MAX_BATCH_CALLS`: 단일 POST(JSON-RPC 배치)에 허용하는 tools/call 최대 개수 (기본 `20`) — 배치 증폭으로 rate limit·폴백 쿼터 우회 차단
 

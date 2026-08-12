@@ -31,6 +31,17 @@
 
 ---
 
+## v4.9.7 — Fixing the 429 storm for shared-key users (token-bucket fallback quota)
+
+Users hitting the public server (`mcp.gomdori.app/law`) without their own 법제처 key kept getting 429s. The server-key fallback quota is a **global limit shared by every keyless user**, and it used a fixed window — so once a few callers drained it early in the window, everyone else was blocked for the rest of it. Production measurement (2026-08-12): 2 of every 3 keyless requests were rejected immediately.
+
+- **Replaced with a token bucket** (`src/lib/rate-limit.ts`): continuous refill means a caller gets through seconds after depletion instead of waiting out the window. Same average throughput, bursts absorbed — which matches how MCP clients call several tools per conversation turn
+- **`Retry-After` header + wait seconds in the message**: 429 bodies now say `retry in Ns`, and the IP-limit response is JSON-RPC shaped (the previous plain `{error}` body could not be parsed by MCP clients)
+- **New `FALLBACK_DAILY_CAP`**: caps rolling 24h total usage so the per-minute limit can be relaxed without exposing the server key's upstream quota. `0` disables it (default)
+- Public server settings: per-minute `30 → 120`, daily cap `43,200` (the 24h theoretical total of the old 30 rpm) — same total, 4× the burst headroom
+
+Requests that carry their own 법제처 key via the `apikey` header never hit this gate (free signup: https://open.law.go.kr).
+
 ## v4.9.0 — Three notations that made citation verification **silently skip** (current)
 
 When `verify_citations` is wired into a pipeline as a hallucination gate, the dangerous failure is not "verification failed" but **verification never ran**. Without a law name it never reaches article-existence checking, yet the output only shows a warning (⚠) — so a fabricated article in the same text still produces no `✗`. Users read that as "passed". Three notations, all found via real-world reports:
