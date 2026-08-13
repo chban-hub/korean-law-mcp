@@ -10,6 +10,7 @@ import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, noResultHint } from "../lib/errors.js"
 import { expandLawQuery, normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js"
 import { buildUpcomingNotes, fetchUpcomingLaws } from "../lib/upcoming-laws.js"
+import { buildAbolishedLawNotes, findAbolishedLaws } from "../lib/abolished-laws.js"
 import { searchAdminRule } from "./admin-rule.js"
 import { searchOrdinance } from "./ordinance-search.js"
 
@@ -126,6 +127,13 @@ export async function searchLaw(
         const text = `현행 법령 0건 — 단, 공포 후 시행 대기 중인 법령이 있습니다:\n\n` +
           buildUpcomingNotes([], upcomingOnly) +
           `⚠️ 현재 시점에는 아직 효력이 없는 법령입니다. 현행 기준 답변에 인용하지 마세요.\n`
+        return { content: [{ type: "text", text: truncateResponse(text) }] }
+      }
+
+      // 폐지된 법령은 현행 검색에 안 잡힘 → eflaw 연혁에서 폐지 이력 확인 (사법시험법 등)
+      const abolishedLaws = await findAbolishedLaws(apiClient, input.query, input.apiKey)
+      if (abolishedLaws.length > 0) {
+        const text = buildAbolishedLawNotes(input.query, abolishedLaws)
         return { content: [{ type: "text", text: truncateResponse(text) }] }
       }
 

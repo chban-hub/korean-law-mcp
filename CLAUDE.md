@@ -7,7 +7,7 @@
 > - **반영 절차**: 이 레포 커밋·푸시 → `npm publish` → `~/workspace/gomdori-mcp/Dockerfile`의 `korean-law-mcp@X.Y.Z` 핀 갱신 → `cd ~/workspace/gomdori-mcp && fly deploy -c fly.production.toml`
 > - **🚫 이 레포에서 `fly deploy` 직접 실행 절대 금지** — 통합 이미지를 law 단독 이미지로 덮어써 stats·patent·archhub·school까지 전부 죽는다. 자세한 배경: [docs/FLY-COST.md](docs/FLY-COST.md)
 
-Korean Law MCP Server v4.9.1 - 법제처 42개 API → 10개 통합 도구 (내부 98개) + 9개 시나리오 + 자연어 CLI + HTTP stateless + 판례 토큰 74% 감축 + **legal_research (체인 8종 통합, task 파라미터)** + **legal_analysis (인용검증·판례생사·행위시법·영향그래프 통합, mode 파라미터)** + **time_travel (시점 diff)** + **action_plan (이럴 땐 이렇게, 5단계 안내)** + **시행예정 감지 (search_law가 제명변경·미시행 개정 자동 병기)** + **ordinance_radar (조례 정비 레이더 — 근거 상위법 개정 자동 대조, v4.7.0)** + **인용 검증 표기 내성 (낫표·가운뎃점·`같은 법` 조응, v4.9.0)**
+Korean Law MCP Server v4.10.0 - 법제처 42개 API → 10개 통합 도구 (내부 98개) + 9개 시나리오 + 자연어 CLI + HTTP stateless + 판례 토큰 74% 감축 + **legal_research (체인 8종 통합, task 파라미터)** + **legal_analysis (인용검증·판례생사·행위시법·영향그래프 통합, mode 파라미터)** + **time_travel (시점 diff)** + **action_plan (이럴 땐 이렇게, 5단계 안내)** + **시행예정 감지 (search_law가 제명변경·미시행 개정 자동 병기)** + **ordinance_radar (조례 정비 레이더 — 근거 상위법 개정 자동 대조, v4.7.0)** + **인용 검증 표기 내성 (낫표·가운뎃점·`같은 법` 조응, v4.9.0)** + **폐지 감지 (검색 0건 시 폐지 법령·행정규칙 연혁 추적 — 폐지사유·후속 통합 규정 자동 안내, v4.10.0)**
 
 ## Structure
 
@@ -28,6 +28,7 @@ src/
 │   ├── schemas.ts        # 날짜/응답크기 검증 (truncateResponse)
 │   ├── search-normalizer.ts  # 검색어 정규화 (LexDiff, 약칭 52개)
 │   ├── upcoming-laws.ts  # 시행예정 법령 감지 (eflaw 보조검색 — 제명변경·미시행 개정 병기)
+│   ├── abolished-laws.ts # 폐지 감지 (법령=eflaw·행정규칙=nw=2 연혁 — 폐지사유·후속 통합 규정 안내)
 │   ├── law-parser.ts     # JO 코드 변환 (LexDiff)
 │   ├── annex-file-parser.ts  # 별표 파일 파서 (kordoc 통합 파서)
 │   ├── tool-profiles.ts  # 도구 카테고리 + TOOL_ALIASES (한국어 별칭 매칭)

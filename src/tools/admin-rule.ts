@@ -7,6 +7,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, noResultHint } from "../lib/errors.js"
+import { detectAbolishedAdminRule } from "../lib/abolished-laws.js"
 
 // search_admin_rule 스키마
 export const SearchAdminRuleSchema = z.object({
@@ -35,6 +36,11 @@ export async function searchAdminRule(
     const rules = doc.getElementsByTagName("admrul")
 
     if (rules.length === 0) {
+      // 폐지·제명변경된 행정규칙은 현행 검색에 안 잡힘 → 연혁(nw=2) 보조검색으로 안내
+      const abolishedNote = await detectAbolishedAdminRule(apiClient, input.query, input.apiKey)
+      if (abolishedNote) {
+        return { content: [{ type: "text", text: truncateResponse(abolishedNote) }] }
+      }
       return noResultHint(input.query || "", "행정규칙")
     }
 
