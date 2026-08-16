@@ -6,7 +6,7 @@
 
 import { followLawAntibot } from "./law-antibot.js"
 import { ExecutionLimitError } from "./execution-limits.js"
-import { readResponseText } from "./response-body.js"
+import { classifyOkBody, MISS_CONFIRM_DELAY_MS, UpstreamRecordMissingError } from "./upstream-miss.js"
 import { combineAbortSignals, getRequestSignal, requestCancelledError, requestContext, throwIfRequestCancelled } from "./session-state.js"
 
 /**
@@ -24,7 +24,7 @@ export interface FetchWithRetryOptions extends RequestInit {
   timeout?: number
   /** Max retry attempts (default: 3) */
   retries?: number
-  /** Base delay for exponential backoff in ms (default: 1000) */
+  /** Base delay for exponential backoff in ms (default: 300 — DEFAULT_RETRY_DELAY 참조) */
   retryDelay?: number
   /** HTTP status codes to retry on (default: [429, 503, 504]) */
   retryOn?: number[]
@@ -35,23 +35,26 @@ export interface FetchWithRetryOptions extends RequestInit {
    * true여도 빈 본문은 여전히 일시 장애로 재시도한다.
    */
   allowHtmlBody?: boolean
+  /**
+   * DRF `lawService.do` 단건 조회처럼 **미스가 빈 본문/안내 페이지로 오는** 경로에 true.
+   * 이런 곳에서 사다리를 끝까지 태워봐야 같은 답이 돌아온다(실측: prec/JSON 미스는
+   * 0바이트 5/5 상시). 확인 재시도 1회 후에도 같으면 `UpstreamRecordMissingError`로
+   * 표면화한다. 미스가 정상 봉투로 오는 검색(`lawSearch.do`) 계열에는 켜지 말 것 —
+   * 거기서의 빈 본문은 진짜 일시 장애이므로 기존 사다리가 방어 역할을 한다.
+   */
+  singleRecordLookup?: boolean
 }
 
 const DEFAULT_TIMEOUT = 30000
 const DEFAULT_RETRIES = 3
-const DEFAULT_RETRY_DELAY = 1000
-const DEFAULT_RETRY_ON = [429, 503, 504]
-
 /**
- * 법제처 API가 200으로 빈 본문/HTML(점검·과부하 페이지)을 반환하는 간헐 장애 감지.
- * 정상 응답은 XML(`<`) 또는 JSON(`{`/`[`)으로 시작하므로 빈 본문과 HTML 페이지만 걸러낸다.
+ * 지수 백오프 base. 업스트림 왕복은 검색 ~0.45초 / 단건 조회 ~0.9초인데(04_qa_verification.md
+ * §2.1·§3.2), 기존 1,000ms base는 1·2·4초 대기로 왕복의 6~8배를 태웠다. 300ms면 마지막
+ * 시도까지의 벽시계가 ~4.6초로 레포가 기록한 버스트 404의 "수초 내 자연 회복"(api-client.ts)
+ * 구간을 여전히 덮으면서, 대기가 왕복을 압도하지 않는다. 재시도 횟수·retryOn은 그대로다.
  */
-function detectBadBody(text: string): "empty" | "html" | null {
-  const t = text.trim()
-  if (!t) return "empty"
-  if (/^<!doctype html/i.test(t) || /^<html[\s>]/i.test(t)) return "html"
-  return null
-}
+const DEFAULT_RETRY_DELAY = 300
+const DEFAULT_RETRY_ON = [429, 503, 504]
 
 // 법제처 OPEN API가 Node 기본 UA(undici)를 봇으로 분류해 거부하므로
 // 일반 브라우저 UA로 호출. LAW_USER_AGENT 환경변수로 override 가능.
@@ -87,6 +90,7 @@ export async function fetchWithRetry(
     retryDelay = DEFAULT_RETRY_DELAY,
     retryOn = DEFAULT_RETRY_ON,
     allowHtmlBody = false,
+    singleRecordLookup = false,
     signal: callerSignal,
     ...fetchOptions
   } = options
@@ -138,32 +142,27 @@ export async function fetchWithRetry(
             // 우회 실패 시 원본 응답으로 진행
           }
         }
-        // 200인데 빈 본문/HTML(법제처 점검·과부하 페이지)이면 일시 장애로 보고 재시도.
-        // 이를 막지 않으면 XML 파서가 "missing root element"로 터진다.
+        // 200인데 빈 본문/HTML이면 그대로 흘려보내지 않는다 — 파서가 "missing root element"로
+        // 터지기 때문이다. 검색 계열에선 점검·과부하로 보고 재시도하고, 단건 조회에선
+        // 아래 `singleRecordLookup` 분기가 확인 1회 뒤 미스로 확정한다.
         if (response.ok && attempt < retries) {
-          let bodyText: string | null = null
-          const inspection = response.clone()
-          try { bodyText = await readResponseText(inspection) } catch (error) {
-            if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted || externalSignal?.aborted) {
-              await Promise.allSettled([
-                inspection.body?.cancel(),
-                response.body?.cancel(),
-              ])
-              throw error
+          const bad = await classifyOkBody(response, externalSignal)
+          if (bad === "empty" || (bad === "html" && !allowHtmlBody)) {
+            await response.body?.cancel().catch(() => {})
+            // 단건 조회에서 이 본문은 대개 "그 레코드 없음"이다. 본문만으로는 미스와
+            // 일시 장애를 가를 수 없으므로 짧게 한 번 더 확인하고, 같은 답이면 사다리를
+            // 마저 태우지 않고 미스로 표면화한다(빈 결과를 성공으로 반환하지 않는다).
+            if (singleRecordLookup && attempt >= 1) {
+              throw new UpstreamRecordMissingError(maskSensitiveUrl(url), bad)
             }
-            void inspection.body?.cancel().catch(() => {})
-            // clone 실패 시 정상 처리
-          }
-          if (bodyText !== null) {
-            const bad = detectBadBody(bodyText)
-            if (bad === "empty" || (bad === "html" && !allowHtmlBody)) {
-              lastError = new Error(
-                `법제처 API 비정상 응답(${bad === "empty" ? "빈 본문" : "HTML 페이지"}) - ${maskSensitiveUrl(url)}`
-              )
-              await response.body?.cancel().catch(() => {})
-              await sleep(getRetryDelay(response, retryDelay, attempt), combineAbortSignals(externalSignal, getRequestSignal()))
-              continue
-            }
+            lastError = new Error(
+              `법제처 API 비정상 응답(${bad === "empty" ? "빈 본문" : "HTML 페이지"}) - ${maskSensitiveUrl(url)}`
+            )
+            await sleep(
+              singleRecordLookup ? MISS_CONFIRM_DELAY_MS : getRetryDelay(response, retryDelay, attempt),
+              combineAbortSignals(externalSignal, getRequestSignal()),
+            )
+            continue
           }
         }
         return response
@@ -189,6 +188,8 @@ export async function fetchWithRetry(
         throw requestCancelledError(getRequestSignal()?.reason ?? externalSignal?.reason)
       }
       if (error instanceof ExecutionLimitError) throw error
+      // 확인 재시도까지 마친 미스 판정 — 네트워크 오류로 오인해 사다리를 다시 열면 안 된다.
+      if (error instanceof UpstreamRecordMissingError) throw error
 
       // Timeout or network error — URL에서 API 키 제거 후 에러 생성
       if (error instanceof Error) {

@@ -11,6 +11,12 @@ import { readResponseText } from "./response-body.js"
 // lsHistory 페이징 연속 조회에서 특히 빈발). DRF 엔드포인트는 고정이라
 // 영구 404가 사실상 없으므로 404를 재시도 대상에 포함한다.
 const DRF_RETRY = { retryOn: [404, 429, 503, 504] }
+
+// `lawService.do` 단건 조회는 "그 레코드 없음"을 200 + 빈 본문/안내 페이지로 답하는
+// 조합이 있다(prec·thdCmp·lsStmd — upstream-miss.ts 주석의 실측표). 이 경로에서는
+// 재시도 사다리를 완주해도 같은 답이므로 확인 1회로 끊는다. 검색(`lawSearch.do`)은
+// 미스도 정상 봉투로 오므로 이 배선을 하지 않는다 — 거기 빈 본문은 진짜 장애다.
+const DRF_LOOKUP_RETRY = { ...DRF_RETRY, singleRecordLookup: true }
 import { requestContext } from "./session-state.js"
 import { getLawApiBaseUrl } from "./law-url-config.js"
 
@@ -128,7 +134,7 @@ export class LawApiClient {
     if (params.efYd) apiParams.append("efYd", String(params.efYd))
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url, DRF_RETRY)
+    const response = await fetchWithRetry(url, DRF_LOOKUP_RETRY)
     await this.throwIfError(response, "getLawText")
 
     const text = await readResponseText(response)
@@ -162,7 +168,7 @@ export class LawApiClient {
     if (params.ln) apiParams.append("LN", String(params.ln))
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url, DRF_RETRY)
+    const response = await fetchWithRetry(url, DRF_LOOKUP_RETRY)
     await this.throwIfError(response, "compareOldNew")
 
     return await readResponseText(response)
@@ -188,7 +194,7 @@ export class LawApiClient {
     if (params.lawId) apiParams.append("ID", String(params.lawId))
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url, DRF_RETRY)
+    const response = await fetchWithRetry(url, DRF_LOOKUP_RETRY)
     await this.throwIfError(response, "getThreeTier")
 
     return await readResponseText(response)
@@ -232,7 +238,7 @@ export class LawApiClient {
     })
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url, DRF_RETRY)
+    const response = await fetchWithRetry(url, DRF_LOOKUP_RETRY)
     await this.throwIfError(response, "getAdminRule")
 
     const text = await readResponseText(response)
@@ -340,7 +346,7 @@ export class LawApiClient {
     if (jo) apiParams.append("JO", jo)
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url, DRF_RETRY)
+    const response = await fetchWithRetry(url, DRF_LOOKUP_RETRY)
     await this.throwIfError(response, "getOrdinance")
 
     const text = await readResponseText(response)
@@ -407,11 +413,13 @@ export class LawApiClient {
     }
 
     const url = `${LAW_API_BASE}/${params.endpoint}?${apiParams.toString()}`
-    // type=HTML(lsHistory 등)은 HTML 본문이 정상 — 빈본문/HTML 재시도 휴리스틱이
-    // 정상 응답마다 재시도를 소진(요청 4배 증폭 + ~7s 지연)하지 않도록 허용 플래그
+    // 단건 조회면 미스 확인 1회로 끊는다(DRF_LOOKUP_RETRY). 그 위에, type=HTML(lsHistory 등)은
+    // HTML 본문이 정상이므로 빈본문/HTML 재시도 휴리스틱이 정상 응답마다 재시도를
+    // 소진(요청 4배 증폭)하지 않도록 허용 플래그를 겹쳐 붙인다.
+    const base = params.endpoint === "lawService.do" ? DRF_LOOKUP_RETRY : DRF_RETRY
     const response = await fetchWithRetry(
       url,
-      params.type === "HTML" ? { ...DRF_RETRY, allowHtmlBody: true } : DRF_RETRY
+      params.type === "HTML" ? { ...base, allowHtmlBody: true } : base
     )
     await this.throwIfError(response, `fetchApi(${params.target})`)
 

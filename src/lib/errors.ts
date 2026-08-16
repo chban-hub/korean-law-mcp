@@ -4,6 +4,7 @@
 
 import type { ToolResponse } from "./types.js"
 import { maskSensitiveUrl } from "./fetch-with-retry.js"
+import { UpstreamRecordMissingError } from "./upstream-miss.js"
 
 /**
  * 에러 코드
@@ -108,6 +109,16 @@ export function formatToolError(error: unknown, context?: string): ToolResponse 
     code = error.code || ErrorCodes.API_ERROR
     msg = error.message
     suggestions = error.suggestions || []
+  } else if (error instanceof UpstreamRecordMissingError) {
+    // 업스트림이 확인 재시도 후에도 자료를 주지 않았다 — 외부 API 장애가 아니라
+    // "그 레코드 없음"으로 읽히도록 분류해 LLM이 추측으로 메우지 않게 한다.
+    code = ErrorCodes.NOT_FOUND
+    msg = error.message
+    suggestions = [
+      "ID/MST가 검색 결과에서 얻은 값인지 확인하세요 (임의 생성 금지).",
+      "값이 확실하다면 법제처 일시 장애일 수 있으니 잠시 후 재시도하세요.",
+      "⚠️ 자료를 받지 못했습니다. LLM은 내용을 추측하거나 지어내지 마세요.",
+    ]
   } else if (error instanceof Error) {
     // Zod validation 에러 감지
     if (error.name === "ZodError" && Array.isArray((error as any).issues)) {
