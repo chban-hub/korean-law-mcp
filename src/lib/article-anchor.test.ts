@@ -97,9 +97,10 @@ describe("classifyLawName — 법령명 축 (#116)", () => {
     expect(classifyLawName("시행령", "국토의 계획 및 이용에 관한 법률")).toBe("different")
   })
 
-  it("짧고 축약 가능한 미등록 표기는 different가 아니라 unknown (보류)", () => {
-    // 이 워크트리의 약칭 사전에 '도교법'은 없다 — 그래도 제외하면 정탐이 죽는다
-    expect(classifyLawName("도교법", "도로교통법")).toBe("unknown")
+  it("짧고 축약 가능한 표기는 different가 되지 않는다 — 등록되면 확정으로 승격", () => {
+    // 통합 전 '도교법'은 미등록이라 unknown(보류)이었다. #107이 별칭을 등재한 뒤로는
+    // same(확정)으로 승격된다 — 보류→확정 방향만 존재하고 제외로 바뀌는 경로는 없다(#116 시너지 고정).
+    expect(classifyLawName("도교법", "도로교통법")).toBe("same")
     expect(classifyLawName("국토계획법", "국토의 계획 및 이용에 관한 법률")).not.toBe("different")
   })
 
@@ -114,7 +115,6 @@ describe("classifyLawName — 법령명 축 (#116)", () => {
     for (const variant of ["식품표시법", "식표법"]) {
       expect(classifyLawName(variant, target)).toBe("unknown")
     }
-    expect(classifyLawName("도교법", "도로교통법")).toBe("unknown")
   })
 
   // 반대 증명 ①: 보류가 "아무 판단도 안 함"이 아니다 — 사전에 있으면 해소해 확정한다.
@@ -155,8 +155,13 @@ describe("classifyArticleRefs — 법령명 축 결합 (#116)", () => {
   })
 
   it("미등록 약칭 표기는 보류 — false drop을 만들지 않는다", () => {
+    const aFood = parseArticleAnchor("제4조", "식품 등의 표시·광고에 관한 법률")!
+    expect(classifyArticleRefs("식표법 제4조 위반", aFood)).toBe("hold")
+  })
+
+  it("등록 약칭은 보류 없이 확정 매칭한다 (#107 등재 후 승격)", () => {
     const a44 = parseArticleAnchor("제44조", "도로교통법")!
-    expect(classifyArticleRefs("도교법 제44조 위반", a44)).toBe("hold")
+    expect(classifyArticleRefs("도교법 제44조 위반", a44)).toBe("match")
   })
 
   it("법령명을 주지 않으면 종전대로 조번호만 본다 (법령 축 미적용)", () => {
