@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { annexQueryKeywords, filterByAnnexQuery, parseLawNameAndHint, type AnnexItem } from "./annex-select.js"
+import { annexQueryKeywords, filterByAnnexQuery, type AnnexItem } from "./annex-select.js"
+import { parseLawNameAndHint } from "../lib/annex-notation.js"
 
 // 도로교통법 시행규칙 별표 목록 실측 발췌 (총 263건 중)
 const LIST: AnnexItem[] = [

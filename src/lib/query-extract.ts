@@ -5,6 +5,8 @@
  * 어떤 도구로 갈지(라우팅)는 route-patterns.ts, 시나리오 판정은 scenario-rules.ts.
  */
 
+import { parseLawNameAndHint } from "./annex-notation.js"
+
 /**
  * 조문 표기 정규식.
  * `제`는 선택 — 실무에서 "44조", "3조의3" 표기가 통용되는데 이를 놓치면
@@ -36,10 +38,33 @@ export function extractArticleNumber(query: string): string | undefined {
   return extractArticleNumbers(query)[0]
 }
 
-/** "별표28", "별표 1의2" → "28" / "1의2" (없으면 undefined) */
-export function extractAnnexNo(query: string): string | undefined {
-  const m = query.match(/별표\s*(\d+(?:\s*의\s*\d+)?)/)
-  return m ? m[1].replace(/\s+/g, "") : undefined
+/** 법령명 꼬리로 인정하는 규범 종류 — 여기까지가 법령명, 뒤에 남은 낱말은 별표명 키워드다 */
+const LAW_NAME_TAIL = /(?:법|법률|령|규칙|규정|조례)$/
+
+/**
+ * 별표 질의 → get_annexes 파라미터.
+ *
+ * 별표 표기 문법은 annex-notation 단일 원본이 읽는다 — 여기에 다시 적으면
+ * "별표 제28호"의 `제28호`가 라우팅에만 안 걸려 법령명에 섞인 채 업스트림으로 나간다.
+ * 번호가 없으면 법령명 뒤에 남은 낱말을 `query`(별표명 좁히기, #94)로 넘긴다 —
+ * "번호를 모를 때 쓰라"고 만든 파라미터의 유일한 자연어 경로가 여기다.
+ */
+export function extractAnnexParams(
+  query: string
+): { lawName: string, annexNo?: string, query?: string } {
+  const { normalizedLawName, annexNo } = parseLawNameAndHint(query)
+  // 번호 없는 "별표"·"서식" 낱말과 조문 표기·동사형 수식어는 extractLawName 이 걷어낸다
+  const rest = extractLawName(normalizedLawName)
+  const tokens = rest.split(/\s+/).filter(Boolean)
+  let lastLawToken = -1
+  tokens.forEach((t, i) => { if (LAW_NAME_TAIL.test(t)) lastLawToken = i })
+  if (lastLawToken < 0) return { lawName: rest, annexNo }
+  const keywords = tokens.slice(lastLawToken + 1).join(" ")
+  return {
+    lawName: tokens.slice(0, lastLawToken + 1).join(" "),
+    annexNo,
+    query: keywords || undefined,
+  }
 }
 
 /**

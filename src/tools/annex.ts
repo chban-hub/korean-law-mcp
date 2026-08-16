@@ -11,9 +11,10 @@ import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
 import { fetchLawAnnexUnits, findMissingUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
+import { parseLawNameAndHint } from "../lib/annex-notation.js"
 import {
   buildSelectorCandidates, extractBundledSection, extractParentLawName, extractSelectorNumbers,
-  filterByAnnexQuery, filterByRelatedLawName, findMatchingAnnex, isBundledAnnex, parseLawNameAndHint,
+  filterByAnnexQuery, filterByRelatedLawName, findMatchingAnnex, isBundledAnnex,
   type AnnexItem,
 } from "./annex-select.js"
 

@@ -1,8 +1,8 @@
 /**
  * 별표/서식 선택 — 사용자가 준 힌트(번호·제목 키워드)로 목록에서 항목을 고른다.
  *
- * 법제처 별표번호는 6자리 코드(AAAABB)지만 모델은 "별표4", "제4호", "4"처럼
- * 제각각 부르고, 같은 번호에 별표와 서식이 공존하기도 한다. 그 간극을 여기서 흡수한다.
+ * 같은 번호에 별표와 서식이 공존하기도 해서 번호만으로는 고를 수 없다 — 그 판단이 여기다.
+ * 표기 문법("별표4" · "별표 제4호" · "별표 1의2")은 lib/annex-notation 이 단일 원본이다.
  */
 
 /** 법제처 별표/서식 API 응답 개별 항목 */
@@ -31,38 +31,6 @@ export interface AnnexItem {
 export function extractParentLawName(lawName: string): string | null {
   const cleaned = lawName.replace(/\s*(시행규칙|시행령)$/, '')
   return cleaned !== lawName ? cleaned : null
-}
-
-export function parseLawNameAndHint(lawName: string): { normalizedLawName: string, annexNo?: string } {
-  const trimmedLawName = lawName.trim()
-  // "별표1", "별표 제1호", "별표 1의2"(= 별표 제1호의2) 모두 매칭. 의-번호는 별도 캡처해 법령명에 남지 않게 한다.
-  const annexHintMatch = trimmedLawName.match(/\[?\s*(별표|서식)\s*(?:제)?\s*(\d{1,6})\s*(?:호)?\s*(?:의\s*(\d{1,2}))?\s*\]?/)
-
-  if (!annexHintMatch) {
-    return { normalizedLawName: trimmedLawName }
-  }
-
-  const mainNo = Number.parseInt(annexHintMatch[2], 10)
-  const subNo = annexHintMatch[3] ? Number.parseInt(annexHintMatch[3], 10) : null
-  const normalizedLawName = trimmedLawName
-    .replace(annexHintMatch[0], " ")
-    .replace(/\s+/g, " ")
-    .trim()
-
-  if (Number.isNaN(mainNo)) {
-    return { normalizedLawName: normalizedLawName || trimmedLawName }
-  }
-
-  // 의-번호가 있으면 법제처 별표번호 6자리 코드(AAAABB)로 변환 (별표 1의2 → "000102").
-  // 없으면 기존 동작 유지(정수 문자열 → buildSelectorCandidates가 6자리 코드 후보 생성).
-  const annexNo = subNo != null
-    ? String(mainNo).padStart(4, "0") + String(subNo).padStart(2, "0")
-    : String(mainNo)
-
-  return {
-    normalizedLawName: normalizedLawName || trimmedLawName,
-    annexNo
-  }
 }
 
 /**

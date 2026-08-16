@@ -11,7 +11,7 @@
 import {
   extractArticleNumber,
   extractArticleNumbers,
-  extractAnnexNo,
+  extractAnnexParams,
   extractLawName,
   extractTimeTravel,
   hasProcedureIntent,
@@ -19,6 +19,7 @@ import {
   isRegionToken,
 } from "./query-extract.js"
 import { ROUTABLE_SCENARIO_RULES } from "./scenario-rules.js"
+import { CASE_CODE_PATTERN } from "./case-citation.js"
 
 export interface Pattern {
   /** 패턴 이름 */
@@ -40,6 +41,20 @@ export interface Pattern {
    */
   yieldsTo?: string[]
 }
+
+/**
+ * 라우팅이 보는 사건번호 형태. 사건부호 목록은 case-citation 이 **단일 원본**(#125)이며
+ * 여기서 다시 적지 않는다 — 자체 `[가-힣]{1,5}` 와일드카드는 "2023년 5월"의 `년`까지
+ * 부호로 읽어 개정 이력 질의를 판례 생사 확인으로 끌고 갔다. 어순마다 `(?!년|월|일)`
+ * 가드를 덧대는 대신(가드가 한쪽 어순에만 있던 것이 결함의 절반이었다) 실재 부호만 받는다.
+ *
+ * `COURT_CASE_PATTERN` 을 그대로 쓰지 않는 이유: 그쪽은 연도 4자리 전용이라
+ * "96누4671" 같은 2자리 표기(cite-check.ts 가 사용자에게 드는 예시)를 놓친다.
+ */
+const CASE_NO_SRC = `(?<![\\d제])\\d{2,4}\\s*${CASE_CODE_PATTERN}\\s*\\d{1,8}`
+const CASE_NO_RE = new RegExp(CASE_NO_SRC)
+/** cite_check 트리거 어휘 — 두 어순이 같은 목록을 본다 */
+const CITE_CHECK_KEYWORDS = "유효|살아|변경|폐기|뒤집|생사|추적|아직|citator"
 
 // `(?<![가-힣])` 는 낱말 중간에서 시작하는 시도를 O(1) 에 쳐낸다 —
 // 없으면 `[가-힣]+` 가 붙어 있는 한글 덩어리에서 시작 위치마다 끝까지 훑어 제곱이 된다(#121)
@@ -157,14 +172,17 @@ const routePatterns: Pattern[] = [
     ],
     tool: "get_annexes",
     extract: (query) => {
-      const lawName = extractLawName(query)
+      // 별표 번호를 버리면 법령의 별표 목록만 돌아온다 — get_annexes 는 annexNo 를 받는다(#103).
+      // 번호가 없으면 남은 키워드가 query 로 간다 — annex-notation 이 표기를 읽는다.
+      const { lawName, annexNo, query: keywords } = extractAnnexParams(query)
       if (!lawName) {
         // 법령명 없이 "별표"만 → 종합 리서치로 폴백
         return { _fallback: true, query }
       }
-      // 별표 번호를 버리면 법령의 별표 목록만 돌아온다 — get_annexes 는 annexNo 를 받는다(#103)
-      const annexNo = extractAnnexNo(query)
-      return annexNo ? { lawName, annexNo } : { lawName }
+      const params: Record<string, unknown> = { lawName }
+      if (annexNo) params.annexNo = annexNo
+      if (keywords) params.query = keywords
+      return params
     },
     reason: "별표/서식 키워드 → 별표 조회",
     priority: 10,
@@ -525,17 +543,18 @@ const routePatterns: Pattern[] = [
   {
     name: "cite_check",
     patterns: [
-      /\d{2,4}\s*[가-힣]{1,5}\s*\d{1,7}[\s\S]{0,40}?(?:유효|살아|변경|폐기|뒤집|생사|추적|아직|citator)/i,
+      new RegExp(`${CASE_NO_SRC}[\\s\\S]{0,40}?(?:${CITE_CHECK_KEYWORDS})`, "i"),
       // "이 판례 아직 유효해? 2013다61381" — 키워드가 앞에 오는 어순도 같은 질의다(#122)
-      /(?:유효|살아|변경|폐기|뒤집|생사|추적|아직|citator)[\s\S]{0,40}?\d{2,4}\s*(?!년|월|일)[가-힣]{1,5}\s*\d{1,7}/i,
+      new RegExp(`(?:${CITE_CHECK_KEYWORDS})[\\s\\S]{0,40}?${CASE_NO_SRC}`, "i"),
       /판례\s*(?:생사|유효성|변경\s*여부|폐기\s*여부|인용\s*추적)/,
       /(?:변경|폐기)된?\s*판례(?:인지|냐|인가요?|\s*확인)/,
     ],
     tool: "cite_check",
     extract: (query) => {
-      const m = query.match(/(\d{2,4})\s*([가-힣]{1,5})\s*(\d{1,7})/)
+      // 탐지와 같은 원본으로 다시 뽑는다 — 여기가 세 번째 사본이던 자리다
+      const m = query.match(CASE_NO_RE)
       if (!m) return { _fallback: true, query }
-      return { caseNumber: `${m[1]}${m[2]}${m[3]}` }
+      return { caseNumber: m[0].replace(/\s+/g, "") }
     },
     reason: "사건번호 + 유효성 키워드 → cite_check (후속 인용 역추적 + 변경·폐기 감지)",
     priority: 2,
