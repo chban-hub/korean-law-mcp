@@ -26,7 +26,7 @@ export const LegalAnalysisSchema = z.object({
   lawName: z.string().optional()
     .describe("[applicable_law·impact_map 필수] 법령명 (예: '민법', '도로교통법')"),
   jo: z.string().optional()
-    .describe("[impact_map 필수, applicable_law 선택] 조문 번호 (예: '제103조', '제10조의2')"),
+    .describe("[impact_map 필수, applicable_law 선택] 조문 번호 — 자연어 표기('제103조', '제10조의2')와 6자리 JO 코드('010300', '001002') 모두 수용"),
   date: z.string().optional()
     .describe("[applicable_law 필수] 기준일 — 행위·계약·처분 시점 (예: '2023-05-10', '20230510')"),
   maxCitations: z.number().min(1).max(30).optional()
