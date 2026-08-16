@@ -169,13 +169,16 @@ const routePatterns: Pattern[] = [
     extract: (query) => {
       // 별표 번호를 버리면 법령의 별표 목록만 돌아온다 — get_annexes 는 annexNo 를 받는다(#103).
       // 번호가 없으면 남은 키워드가 query 로 간다 — annex-notation 이 표기를 읽는다.
-      const { lawName, annexNo, query: keywords } = extractAnnexParams(query)
+      const { lawName, annexNo, jo, query: keywords } = extractAnnexParams(query)
       if (!lawName) {
         // 법령명 없이 "별표"만 → 종합 리서치로 폴백
         return { _fallback: true, query }
       }
       const params: Record<string, unknown> = { lawName }
       if (annexNo) params.annexNo = annexNo
+      // 조문 동반형("관세법 제38조 별표 2")의 조문값 — get_annexes 가 jo 를 열면(#133)
+      // 그때부터 소비된다. 그 전에는 Zod 가 조용히 버린다
+      if (jo) params.jo = jo
       if (keywords) params.query = keywords
       return params
     },

@@ -9,8 +9,14 @@
  *   STEP 4. 필요 서류 / 양식
  *   STEP 5. 함정 / 주의 (패소·각하 사유)
  */
-import type { ScenarioContext, ScenarioResult, ScenarioSection } from "./types.js"
+import type { ScenarioContext, ScenarioResult, ScenarioSection, ScenarioResource } from "./types.js"
 import { callTool } from "./types.js"
+
+/**
+ * 이 시나리오가 응답에 싣는 자원 — 별표/서식을 싣는다.
+ * 체인이 기반 법령을 잡았을 때는 ctx.law 를 그대로 쓰므로 체인이 받을 별표와 같은 것이다.
+ */
+export const PROVIDES: ScenarioResource[] = ["annex"]
 import { getAnnexes } from "../annex.js"
 import { searchAdminRule } from "../admin-rule.js"
 import { searchPrecedents } from "../precedents.js"

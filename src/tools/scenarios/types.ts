@@ -6,6 +6,13 @@ import type { LawApiClient } from "../../lib/api-client.js"
 import type { LooseToolResponse } from "../../lib/types.js"
 import type { ScenarioName } from "../../lib/scenario-rules.js"
 
+/**
+ * 시나리오가 응답에 이미 싣는 자원.
+ * 체인은 이 선언을 읽고 같은 것을 중복 조회하지 않는다 — 체인 쪽에 시나리오 이름을
+ * 하드코딩하면 별표를 싣는 새 시나리오가 생길 때마다 중복이 되살아난다(#131).
+ */
+export type ScenarioResource = "annex"
+
 /** 시나리오 실행 결과: 추가 섹션 + 후속 액션 제안 */
 export interface ScenarioResult {
   /** 추가로 표시할 섹션 배열 (▶ title + content) */

@@ -73,7 +73,9 @@ export async function executeNaturalQuery(
   const route = routeQuery(query)
 
   if (verbose) {
-    console.log(fmt.dim(explainRoute(query)))
+    // 이미 라우팅한 결과를 넘긴다 — 설명기가 다시 계산하면 날짜 파싱까지 두 번 돌고
+    // 설명이 실제 실행된 라우팅과 갈릴 수 있다(#132)
+    console.log(fmt.dim(explainRoute(query, route)))
   } else {
     printRouteInfo(route.tool, route.reason)
   }

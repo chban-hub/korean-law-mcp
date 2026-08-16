@@ -121,6 +121,20 @@ describe("#130 조문 동반 별표 질의", () => {
     const p = routeQuery("도로교통법 시행규칙 별표28").params
     expect([p.lawName, p.annexNo]).toEqual(["도로교통법 시행규칙", "28"])
   })
+
+  it("조문값을 jo 로 함께 싣는다 (#133 배선 준비)", () => {
+    expect(routeQuery("관세법 제38조 별표 2").params.jo).toBe("제38조")
+  })
+
+  it("get_annexes 가 jo 를 열면 그 값이 스키마를 통과한다", () => {
+    // #133 이 병합되기 전에는 Zod 가 조용히 버리므로 이 단언은 자동으로 건너뛴다.
+    // 병합되는 순간 스스로 활성화된다 — 수동 토글이 없다.
+    const tool = allTools.find(t => t.name === "get_annexes")
+    const shape = tool?.schema instanceof z.ZodObject ? tool.schema.shape : undefined
+    if (!shape || !("jo" in shape)) return
+    const parsed = tool!.schema.parse(routeQuery("관세법 제38조 별표 2").params)
+    expect((parsed as { jo?: string }).jo).toBe("제38조")
+  })
 })
 
 describe("#123 가드 구조의 안전장치", () => {

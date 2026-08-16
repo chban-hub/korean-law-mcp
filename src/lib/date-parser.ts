@@ -11,9 +11,11 @@ export type { DateRange }
 export interface DateParseResult {
   /** 추출된 날짜 범위 (없으면 undefined) */
   range?: DateRange
-  /** 날짜 표현을 제거한 쿼리 (검색용) */
-  cleanQuery: string
-  /** 실제로 시간 표현으로 인식한 원문 조각 — 다른 문자열에서 같은 것을 지울 때 쓴다 */
+  /**
+   * 실제로 시간 표현으로 인식한 원문 조각.
+   * 제거는 stripMatchedDate 가 이 조각으로 수행한다 — 정제된 문자열을 다시 파싱하면
+   * 원문과 다른 패턴이 걸린다("2024년"으로 잡은 것이 "2024년 전"으로 재매칭).
+   */
   matched?: string
 }
 
@@ -25,8 +27,13 @@ export interface DateParseResult {
 const TRAILING_PARTICLES =
   /^(?:\s*(?:이내|이후|이래|이전|동안|무렵|사이|이랑|랑|에서|부터|까지|하고|간|에|의|와|과)(?=\s|$))+/
 
-/** 매칭된 시간 표현과 그 뒤 조사 잔재를 함께 제거 */
-function removeTimeExpression(query: string, matched: string): string {
+/**
+ * 이미 인식한 시간 표현과 그 뒤 조사 잔재를 문자열에서 걷어낸다.
+ *
+ * 재파싱하지 않는다 — 원문에서 "2024년"을 잡았는데 정제된 검색어를 다시 파싱하면
+ * "2024년 전"(YYYY년 이전)처럼 **다른 패턴**이 걸려 엉뚱한 글자까지 먹는다.
+ */
+export function stripMatchedDate(query: string, matched: string): string {
   const idx = query.indexOf(matched)
   if (idx < 0) return query
   const before = query.slice(0, idx)
@@ -36,23 +43,13 @@ function removeTimeExpression(query: string, matched: string): string {
   return `${before} ${after}`.replace(/\s+/g, " ").trim()
 }
 
-/** 쿼리에서 시간 조건을 추출하고, 날짜 표현을 제거한 검색어를 반환. */
+/** 쿼리에서 시간 조건과 그 원문 조각을 추출. 제거는 stripMatchedDate 담당. */
 export function parseDateRange(query: string): DateParseResult {
   for (const p of TIME_PATTERNS) {
     const m = query.match(p.regex)
     if (m) {
-      return { range: p.resolve(m), cleanQuery: removeTimeExpression(query, m[0]), matched: m[0] }
+      return { range: p.resolve(m), matched: m[0] }
     }
   }
-  return { cleanQuery: query }
-}
-
-/**
- * 이미 인식한 시간 표현을 다른 문자열에서 걷어낸다.
- *
- * 재파싱하지 않는다 — 원문에서 "2024년"을 잡았는데 정제된 검색어를 다시 파싱하면
- * "2024년 전"(YYYY년 이전)처럼 **다른 패턴**이 걸려 엉뚱한 글자까지 먹는다.
- */
-export function stripMatchedDate(text: string, matched: string): string {
-  return removeTimeExpression(text, matched)
+  return {}
 }

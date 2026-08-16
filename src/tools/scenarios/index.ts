@@ -2,20 +2,20 @@
  * Scenario 통합 실행기
  * 시나리오 타입에 따라 적절한 모듈을 호출하고 결과를 반환
  */
-export type { ScenarioType, ScenarioResult, ScenarioContext } from "./types.js"
+export type { ScenarioType, ScenarioResult, ScenarioContext, ScenarioResource } from "./types.js"
 export { formatSections, formatSuggestedActions } from "./types.js"
 
-import type { ScenarioType, ScenarioContext, ScenarioResult } from "./types.js"
+import type { ScenarioType, ScenarioContext, ScenarioResult, ScenarioResource } from "./types.js"
 import { detectScenarioName } from "../../lib/scenario-rules.js"
-import { runPenaltyScenario } from "./penalty.js"
-import { runCustomsScenario } from "./customs.js"
+import { runPenaltyScenario, PROVIDES as PENALTY_PROVIDES } from "./penalty.js"
+import { runCustomsScenario, PROVIDES as CUSTOMS_PROVIDES } from "./customs.js"
 import { runManualScenario } from "./manual.js"
 import { runDelegationScenario } from "./delegation.js"
 import { runImpactScenario } from "./impact.js"
 import { runTimelineScenario } from "./timeline.js"
 import { runComplianceScenario } from "./compliance.js"
 import { runTimeTravelScenario } from "./time-travel.js"
-import { runActionPlanScenario } from "./action-plan.js"
+import { runActionPlanScenario, PROVIDES as ACTION_PLAN_PROVIDES } from "./action-plan.js"
 
 const SCENARIO_RUNNERS: Record<ScenarioType, (ctx: ScenarioContext) => Promise<ScenarioResult>> = {
   penalty: runPenaltyScenario,
@@ -27,6 +27,22 @@ const SCENARIO_RUNNERS: Record<ScenarioType, (ctx: ScenarioContext) => Promise<S
   compliance: runComplianceScenario,
   time_travel: runTimeTravelScenario,
   action_plan: runActionPlanScenario,
+}
+
+/**
+ * 시나리오별로 "이미 싣는 자원" 선언을 모은다.
+ * 선언은 각 시나리오 모듈에 있다 — 체인이 시나리오 이름을 하드코딩하면
+ * 같은 자원을 싣는 새 시나리오가 생길 때마다 중복 조회가 되살아난다(#131).
+ */
+const SCENARIO_PROVIDES: Partial<Record<ScenarioType, ScenarioResource[]>> = {
+  penalty: PENALTY_PROVIDES,
+  customs: CUSTOMS_PROVIDES,
+  action_plan: ACTION_PLAN_PROVIDES,
+}
+
+/** 이 시나리오가 응답에 이미 싣는 자원 (없으면 빈 배열) */
+export function scenarioProvides(type: ScenarioType | null | undefined): ScenarioResource[] {
+  return (type && SCENARIO_PROVIDES[type]) || []
 }
 
 /** 시나리오 실행 — 알 수 없는 타입이면 빈 결과 반환 */

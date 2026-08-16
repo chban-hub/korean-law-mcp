@@ -51,18 +51,22 @@ const LAW_NAME_TAIL = /(?:법|법률|령|규칙|규정|조례)$/
  */
 export function extractAnnexParams(
   query: string
-): { lawName: string, annexNo?: string, query?: string } {
+): { lawName: string, annexNo?: string, jo?: string, query?: string } {
   const { normalizedLawName, annexNo } = parseLawNameAndHint(query)
+  // "관세법 제38조 별표 2" 처럼 조문이 함께 오면 어느 조의 별표인지가 정보다 (#130).
+  // get_annexes 가 jo 를 받기 전까지는 Zod 가 조용히 버리므로 전달해도 무해하다
+  const jo = extractArticleNumber(query)
   // 번호 없는 "별표"·"서식" 낱말과 조문 표기·동사형 수식어는 extractLawName 이 걷어낸다
   const rest = extractLawName(normalizedLawName)
   const tokens = rest.split(/\s+/).filter(Boolean)
   let lastLawToken = -1
   tokens.forEach((t, i) => { if (LAW_NAME_TAIL.test(t)) lastLawToken = i })
-  if (lastLawToken < 0) return { lawName: rest, annexNo }
+  if (lastLawToken < 0) return { lawName: rest, annexNo, jo }
   const keywords = tokens.slice(lastLawToken + 1).join(" ")
   return {
     lawName: tokens.slice(0, lastLawToken + 1).join(" "),
     annexNo,
+    jo,
     query: keywords || undefined,
   }
 }
