@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { parseArticleAnchor, classifyArticleRefs } from "./article-anchor.js"
+import { parseArticleAnchor, classifyArticleRefs, classifyLawName } from "./article-anchor.js"
 
 describe("parseArticleAnchor — jo 입력 정규화 (#98)", () => {
   it("자연어 표기를 받는다", () => {
@@ -77,5 +77,90 @@ describe("classifyArticleRefs — 조번호 경계 앵커 (#90)", () => {
     expect(a10_2.code).toBe("001002")
     expect(classifyArticleRefs("상법 제10조-2 관련", a10_2)).toBe("match")
     expect(classifyArticleRefs("상법 제10조의2 관련", a10_2)).toBe("match")
+  })
+})
+
+describe("classifyLawName — 법령명 축 (#116)", () => {
+  it("정규화·약칭으로 같은 법령이면 same", () => {
+    expect(classifyLawName("형법", "형법")).toBe("same")
+    expect(classifyLawName("민법", " 민법 ")).toBe("same")
+  })
+
+  it("대상보다 길거나 같은 이름은 약칭일 수 없으므로 different", () => {
+    expect(classifyLawName("군형법", "형법")).toBe("different")   // #116 판정 기준
+    expect(classifyLawName("상법", "민법")).toBe("different")
+    expect(classifyLawName("민사집행법", "민법")).toBe("different")
+  })
+
+  it("하위법령 여부가 다르면 different — 같은 조번호라도 다른 규범이다", () => {
+    expect(classifyLawName("민법시행령", "민법")).toBe("different")
+    expect(classifyLawName("시행령", "국토의 계획 및 이용에 관한 법률")).toBe("different")
+  })
+
+  it("짧고 축약 가능한 미등록 표기는 different가 아니라 unknown (보류)", () => {
+    // 이 워크트리의 약칭 사전에 '도교법'은 없다 — 그래도 제외하면 정탐이 죽는다
+    expect(classifyLawName("도교법", "도로교통법")).toBe("unknown")
+    expect(classifyLawName("국토계획법", "국토의 계획 및 이용에 관한 법률")).not.toBe("different")
+  })
+
+  it("짧아도 축약으로 볼 수 없으면 different", () => {
+    expect(classifyLawName("민법", "도로교통법")).toBe("different")
+  })
+
+  // 보류 정책 증명: 정규화가 **실패하는** 표기를 일부러 넣어도 different가 되지 않아야 한다.
+  // (different가 되면 impact_map이 정탐을 제외한다 = #116 해결이 아니라 새 결함)
+  it("사전에 없는 약칭은 전부 unknown으로 남는다 — 제외하지 않는다", () => {
+    const target = "식품 등의 표시·광고에 관한 법률"
+    for (const variant of ["식품표시법", "식표법"]) {
+      expect(classifyLawName(variant, target)).toBe("unknown")
+    }
+    expect(classifyLawName("도교법", "도로교통법")).toBe("unknown")
+  })
+
+  // 반대 증명 ①: 보류가 "아무 판단도 안 함"이 아니다 — 사전에 있으면 해소해 확정한다.
+  it("등록된 약칭은 풀어서 확정한다", () => {
+    expect(classifyLawName("정보통신망법", "정보통신망 이용촉진 및 정보보호 등에 관한 법률")).toBe("same")
+    // 등록 약칭이 실제로 다른 법령을 가리키면 확정적으로 다르다
+    expect(classifyLawName("표시광고법", "식품 등의 표시·광고에 관한 법률")).toBe("different")
+  })
+
+  // 반대 증명 ②: 가운뎃점 5종·공백 변형은 같은 법령으로 접힌다.
+  // (normalizeAliasKey는 `·•`만 지운다 — 나머지 3종을 안 접으면 글자 수가 같아
+  //  '확정적으로 다름'이 되어 정탐이 제거된다. #75와 같은 함정.)
+  it("공백·가운뎃점 변형은 보류가 아니라 same으로 확정된다", () => {
+    const target = "식품 등의 표시·광고에 관한 법률"
+    expect(classifyLawName("식품등의표시·광고에관한법률", target)).toBe("same")
+    for (const dot of ["ㆍ", "‧", "•", "・"]) {
+      expect(classifyLawName(`식품 등의 표시${dot}광고에 관한 법률`, target)).toBe("same")
+    }
+  })
+})
+
+describe("classifyArticleRefs — 법령명 축 결합 (#116)", () => {
+  const a1 = parseArticleAnchor("제1조", "형법")!
+
+  it("다른 법령의 같은 조번호는 제외한다 (형법 제1조 → 군형법 제1조)", () => {
+    expect(classifyArticleRefs("군형법 제1조 제3항 제3호 등 위헌소원", a1)).toBe("mismatch")
+  })
+
+  it("같은 법령은 확정 매칭", () => {
+    expect(classifyArticleRefs("형법 제1조 위헌소원", a1)).toBe("match")
+    expect(classifyArticleRefs("「형법」 제1조 위헌소원", a1)).toBe("match")
+    expect(classifyArticleRefs("구 형법 제1조 위헌소원", a1)).toBe("match")
+  })
+
+  it("법령명을 못 읽으면 제외가 아니라 보류(hold) — 유지된다", () => {
+    expect(classifyArticleRefs("제1조 위헌소원", a1)).toBe("hold")
+    expect(classifyArticleRefs("위헌소원 제1조", a1)).toBe("hold")
+  })
+
+  it("미등록 약칭 표기는 보류 — false drop을 만들지 않는다", () => {
+    const a44 = parseArticleAnchor("제44조", "도로교통법")!
+    expect(classifyArticleRefs("도교법 제44조 위반", a44)).toBe("hold")
+  })
+
+  it("법령명을 주지 않으면 종전대로 조번호만 본다 (법령 축 미적용)", () => {
+    const noName = parseArticleAnchor("제1조")!
+    expect(classifyArticleRefs("군형법 제1조 위헌소원", noName)).toBe("match")
   })
 })

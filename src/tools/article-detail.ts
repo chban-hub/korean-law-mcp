@@ -5,7 +5,7 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { buildJO } from "../lib/law-parser.js"
+import { buildJO, formatJO } from "../lib/law-parser.js"
 import { cleanHtml, flattenContent, groupMokByReset } from "../lib/article-parser.js"
 import { formatToolError } from "../lib/errors.js"
 import { toArray } from "../lib/xml-parser.js"
@@ -64,9 +64,9 @@ export async function getArticleDetail(
     const basicInfo = lawData.기본정보 || lawData
     const lawName = basicInfo?.법령명_한글 || basicInfo?.법령명한글 || basicInfo?.법령명 || "알 수 없음"
 
-    // 조회 위치 표시
-    let locationLabel = `제${input.jo.replace(/^제/, "").replace(/조$/, "")}조`
-    if (/^\d{4,6}$/.test(input.jo)) locationLabel = `JO=${input.jo}`
+    // 조회 위치 표시. `제N조의M`에 `조`를 덧붙이면 '제401조의2조'가 된다(#118) —
+    // 조문 번호 표기는 그대로 재인용되므로 정규 표기(formatJO)로 되돌린다.
+    let locationLabel = formatJO(joCode) || input.jo
     if (input.hang) locationLabel += ` 제${input.hang}항`
     if (input.ho) locationLabel += ` 제${input.ho}호`
     if (input.mok) locationLabel += ` ${input.mok}목`

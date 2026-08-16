@@ -14,13 +14,19 @@ export interface BucketStat {
   /** 업스트림 키워드 검색이 보고한 총건수. 유사 조번호·타 법령이 섞인 상한값이다 */
   searchCount: number
   topItems: string[]
-  /** 조문 경계 불일치로 제외한 건수 */
+  /** 조문 경계 불일치·타 법령으로 제외한 건수 */
   excluded: number
   /** 표본이 업스트림 검색 건수를 전부 덮었는지 */
   covered: boolean
+  /** 법령명까지 확정 일치한 건수 */
+  lawConfirmed: number
+  /** 조번호는 맞으나 법령명 판정 불가로 보류한 건수 (제외하지 않고 유지) */
+  lawHeld: number
 }
 
-const EMPTY: BucketStat = { verified: 0, searchCount: 0, topItems: [], excluded: 0, covered: true }
+const EMPTY: BucketStat = {
+  verified: 0, searchCount: 0, topItems: [], excluded: 0, covered: true, lawConfirmed: 0, lawHeld: 0,
+}
 
 // 사건명이 비어 `[111] `만 오는 항목도 항목이다. `\S`를 요구하면 그 항목과 딸린
 // 사건번호 줄이 통째로 사라져 표본 수가 줄고 covered 판정까지 뒤집힌다.
@@ -75,16 +81,20 @@ export function parseBucket(
   const blocks = splitItemBlocks(result.text)
   if (blocks.length === 0) {
     // 알려진 5개 렌더 형식이 아니면 항목을 만들지 않는다 — 검증 못 한 것을 인용하지 않기 위해.
-    return { verified: 0, searchCount, topItems: [], excluded: 0, covered: false }
+    return { ...EMPTY, searchCount, covered: false }
   }
 
-  const kept = blocks.filter(b => classifyArticleRefs(b.join(" "), anchor) !== "mismatch")
+  const judged = blocks.map(b => ({ block: b, verdict: classifyArticleRefs(b.join(" "), anchor) }))
+  const kept = judged.filter(j => j.verdict !== "mismatch")
   return {
     verified: kept.length,
     searchCount,
-    topItems: kept.slice(0, maxItems).map(summarizeItem),
-    excluded: blocks.length - kept.length,
+    topItems: kept.slice(0, maxItems).map(j => summarizeItem(j.block)),
+    excluded: judged.length - kept.length,
     covered: blocks.length >= searchCount,
+    lawConfirmed: judged.filter(j => j.verdict === "match").length,
+    // silent(조문 표기 없음)도 법령명으로 확인된 바 없으므로 보류로 센다.
+    lawHeld: judged.filter(j => j.verdict === "hold" || j.verdict === "silent").length,
   }
 }
 
@@ -98,6 +108,16 @@ export function bucketLine(stat: BucketStat): string {
   const excl = stat.excluded > 0 ? ` (조문 불일치 ${stat.excluded}건 제외)` : ""
   if (stat.covered) return `${stat.verified}건${excl}`
   return `${stat.verified}건 확인${excl} / 검색 ${stat.searchCount}건 — 표본 ${stat.verified + stat.excluded}건만 경계 확인, 나머지는 미확인`
+}
+
+/**
+ * 법령명 축 요약. 판정 불가(미등록 약칭·표기 변형)는 제외하지 않고 보류로 유지하므로,
+ * 남은 항목 전부가 이 법령의 것이라고 읽히지 않게 확정/보류를 나눠 밝힌다 (#116).
+ */
+export function lawMatchNote(stats: BucketStat[]): string {
+  const confirmed = stats.reduce((sum, s) => sum + s.lawConfirmed, 0)
+  const held = stats.reduce((sum, s) => sum + s.lawHeld, 0)
+  return `ℹ️ 법령명 대조: 확정 ${confirmed}건 / 보류 ${held}건 (보류는 약칭·표기 변형으로 판정 불가 — 제외하지 않고 유지하므로 타 법령이 섞였을 수 있음)`
 }
 
 /** 조문 본문에서 인용된 다른 법령 추출 */

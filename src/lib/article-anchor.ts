@@ -9,6 +9,8 @@
  * (예: "손해배상(기)")까지 죽는다. 판정 불가는 'silent'로 남겨 호출자가 살린다.
  */
 import { buildJO, formatJO } from "./law-parser.js"
+import { normalizeAliasKey, normalizeLawSearchText, resolveLawAlias } from "./search-normalizer.js"
+import { INTERPUNCT_CHARS } from "./law-search.js"
 
 export interface ArticleAnchor {
   /** 6자리 JO 코드 (AAAABB) */
@@ -19,9 +21,17 @@ export interface ArticleAnchor {
   articleNo: number
   /** 가지번호 (의X). 없으면 0 */
   branchNo: number
+  /** 대조할 법령명. 없으면 법령 축을 적용하지 않는다(종전 동작) */
+  lawName?: string
 }
 
-export type AnchorVerdict = "match" | "mismatch" | "silent"
+/**
+ * match  = 조번호 일치 + 법령명 확정 일치
+ * hold   = 조번호 일치, 법령명 판정 불가 → **유지**한다
+ * mismatch = 조번호 불일치, 또는 법령이 확정적으로 다름 → 제외
+ * silent = 조문 표기 자체가 없음 → 유지
+ */
+export type AnchorVerdict = "match" | "hold" | "mismatch" | "silent"
 
 /** 한자·이체자 표기를 한글 표기로 접는다 (law-parser의 정규화와 같은 대응) */
 function foldNotation(text: string): string {
@@ -33,7 +43,11 @@ function foldNotation(text: string): string {
 // `\s*`는 전각 공백(U+3000)도 흡수하므로 낫표·공백 변형 표기에 내성이 있다.
 // 가지번호는 `의2`와 `-2`를 모두 받는다 — buildJO가 둘 다 받으므로, 여기서 `-`를 빼면
 // 앵커가 자기 입력 표기("제10조-2")를 스스로 못 알아보고 정당한 항목을 떨어뜨린다.
-const ARTICLE_REF_RE = /제\s*(\d+)\s*조(?:\s*(?:의|-)\s*(\d+))?/g
+// 앞선 법령명 토큰을 함께 잡는다(선택). 닫는 낫표는 넘겨서 「형법」 제1조도 읽는다.
+// 붙여 쓴 한 덩어리만 본다 — "구 형법 제1조"에서는 수식어를 빼고 '형법'만 남는다.
+// 접두는 선택 — '형법'(1자+법)도, '시행령'(접두 없음)도 한 덩어리로 잡아야 한다.
+const ARTICLE_REF_RE =
+  /((?:[가-힣]{1,28})?(?:법률|법|시행령|시행규칙|규칙|규정|조례))?\s*[」』】〕]?\s*제\s*(\d+)\s*조(?:\s*(?:의|-)\s*(\d+))?/g
 // "제103조부터 제105조까지" 같은 범위 표기. 범위 안의 조문은 인용된 것이 맞으므로
 // 양 끝만 보고 불일치로 버리면 정당한 자료가 죽는다.
 // 뒤따르는 "까지"는 선택 — "제103조~제105조"처럼 생략된 표기가 흔하다. 시작 쪽 `제`를
@@ -44,7 +58,7 @@ const ARTICLE_RANGE_RE = /제\s*(\d+)\s*조(?:\s*(?:의|-)\s*\d+)?\s*(?:부터|~
  * jo 입력을 앵커로 정규화. 자연어 표기와 6자리 JO 코드를 모두 받는다
  * (get_law_text와 같은 계약 — #98). 해석 불가면 null.
  */
-export function parseArticleAnchor(raw: string): ArticleAnchor | null {
+export function parseArticleAnchor(raw: string, lawName?: string): ArticleAnchor | null {
   const trimmed = (raw ?? "").trim()
   if (!trimmed) return null
 
@@ -66,7 +80,48 @@ export function parseArticleAnchor(raw: string): ArticleAnchor | null {
   const articleNo = Number.parseInt(code.slice(0, 4), 10)
   const branchNo = Number.parseInt(code.slice(4, 6), 10)
   if (!Number.isFinite(articleNo) || articleNo <= 0 || !Number.isFinite(branchNo)) return null
-  return { code, display: formatJO(code), articleNo, branchNo }
+  return { code, display: formatJO(code), articleNo, branchNo, lawName: lawName?.trim() || undefined }
+}
+
+export type LawNameVerdict = "same" | "different" | "unknown"
+
+// 하위법령 접미. 같은 조번호라도 「민법」 제1조와 「민법 시행령」 제1조는 다른 규범이다.
+const INSTRUMENT_RE = /(시행규칙|시행령|규칙|규정|조례)$/
+
+// normalizeAliasKey는 가운뎃점을 `·•`만 지운다. 나머지 3종(ㆍ‧・)이 남으면 같은 법령이
+// 글자 수까지 같은 채로 달라 보여 **확정적으로 다르다**는 판정이 나온다 = 정탐 제거.
+// 레포가 이미 쓰는 INTERPUNCT_CHARS 전체를 접은 뒤 비교한다(#75와 같은 함정).
+const INTERPUNCT_RE = new RegExp(`[${INTERPUNCT_CHARS}]`, "g")
+
+function lawKey(name: string): string {
+  const resolved = resolveLawAlias(normalizeLawSearchText(name)).canonical
+  return normalizeAliasKey(resolved).replace(INTERPUNCT_RE, "")
+}
+
+/** 축약 가능성: 짧은 이름의 글자들이 순서대로 긴 이름에 나타나면 약칭일 수 있다(도교법 ⊂ 도로교통법) */
+function isContractionOf(short: string, long: string): boolean {
+  let i = 0
+  for (const ch of long) if (ch === short[i]) i++
+  return i === short.length
+}
+
+/**
+ * 법령명 축 판정. LexDiff의 정규화·약칭 사전을 **읽기 전용**으로 사용한다.
+ *
+ * 정책: 확정적으로 다를 때만 different. 미등록 약칭·표기 변형은 unknown으로 남겨
+ * 호출자가 유지하게 한다 — false drop은 #116의 해결이 아니라 새 결함이다.
+ */
+export function classifyLawName(candidate: string, target: string): LawNameVerdict {
+  const c = lawKey(candidate)
+  const t = lawKey(target)
+  if (!c || !t) return "unknown"
+  if (c === t) return "same"
+
+  if ((INSTRUMENT_RE.exec(c)?.[1] ?? "") !== (INSTRUMENT_RE.exec(t)?.[1] ?? "")) return "different"
+  // 대상보다 길거나 같으면 대상의 약칭일 수 없다 — 군형법은 형법의 준말이 아니다.
+  if (c.length >= t.length) return "different"
+  // 짧더라도 글자 순서가 대상에 들어있지 않으면 축약으로 볼 수 없다(민법 ⊄ 도로교통법).
+  return isContractionOf(c, t) ? "unknown" : "different"
 }
 
 /** 텍스트가 앵커 조문을 가리키는지 판정. 조문 표기가 없으면 silent(판정 보류). */
@@ -83,13 +138,22 @@ export function classifyArticleRefs(text: string, anchor: ArticleAnchor): Anchor
   }
 
   let sawRef = false
+  let held = false
   let m: RegExpExecArray | null
   ARTICLE_REF_RE.lastIndex = 0
   while ((m = ARTICLE_REF_RE.exec(folded)) !== null) {
     sawRef = true
-    const articleNo = Number.parseInt(m[1], 10)
-    const branchNo = m[2] ? Number.parseInt(m[2], 10) : 0
-    if (articleNo === anchor.articleNo && branchNo === anchor.branchNo) return "match"
+    const articleNo = Number.parseInt(m[2], 10)
+    const branchNo = m[3] ? Number.parseInt(m[3], 10) : 0
+    if (articleNo !== anchor.articleNo || branchNo !== anchor.branchNo) continue
+    if (!anchor.lawName) return "match"           // 법령 축 미적용 — 종전 동작
+
+    // 조번호는 맞다. 이 참조가 어느 법령의 것인지 본다.
+    const verdict = m[1] ? classifyLawName(m[1], anchor.lawName) : "unknown"
+    if (verdict === "same") return "match"
+    if (verdict === "unknown") held = true
+    // different면 이 참조는 남의 법령 것 — 다음 참조를 계속 본다
   }
+  if (held) return "hold"
   return sawRef ? "mismatch" : "silent"
 }
