@@ -4,8 +4,11 @@
  *
  * 추가 조회: 별표(처분기준표) + 감경/취소 행심 + 벌칙 조항 개정이력
  */
-import type { ScenarioContext, ScenarioResult, ScenarioSection } from "./types.js"
+import type { ScenarioContext, ScenarioResult, ScenarioSection, ScenarioResource } from "./types.js"
 import { callTool } from "./types.js"
+
+/** 이 시나리오가 응답에 싣는 자원 — 별표(행정처분/과태료 기준표)를 ctx.law 기준으로 싣는다 */
+export const PROVIDES: ScenarioResource[] = ["annex"]
 import { getAnnexes } from "../annex.js"
 import { searchAdminAppeals } from "../admin-appeals.js"
 import { getArticleHistory } from "../article-history.js"

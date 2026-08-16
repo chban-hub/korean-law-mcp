@@ -15,7 +15,7 @@ import {
 } from "../lib/law-search.js"
 import { routeQuery } from "../lib/query-router.js"
 import { resolveChainBaseLaw } from "./chain-law-lookup.js"
-import { runScenario, detectScenario, formatSections, formatSuggestedActions } from "./scenarios/index.js"
+import { runScenario, detectScenario, scenarioProvides, formatSections, formatSuggestedActions } from "./scenarios/index.js"
 import type { ScenarioType, ScenarioContext } from "./scenarios/index.js"
 
 // Tool handler imports
@@ -151,15 +151,17 @@ async function callAiLaw(
 /**
  * 체인이 별표를 따로 받아야 하는가 (#131).
  *
- * penalty 시나리오는 같은 법령의 별표(처분기준표)를 이미 싣는다 — 체인이 또 받으면
- * 같은 파일을 두 번 내려받아 파싱하고(실측 3.0초) 같은 표가 두 번 나온다.
+ * 별표를 싣는 시나리오가 붙으면 체인은 받지 않는다 — 또 받으면 같은 파일을 두 번
+ * 내려받아 파싱하고(실측 3.0초) 같은 표가 두 번 나온다.
+ * 어느 시나리오가 무엇을 싣는지는 **시나리오가 선언**한다(scenarios/*.ts 의 PROVIDES).
+ * 여기에 이름을 하드코딩하면 별표를 싣는 새 시나리오가 생길 때마다 중복이 되살아난다.
  */
 export function shouldFetchAnnexSeparately(
   expansions: ExpansionType[],
-  scenario: string | null
+  scenario: ScenarioType | null
 ): boolean {
   const wanted = expansions.includes("annex_fee") || expansions.includes("annex_table")
-  return wanted && scenario !== "penalty"
+  return wanted && !scenarioProvides(scenario).includes("annex")
 }
 
 function detectExpansions(query: string): ExpansionType[] {
@@ -747,17 +749,20 @@ export async function chainFullResearch(
     if (precedentBundle.detailResult) parts.push(secOrSkip("관련 판례 상세", precedentBundle.detailResult))
     if (interpDetail) parts.push(secOrSkip("법령 해석례 상세", interpDetail))
 
-    // 키워드 확장
+    // Scenario 확장
+    const scenario = (input.scenario || detectScenario(input.query, "chain_full_research")) as ScenarioType | null
+
+    // 키워드 확장 — 시나리오(customs·action_plan)가 같은 법령의 별표를 이미 싣는다면 생략(#131).
+    // 이 체인은 서식(annex_form)도 같은 조회로 받으므로 함께 가린다
     const exp = detectExpansions(input.query)
+    const providesAnnex = scenarioProvides(scenario).includes("annex")
     if (lawsResult.length > 0) {
-      if (exp.includes("annex_fee") || exp.includes("annex_table") || exp.includes("annex_form")) {
+      if (shouldFetchAnnexSeparately(exp, scenario) || (exp.includes("annex_form") && !providesAnnex)) {
         const annexes = await callTool(getAnnexes, apiClient, { lawName: lawsResult[0].lawName, apiKey: input.apiKey })
         parts.push(secOrSkip("별표/서식", annexes))
       }
     }
 
-    // Scenario 확장
-    const scenario = (input.scenario || detectScenario(input.query, "chain_full_research")) as ScenarioType | null
     if (scenario) {
       const law = lawsResult.length > 0 ? lawsResult[0] : undefined
       const ctx: ScenarioContext = { apiClient, query: input.query, law, apiKey: input.apiKey }
