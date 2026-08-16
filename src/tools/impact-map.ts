@@ -2,8 +2,8 @@
  * impact_map — 조문 한 줄의 파급효과 그래프 (v4.0 killer feature)
  *
  * lawName + jo(자연어 표기 또는 6자리 JO 코드)를 받아 조문 본문 조회와 5개 역방향 검색
- * (판례·헌재·해석례·행정심판·자치법규)을 병렬로 돌리고, 조문 경계 앵커로 무관 조문 항목을
- * 걸러 낸 뒤 텍스트 트리 + mermaid로 낸다.
+ * (판례·헌재·해석례·행정심판·자치법규)을 병렬로 돌리고, 조문 경계 앵커로 무관 조문을 걸러
+ * 텍스트 트리 + mermaid로 낸다.
  *
  * 차별점: 다른 모든 chain은 query 기반 단방향. 이 도구는 "특정 조문 → 영향받는 모든 곳" 역방향 그래프.
  */
@@ -11,7 +11,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { findLaws, resolvedLawMatches } from "../lib/law-search.js"
 import { parseArticleAnchor } from "../lib/article-anchor.js"
-import { parseBucket, bucketNote, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
+import { parseBucket, bucketLine, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { renderPrecedentSearchResult } from "./precedents.js"
@@ -68,9 +68,7 @@ async function searchPrecedentsWithoutFallback(
   }
 }
 
-function errorResponse(text: string) {
-  return { content: [{ type: "text", text }], isError: true }
-}
+const errorResponse = (text: string) => ({ content: [{ type: "text", text }], isError: true })
 
 export async function impactMap(
   apiClient: LawApiClient,
@@ -105,11 +103,10 @@ export async function impactMap(
       )
     }
 
-    // 검색 쿼리 — 정확 매칭이 필요하니 법령명 + 조문번호 조합
     const searchQuery = `${law.lawName} ${joDisplay}`
 
-    // 2. 병렬 탐색. display는 5개 경로 모두 10으로 맞춘다 — 표본이 검색 건수를 덮어야
-    // 경계 앵커 통과분을 확정 건수로 보고할 수 있다(덮지 못하면 검색 기준으로 남는다).
+    // 2. 병렬 탐색. display는 5개 경로 모두 10 — 표본이 검색 건수를 덮어야 경계 통과분을
+    // 확정 건수로 보고할 수 있다(못 덮으면 검색 건수를 따로 병기한다).
     const [articleR, precR, interpR, appealR, constR, ordinanceR] = await Promise.all([
       safeCall(getArticleDetail, apiClient, { mst: law.mst, jo: joDisplay, apiKey: input.apiKey }),
       safeCall(searchPrecedentsWithoutFallback, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
@@ -151,7 +148,7 @@ export async function impactMap(
 
     parts.push(`▶ 영향 그래프 (이 조문이 인용된 곳)`)
     for (const { label, stat, last } of rows) {
-      parts.push(`${last ? "└─" : "├─"} ${label}: ${stat.count}건${bucketNote(stat)}`)
+      parts.push(`${last ? "└─" : "├─"} ${label}: ${bucketLine(stat)}`)
       stat.topItems.forEach(l => parts.push(`${last ? "    " : "│   "}• ${l}`))
     }
 
@@ -159,26 +156,28 @@ export async function impactMap(
     if (excludedTotal > 0) {
       parts.push(`⚠️ 법제처 키워드 검색은 조번호를 부분 일치로 물어옵니다(${joDisplay} 질의에 유사 조번호 혼입). 다른 조문 항목 ${excludedTotal}건을 제외했습니다.`)
     }
+    // 경계 판정은 조번호만 본다 — "형법 제1조" 질의에 「군형법 제1조…」가 남을 수 있다.
+    parts.push(`ℹ️ 경계 확인은 조번호만 대조합니다(법령명 대조 아님). 항목의 법령명이 ${law.lawName}인지 확인하세요.`)
 
     if (citedLaws.length > 0) {
       parts.push(`\n▶ 이 조문이 인용한 다른 법령 (정방향)`)
       citedLaws.forEach(cited => parts.push(`  → ${cited}`))
     }
 
-    // 5. 합산 통계. 표본이 검색 건수를 못 덮은 버킷이 있으면 합계에 경계 확인분과 추정치가 섞인다 — 숨기지 않는다.
-    const total = prec.count + interp.count + appeal.count + cons.count + ordinance.count
-    const estimated = rows.some(r => !r.stat.covered)
-    parts.push(`\n▶ 총 영향 건수: ${total}건${estimated ? " (일부는 경계 미확인 검색 건수)" : ""} (판례 ${prec.count} / 헌재 ${cons.count} / 해석 ${interp.count} / 행심 ${appeal.count} / 조례 ${ordinance.count})`)
+    // 5. 합산 통계 — 경계 통과분만 더한다. 총건수를 섞으면 오탐이 합계에 되살아난다.
+    const total = prec.verified + interp.verified + appeal.verified + cons.verified + ordinance.verified
+    const partial = rows.some(r => !r.stat.covered)
+    parts.push(`\n▶ 총 영향 건수(경계 확인분): ${total}건${partial ? " — 표본을 넘는 검색 결과가 있어 실제는 더 많을 수 있음" : ""} (판례 ${prec.verified} / 헌재 ${cons.verified} / 해석 ${interp.verified} / 행심 ${appeal.verified} / 조례 ${ordinance.verified})`)
     parts.push(`인용 법령: ${citedLaws.length}개\n`)
 
     // 6. mermaid 그래프
     if (input.includeMermaid) {
       const mermaid = buildMermaid(`${law.lawName} ${joDisplay}`, {
-        precedents: prec.count,
-        interpretations: interp.count,
-        appeals: appeal.count,
-        constitutional: cons.count,
-        ordinances: ordinance.count,
+        precedents: prec.verified,
+        interpretations: interp.verified,
+        appeals: appeal.verified,
+        constitutional: cons.verified,
+        ordinances: ordinance.verified,
         citedLaws,
       })
       parts.push(`▶ Mermaid 그래프 (시각화)\n\`\`\`mermaid\n${mermaid}\n\`\`\`\n`)

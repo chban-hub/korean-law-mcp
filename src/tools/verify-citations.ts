@@ -400,7 +400,7 @@ export async function verifyCitations(
         : (warnCount > 0 || cases.unknown > 0) ? "[PARTIAL_VERIFIED] " : "[VERIFIED] "
     let output = `${headerMarker}== 인용 검증 결과 ==\n`
     output += `법령 인용 ${citations.length}건 | ✓ ${okCount} 실존 | ✗ ${failCount} 오류 | ⌛ ${repealedCount} 폐지 | ⚠ ${warnCount} 확인필요\n`
-    output += `판례 인용 ${cases.total}건 | ✓ ${cases.ok} 실존 | ✗ ${cases.fail} 실존불가 | ⚠ ${cases.unknown} 미확인\n\n`
+    output += `판례 인용 ${cases.total + cases.skipped}건 | ✓ ${cases.ok} 실존 | ✗ ${cases.fail} 실존불가 | ⚠ ${cases.unknown} 미확인${cases.skipped > 0 ? ` | ⊘ ${cases.skipped} 미검증` : ""}\n\n`
     if (results.length > 0) output += `▶ 법령 인용\n`
     for (const line of results) {
       output += `${line}\n`

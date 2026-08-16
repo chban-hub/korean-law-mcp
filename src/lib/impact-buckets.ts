@@ -9,8 +9,10 @@
 import { classifyArticleRefs, type ArticleAnchor } from "./article-anchor.js"
 
 export interface BucketStat {
-  /** 표시 기준 건수 — 표본이 검색 결과 전체를 덮으면 경계 통과 건수, 아니면 업스트림 검색 건수 */
-  count: number
+  /** 조문 경계를 통과한 건수 — 이 도구가 사실로 주장할 수 있는 유일한 수 */
+  verified: number
+  /** 업스트림 키워드 검색이 보고한 총건수. 유사 조번호·타 법령이 섞인 상한값이다 */
+  searchCount: number
   topItems: string[]
   /** 조문 경계 불일치로 제외한 건수 */
   excluded: number
@@ -18,9 +20,11 @@ export interface BucketStat {
   covered: boolean
 }
 
-const EMPTY: BucketStat = { count: 0, topItems: [], excluded: 0, covered: true }
+const EMPTY: BucketStat = { verified: 0, searchCount: 0, topItems: [], excluded: 0, covered: true }
 
-const ITEM_HEADER_RE = /^\[\d+\]\s*\S/
+// 사건명이 비어 `[111] `만 오는 항목도 항목이다. `\S`를 요구하면 그 항목과 딸린
+// 사건번호 줄이 통째로 사라져 표본 수가 줄고 covered 판정까지 뒤집힌다.
+const ITEM_HEADER_RE = /^\[\d+\]/
 // 5개 렌더러가 실제로 내보내는 식별 키만 적는다 — precedents/constitutional-decisions/
 // admin-appeals는 `사건번호:`, interpretations는 `해석례번호:`, ordinance-search는 `지자체:`.
 // 없는 키를 넣어두면 죽은 분기가 조용히 쌓인다.
@@ -71,28 +75,29 @@ export function parseBucket(
   const blocks = splitItemBlocks(result.text)
   if (blocks.length === 0) {
     // 알려진 5개 렌더 형식이 아니면 항목을 만들지 않는다 — 검증 못 한 것을 인용하지 않기 위해.
-    return { count: searchCount, topItems: [], excluded: 0, covered: false }
+    return { verified: 0, searchCount, topItems: [], excluded: 0, covered: false }
   }
 
   const kept = blocks.filter(b => classifyArticleRefs(b.join(" "), anchor) !== "mismatch")
-  const excluded = blocks.length - kept.length
-  const covered = blocks.length >= searchCount
-  const count = covered ? kept.length : searchCount
-
   return {
-    count,
+    verified: kept.length,
+    searchCount,
     topItems: kept.slice(0, maxItems).map(summarizeItem),
-    excluded,
-    covered,
+    excluded: blocks.length - kept.length,
+    covered: blocks.length >= searchCount,
   }
 }
 
-/** 건수 뒤에 붙는 경계 앵커 주석. 제외가 없으면 종전 출력과 동일하다. */
-export function bucketNote(stat: BucketStat): string {
-  if (stat.excluded === 0) return ""
-  return stat.covered
-    ? ` (조문 불일치 ${stat.excluded}건 제외)`
-    : ` (검색 기준 — 표시분에서 조문 불일치 ${stat.excluded}건 제외)`
+/**
+ * 버킷 한 줄. **주장하는 수는 항상 경계 통과 건수(verified)** 다.
+ * 표본이 검색 결과를 못 덮으면 업스트림 총건수를 함께 적되, 그것이 검증된 수가 아님을
+ * 문장으로 못박는다 — 예전에는 이 자리에 총건수만 적혀서 유사 조번호가 섞인 수를
+ * "이 조문을 인용한 건수"로 단정했다(#90의 오탐이 수치에 그대로 남아 있었다).
+ */
+export function bucketLine(stat: BucketStat): string {
+  const excl = stat.excluded > 0 ? ` (조문 불일치 ${stat.excluded}건 제외)` : ""
+  if (stat.covered) return `${stat.verified}건${excl}`
+  return `${stat.verified}건 확인${excl} / 검색 ${stat.searchCount}건 — 표본 ${stat.verified + stat.excluded}건만 경계 확인, 나머지는 미확인`
 }
 
 /** 조문 본문에서 인용된 다른 법령 추출 */

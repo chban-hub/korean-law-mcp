@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
-import { extractCaseNumbers, isImpossibleCaseNumber } from "./case-citation.js"
+import { extractCaseNumbers, isImpossibleCaseNumber, verifyCaseCitations } from "./case-citation.js"
+import type { LawApiClient } from "./api-client.js"
 
 describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
   it("법령 인용과 섞인 문장에서 사건번호를 뽑는다", () => {
@@ -14,6 +15,15 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
     expect(extractCaseNumbers("헌재 2024헌바107")).toEqual(["2024헌바107"])
   })
 
+  // 적대적 리뷰 지적: 연도·부호·번호 사이 공백을 허용하면 평범한 산문이 사건번호가 되고,
+  // 그 토큰이 미래연도 판정에 들어가 인용 없는 문서에 환각 배너가 붙는다.
+  it("공백이 낀 산문을 사건번호로 만들지 않는다", () => {
+    expect(extractCaseNumbers("2027 예산 500억원을 편성하기로 하였다.")).toEqual([])
+    expect(extractCaseNumbers("본 계약의 이행기간은 2027 회계 3분기까지로 한다.")).toEqual([])
+    expect(extractCaseNumbers("본 사업은 2030 서울 100주년 기념사업으로 추진한다.")).toEqual([])
+    expect(extractCaseNumbers("위 사업은 2028 착공 2032 준공 예정이다.")).toEqual([])
+  })
+
   // 자기리뷰 지적: 부호를 음절 블랙리스트로 거르면 실존 부호를 조용히 놓친다.
   // 회생(회합·회단)·가정보호(호)는 실존 사건부호이므로 제외 대상이 아니다.
   it("회생·가정보호 등 덜 흔한 사건부호도 놓치지 않는다", () => {
@@ -22,6 +32,10 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
     expect(extractCaseNumbers("2019호1234")).toEqual(["2019호1234"])
     expect(extractCaseNumbers("1988다카12345")).toEqual(["1988다카12345"])
     expect(extractCaseNumbers("2020즈합50")).toEqual(["2020즈합50"])
+    // 3음절 부호·개인회생 — 구 정규식이 뽑던 것을 새 정규식도 뽑아야 한다
+    expect(extractCaseNumbers("2023개회100001")).toEqual(["2023개회100001"])
+    expect(extractCaseNumbers("2022개확1000")).toEqual(["2022개확1000"])
+    expect(extractCaseNumbers("2021재고합10")).toEqual(["2021재고합10"])
   })
 
   it("조문 인용을 사건번호로 오인하지 않는다", () => {
@@ -56,5 +70,53 @@ describe("isImpossibleCaseNumber — 구조적으로 불가능한 사건번호",
     expect(isImpossibleCaseNumber("2013다61381", 2026)).toBe(false)
     expect(isImpossibleCaseNumber("2026다1", 2026)).toBe(false)
     expect(isImpossibleCaseNumber("96누4671", 2026)).toBe(false)
+  })
+
+  // ✗는 "지어낸 인용"이라는 단정이다. 휴리스틱으로 뽑힌 토큰에까지 붙이면
+  // 인용이 없는 문서에 환각 배너가 달린다 — 부호가 실재할 때만 단정한다.
+  it("실재하지 않는 사건부호에는 부존재를 단정하지 않는다", () => {
+    expect(isImpossibleCaseNumber("2027예산500", 2026)).toBe(false)
+    expect(isImpossibleCaseNumber("2030서울100", 2026)).toBe(false)
+    expect(isImpossibleCaseNumber("2027회계3", 2026)).toBe(false)
+  })
+})
+
+describe("verifyCaseCitations — 실존 확인", () => {
+  const xml = (caseNo: string) => `<?xml version="1.0" encoding="UTF-8"?><PrecSearch>` +
+    `<totalCnt>1</totalCnt><page>1</page><prec><판례일련번호>1</판례일련번호>` +
+    `<사건명><![CDATA[손해배상(기)]]></사건명><사건번호>${caseNo}</사건번호>` +
+    `<법원명>대법원</법원명><선고일자>20181030</선고일자></prec></PrecSearch>`
+
+  // nb=는 업스트림 전방 일치다. 부분 포함으로 받아주면 한 자리 틀린 환각 인용이
+  // 실존 판결의 법원·선고일을 달고 ✓로 통과한다.
+  it("전방 일치로 돌아온 이웃 사건번호를 실존 근거로 삼지 않는다", async () => {
+    const client = { fetchApi: async () => xml("2013다61381") } as unknown as LawApiClient
+    const r = await verifyCaseCitations(client, "대법원 2013다6138 판결 참조.")
+    expect(r.ok).toBe(0)
+    expect(r.unknown).toBe(1)
+    expect(r.lines[0]).toContain("미확인")
+  })
+
+  it("정확히 일치할 때만 실존으로 인정한다", async () => {
+    const client = { fetchApi: async () => xml("2013다61381") } as unknown as LawApiClient
+    const r = await verifyCaseCitations(client, "대법원 2013다61381 판결 참조.")
+    expect(r.ok).toBe(1)
+  })
+
+  it("한 필드에 여러 사건번호가 붙어 와도 개별 일치로 본다", async () => {
+    const client = { fetchApi: async () => xml("2017다360, 2017다377") } as unknown as LawApiClient
+    expect((await verifyCaseCitations(client, "2017다377 참조.")).ok).toBe(1)
+    expect((await verifyCaseCitations(client, "2017다37 참조.")).ok).toBe(0)
+  })
+
+  it("상한을 넘긴 인용은 미검증임을 밝힌다", async () => {
+    const client = { fetchApi: async () => xml("없음") } as unknown as LawApiClient
+    const r = await verifyCaseCitations(
+      client,
+      "2013다61381, 2014다1111, 2015다2222, 2016다3333, 2017다4444, 2099다99999 참조."
+    )
+    expect(r.skipped).toBe(1)
+    expect(r.lines.join("\n")).toContain("2099다99999")
+    expect(r.lines.join("\n")).toContain("미검증")
   })
 })

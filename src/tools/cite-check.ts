@@ -16,7 +16,7 @@ import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { parsePrecedentXML, type PrecedentItem } from "../lib/xml-parser.js"
 import { extractCaseNumbers } from "../lib/case-citation.js"
-import { extractHolding, scanTreatment } from "../lib/precedent-body.js"
+import { extractHolding, scanTreatment, fieldText } from "../lib/precedent-body.js"
 import type { ToolResponse } from "../lib/types.js"
 
 export const CiteCheckSchema = z.object({
@@ -122,7 +122,9 @@ export async function citeCheck(
         prioritized.map(i => fetchPrecedentDetail(apiClient, i.판례일련번호, input.apiKey))
       )
       details.forEach((d, idx) => {
-        const body = String(d?.판례내용 || "")
+        // String()으로 뭉개면 `{#text:…}` 본문이 "[object Object]"가 되는데, 이건 비어 있지
+        // 않아 아래 가드를 통과한다 → 변경 문구를 못 찾고 "계속 인용 추정"으로 인증된다.
+        const body = fieldText(d?.판례내용)
         if (!body) return
         const { changeSignals, context } = scanTreatment(body, caseNo)
         scanResults.push({ item: prioritized[idx], signals: changeSignals, context })
@@ -148,7 +150,7 @@ export async function citeCheck(
     }
 
     // 출력 조립
-    const refCases = extractCaseNumbers(String(targetDetail?.참조판례 || "")).filter(c => c !== caseNo)
+    const refCases = extractCaseNumbers(fieldText(targetDetail?.참조판례)).filter(c => c !== caseNo)
     const lines: string[] = []
     lines.push(`═══ 판례 인용 추적 (Citator): ${caseNo} ═══`)
     lines.push(`대상: ${target.법원명 || ""} ${target.선고일자 || ""} 선고 ${target.사건번호 || caseNo} ${isEnBancItem(target) ? "전원합의체 " : ""}판결`)

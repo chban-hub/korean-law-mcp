@@ -23,12 +23,17 @@ function escapeRe(s: string): string {
  * 법제처 JSON 필드는 문자열·배열·`{"#text":…}` 중 무엇으로도 온다(CLAUDE.md 규칙 6).
  * String()으로 뭉개면 판시사항이 "[object Object]"로 출력된다 — 법률 도구에서는 침묵보다 나쁘다.
  */
-function fieldText(value: unknown): string {
+export function fieldText(value: unknown): string {
   if (value == null) return ""
   if (Array.isArray(value)) return value.map(fieldText).filter(Boolean).join(" ")
   if (typeof value === "object") {
     const rec = value as Record<string, unknown>
-    return fieldText(rec["#text"] ?? rec._ ?? "")
+    const wrapped = rec["#text"] ?? rec._
+    if (wrapped != null) return fieldText(wrapped)
+    // 래퍼 키 이름이 다를 수 있다. 값에서 문자열만 모아 잇는다 — 빈 문자열로 뭉개면
+    // 호출부의 `if (!body) return` 가드를 통과하는 "[object Object]"보다는 낫지만,
+    // 내용을 통째로 잃는 것도 조용한 실패다.
+    return Object.values(rec).map(fieldText).filter(Boolean).join(" ")
   }
   return String(value).trim()
 }
