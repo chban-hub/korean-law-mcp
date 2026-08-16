@@ -8,14 +8,14 @@ import { fetchWithRetry } from "../lib/fetch-with-retry.js"
 import { readResponseArrayBuffer } from "../lib/response-body.js"
 import { isDownloadNoticeOnly, parseAnnexFile } from "../lib/annex-file-parser.js"
 import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js"
-import { formatToolError, notFoundResponse } from "../lib/errors.js"
+import { ErrorCodes, formatToolError, notFoundResponse } from "../lib/errors.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
 import { fetchLawAnnexUnits, findMissingUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
 import { parseLawNameAndHint } from "../lib/annex-notation.js"
-import { collectAnnexList, parseAnnexEnvelope, ANNEX_PAGE_SIZE, MAX_ANNEX_PAGES } from "./annex-list.js"
+import { collectAnnexList, collectAdminAnnexList, parseAnnexEnvelope, ANNEX_PAGE_SIZE, MAX_ANNEX_PAGES, type AnnexTruncationReason } from "./annex-list.js"
 import {
   buildSelectorCandidates, extractBundledSection, extractParentLawName, extractSelectorNumbers,
-  filterByAnnexQuery, filterByRelatedLawName, findMatchingAnnex, isBundledAnnex,
+  filterByAnnexQuery, filterByArticle, filterByRelatedLawName, findMatchingAnnex, isBundledAnnex,
   type AnnexItem,
 } from "./annex-select.js"
 
@@ -27,6 +27,7 @@ export const GetAnnexesSchema = z.object({
   bylSeq: z.string().optional().describe("별표번호 (예: '000300'). 지정 시 해당 별표 파일을 다운로드하여 텍스트로 추출"),
   annexNo: z.string().optional().describe("별표 번호 (예: '4', '별표4', '제4호'). bylSeq 대체 입력"),
   query: z.string().optional().describe("별표명으로 좁히기 (예: '운전면허 취소·정지', '과태료'). 번호를 모를 때 사용. 1건으로 좁혀지면 그 별표 본문을 바로 추출"),
+  jo: z.string().optional().describe("위임 조문 (예: '제38조', '38'). 조문 동반 질의('관세법 제38조 별표2')의 조문 맥락 — 별표명의 '(제38조 관련)' 표기와 대조해 좁히고, 응답에 위임 관계를 표기"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 })
 
@@ -45,25 +46,29 @@ export async function getAnnexes(
 
     let annexList: AnnexItem[] = []
     let lawType: string = "law"
-    // 100건 창에 갇힌 목록을 완전한 목록으로 보여주면 "그 별표는 없다"는 오답이 된다 (#148)
+    // 100건 창에 갇힌 목록을 완전한 목록으로 보여주면 "그 별표는 없다"는 오답이 된다 (#148).
+    // 절단 표시는 **실제로 표시되는 목록을 채운 단계**의 것만 채택한다 — 빈손으로 끝난
+    // 단계의 절단을 남겨 두면 다른 모집단의 절단을 이 목록의 것처럼 알린다(N5).
     let listTruncated = false
+    let listReason: AnnexTruncationReason | undefined
+
+    const adopt = (r: { list: AnnexItem[], type: string, truncated: boolean, reason?: AnnexTruncationReason }) => {
+      annexList = r.list
+      lawType = r.type
+      listTruncated = r.truncated
+      listReason = r.reason
+    }
 
     // 1차: 원래 법령명 + knd 필터
-    const result1 = await collectAnnexList(apiClient, {
+    adopt(await collectAnnexList(apiClient, {
       lawName: normalizedLawName, knd: input.knd, apiKey: input.apiKey
-    })
-    annexList = result1.list
-    lawType = result1.type
-    listTruncated = result1.truncated
+    }))
 
     // 2차: 결과 없으면 knd 제거 (법제처가 "별표"를 "서식"으로 분류하는 경우)
     if (annexList.length === 0 && input.knd) {
-      const result2 = await collectAnnexList(apiClient, {
+      adopt(await collectAnnexList(apiClient, {
         lawName: normalizedLawName, apiKey: input.apiKey
-      })
-      annexList = result2.list
-      lawType = result2.type
-      listTruncated = result2.truncated
+      }))
     }
 
     // 3차: 모법명으로 재검색 ("여권법 시행규칙" → "여권법")
@@ -73,14 +78,19 @@ export async function getAnnexes(
         const result3 = await collectAnnexList(apiClient, {
           lawName: parentName, apiKey: input.apiKey
         })
-        listTruncated = result3.truncated
         // 원래 법령명 매칭 필터
         const filtered = result3.list.filter((a: AnnexItem) => {
           const name = String(a.관련법령명 || a.관련자치법규명 || a.관련행정규칙명 || "").replace(/<[^>]+>/g, "")
           return name === normalizedLawName
         })
-        annexList = filtered.length > 0 ? filtered : result3.list
-        lawType = result3.type
+        // 필터가 걸리면 표시 모집단이 모법 전체가 아니다 — 그때의 절단은 이 목록의 사실이 아니다
+        const narrowed = filtered.length > 0
+        adopt({
+          list: narrowed ? filtered : result3.list,
+          type: result3.type,
+          truncated: narrowed ? false : result3.truncated,
+          reason: narrowed ? undefined : result3.reason,
+        })
       }
     }
 
@@ -90,23 +100,10 @@ export async function getAnnexes(
     // 앞 단계가 모두 비면 종류 무관하게 admbyl로 재조회한다.
     if (annexList.length === 0) {
       try {
-        const adminText = await apiClient.fetchApi({
-          endpoint: "lawSearch.do",
-          target: "admbyl",
-          type: "JSON",
-          extraParams: {
-            query: normalizedLawName,
-            search: "2",
-            display: "100",
-          },
-          apiKey: input.apiKey,
+        const result4 = await collectAdminAnnexList(apiClient, {
+          lawName: normalizedLawName, apiKey: input.apiKey
         })
-        const result4 = parseAnnexEnvelope(adminText)
-        if (result4.list.length > 0) {
-          annexList = result4.list
-          lawType = "admin"
-          listTruncated = result4.totalCnt > result4.list.length
-        }
+        if (result4.list.length > 0) adopt({ ...result4, type: "admin" })
       } catch {
         // admin fallback 실패 → 무시하고 진행
       }
@@ -171,12 +168,14 @@ export async function getAnnexes(
     // query 키워드로 목록을 좁힌다 (#94). 번호를 모르는 호출자에게는 이것이
     // 특정 별표(도로교통법 시행규칙 별표28 등)에 도달하는 유일한 경로이므로,
     // 1건으로 확정되면 목록 대신 본문까지 바로 준다.
-    const scoped = filterByAnnexQuery(listForDisplay, input.query)
+    // 조문 슬롯이 오면 별표명의 위임 표기와 대조해 먼저 좁힌다 (#133)
+    const byArticle = filterByArticle(listForDisplay, input.jo)
+    const scoped = filterByAnnexQuery(byArticle.list, input.query)
     const onlySeq = scoped.list.length === 1 ? String(scoped.list[0].별표번호 || "").trim() : ""
     if (scoped.matched && scoped.keywords.length > 0 && onlySeq) {
       return await extractAnnexContent(apiClient, scoped.list, onlySeq, normalizedLawName, lawType, input)
     }
-    return formatAnnexList(scoped.list, lawType, input, normalizedLawName, scoped, mergeIssue, listTruncated)
+    return formatAnnexList(scoped.list, lawType, input, normalizedLawName, scoped, mergeIssue, listTruncated, listReason, byArticle)
   } catch (error) {
     return formatToolError(error, "get_annexes")
   }
@@ -293,7 +292,7 @@ async function extractAnnexContent(
     return {
       content: [{
         type: "text",
-        text: `[본문 미추출] ${normalizedLawName} - ${annexTitle}\n\n` +
+        text: `[${ErrorCodes.ANNEX_BODY_UNAVAILABLE}] ${normalizedLawName} - ${annexTitle}\n\n` +
           `이 별표는 파일에 내용이 인라인돼 있지 않고 다운로드 안내만 들어 있습니다 ` +
           `(파일 형식: ${result.fileType.toUpperCase()}).\n` +
           `⚠️ 별표 본문을 확보하지 못했습니다. 이 응답을 근거로 별표 내용을 서술하지 마세요.\n` +
@@ -327,6 +326,19 @@ async function extractAnnexContent(
 
 // ─── 목록 포맷 (기존 동작) ────────────────────────────
 
+/** 실제로 일어난 중단을 그대로 적는다 — 건수도 사유도 추정하지 않는다 */
+function describeTruncation(collected: number, reason?: AnnexTruncationReason): string {
+  switch (reason) {
+    case "no-progress":
+      return `별표 목록을 ${collected}건까지 받은 뒤 업스트림이 새 항목을 주지 않아 중단했습니다 — 뒤쪽 별표가 빠졌을 수 있습니다.`
+    case "unknown-total":
+      return `업스트림이 전체 건수를 밝히지 않아 첫 ${collected}건(한 페이지)만 받았습니다 — 뒤쪽 별표가 더 있을 수 있습니다.`
+    case "page-cap":
+    default:
+      return `별표가 많아 ${collected}건까지만 수집했습니다 (상한 ${MAX_ANNEX_PAGES * ANNEX_PAGE_SIZE}건) — 뒤쪽 별표는 이 목록에 없습니다.`
+  }
+}
+
 function formatAnnexList(
   annexList: AnnexItem[],
   lawType: string,
@@ -334,7 +346,9 @@ function formatAnnexList(
   normalizedLawName: string,
   scope?: { keywords: string[], matched: boolean },
   mergeIssue?: string,
-  truncated?: boolean
+  truncated?: boolean,
+  truncationReason?: AnnexTruncationReason,
+  articleScope?: { article?: string, matched: boolean }
 ): { content: Array<{ type: string, text: string }> } {
   const kndLabel = input.knd === "1" ? "별표"
                  : input.knd === "2" ? "서식"
@@ -356,9 +370,19 @@ function formatAnnexList(
       `${kndLabel} 목록 (총 ${annexList.length}건):\n\n`
   }
 
-  // 수집 상한도 맨 앞에 — 부분 목록을 전체로 읽으면 "그 별표는 없다"는 오답이 된다 (#148)
+  // 조문 맥락은 목록 바로 위에 — 어떤 조문으로 좁힌 목록인지(또는 못 좁혔는지) 밝힌다 (#133)
+  if (articleScope?.article) {
+    resultText = (articleScope.matched
+      ? `▶ ${articleScope.article} 위임 별표로 좁힌 목록입니다 (별표명의 "(${articleScope.article} 관련)" 표기 기준).\n\n`
+      : `⚠️ ${articleScope.article}을(를) 근거로 밝힌 별표가 없어 전체 목록을 표시합니다 — 아래 별표들이 그 조문의 위임이라는 뜻이 아닙니다.\n\n`
+    ) + resultText
+  }
+
+  // 수집 상한도 맨 앞에 — 부분 목록을 전체로 읽으면 "그 별표는 없다"는 오답이 된다 (#148).
+  // 사유를 구분해 적는다: 셋 중 둘은 500건과 무관한데 한 문구로 뭉치면 틀린 원인을
+  // 알리고 "500건까지는 봤다"는 잘못된 안심을 준다(N3).
   if (truncated) {
-    resultText = `⚠️ 별표가 많아 ${MAX_ANNEX_PAGES * ANNEX_PAGE_SIZE}건까지만 수집했습니다 — 뒤쪽 별표는 이 목록에 없습니다.\n` +
+    resultText = `⚠️ ${describeTruncation(annexList.length, truncationReason)}\n` +
       `   찾는 별표가 없으면 lawName에 별표번호를 함께 넣어(예: "${normalizedLawName} 별표4") 직접 호출하세요.\n\n` +
       resultText
   }

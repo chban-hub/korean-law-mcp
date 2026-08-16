@@ -28,9 +28,24 @@ export interface AnnexEnvelope {
   totalCnt: number
 }
 
+/**
+ * 수집이 전 건에 못 미친 이유. 배너가 실제로 일어난 일을 말하게 하려면 필요하다 —
+ * 사유를 모르면 "500건까지만 수집했습니다"를 100건에서도 출력해 틀린 원인을 알리고
+ * "500건까지는 봤다"는 잘못된 안심을 준다(N3).
+ */
+export type AnnexTruncationReason =
+  /** 페이지 상한(MAX_ANNEX_PAGES)까지 받고도 남았다 */
+  | "page-cap"
+  /** 새 항목이 안 들어와 중단 — 업스트림이 page를 무시하거나 동명 항목이 겹쳤다 */
+  | "no-progress"
+  /** 총계를 모르는 채 정확히 한 페이지만 왔다 — 창 경계에 걸렸을 가능성 */
+  | "unknown-total"
+
 export interface CollectedAnnexes extends AnnexEnvelope {
   /** 상한에 걸려 전 건을 담지 못했는지 — 침묵하면 부분 목록이 전체로 읽힌다 */
   truncated: boolean
+  /** truncated 일 때만 채워진다 */
+  reason?: AnnexTruncationReason
 }
 
 // 법제처 API는 결과 1건일 때 배열 대신 단일 객체를 반환하므로 정규화
@@ -68,9 +83,19 @@ export function parseAnnexEnvelope(jsonText: string): AnnexEnvelope {
   }
 }
 
-/** 같은 번호를 별표와 서식이 나눠 쓰므로 번호만으로는 같은 항목인지 알 수 없다 */
-const identity = (a: AnnexItem): string =>
-  `${a.별표번호 ?? ""}|${a.별표종류 ?? ""}|${a.별표명 ?? ""}`
+/**
+ * 같은 번호를 별표와 서식이 나눠 쓰므로 번호만으로는 같은 항목인지 알 수 없고,
+ * **발행 주체까지 봐야 한다.** 이 목록은 여러 법령·자치법규가 섞인 상태로 온다
+ * (그래서 수집 뒤에 `filterByRelatedLawName`이 따로 돈다). 자치법규의
+ * `[별표1] 과태료 부과기준`은 지자체마다 있는 흔한 이름이라, 주체를 빼면 서로 다른
+ * 지자체의 별표가 서로를 중복으로 지우고 "새 항목 0건" 방어가 정상 수집을 끊는다(N2).
+ */
+const identity = (a: AnnexItem): string => {
+  const issuer = String(
+    a.관련법령일련번호 ?? a.관련자치법규명 ?? a.관련법령명 ?? a.관련행정규칙명 ?? ""
+  ).replace(/<[^>]+>/g, "")
+  return `${a.별표번호 ?? ""}|${a.별표종류 ?? ""}|${a.별표명 ?? ""}|${issuer}`
+}
 
 /**
  * 목록을 전 건 수집한다. totalCnt 가 첫 페이지를 넘으면 상한까지 page 를 이어 받는다.
@@ -83,21 +108,69 @@ export async function collectAnnexList(
   apiClient: LawApiClient,
   params: { lawName: string, knd?: "1" | "2" | "3" | "4" | "5", apiKey?: string }
 ): Promise<CollectedAnnexes> {
-  const first = parseAnnexEnvelope(await apiClient.getAnnexes(params))
+  return collectPages(page => apiClient.getAnnexes(page ? { ...params, page } : params))
+}
+
+/**
+ * 행정규칙 별표(admbyl) 폴백도 같은 수집 정책을 쓴다.
+ *
+ * 이 경로는 `detectLawType`이 'law'로 분류하는 행정규칙(제목에 고시·훈령 낱말이 없는 것)을
+ * 위해 target 을 강제하므로 `getAnnexes`를 탈 수 없다. 그렇다고 페이지 수집을 빼면
+ * 사다리의 마지막 칸만 100건 창에 갇힌다 — 상한·중복 방어·사유 표기가 전부 같아야 한다(#149).
+ */
+export async function collectAdminAnnexList(
+  apiClient: LawApiClient,
+  params: { lawName: string, apiKey?: string }
+): Promise<CollectedAnnexes> {
+  return collectPages(page => apiClient.fetchApi({
+    endpoint: "lawSearch.do",
+    target: "admbyl",
+    type: "JSON",
+    extraParams: {
+      query: params.lawName,
+      search: "2",
+      display: String(ANNEX_PAGE_SIZE),
+      ...(page ? { page: String(page) } : {}),
+    },
+    apiKey: params.apiKey,
+  }))
+}
+
+/** 페이지 수집 정책 단일 원본 — 어느 target 이든 상한·중복 방어·사유가 같아야 한다 */
+async function collectPages(
+  fetchPage: (page?: number) => Promise<string>
+): Promise<CollectedAnnexes> {
+  const first = parseAnnexEnvelope(await fetchPage())
   const list = [...first.list]
   const wanted = Math.min(first.totalCnt, MAX_ANNEX_PAGES * ANNEX_PAGE_SIZE)
   if (list.length === 0 || list.length >= wanted) {
-    return { ...first, list, truncated: first.totalCnt > list.length }
+    // 총계를 모르는데 정확히 창 크기만큼 왔다면 경계에 걸렸다고 봐야 한다. 이 경우에만
+    // 침묵하면 커밋이 내건 원칙("부분 목록이 전체로 읽히면 '그 별표는 없다'는 오답")이
+    // 여기서만 적용되지 않는다(N4).
+    if (first.totalCnt === 0 && list.length === ANNEX_PAGE_SIZE) {
+      return { ...first, list, truncated: true, reason: "unknown-total" }
+    }
+    return first.totalCnt > list.length
+      ? { ...first, list, truncated: true, reason: "page-cap" }
+      : { ...first, list, truncated: false }
   }
 
   const seen = new Set(list.map(identity))
+  let stalled = false
   for (let page = 2; page <= MAX_ANNEX_PAGES && list.length < wanted; page++) {
-    const next = parseAnnexEnvelope(await apiClient.getAnnexes({ ...params, page }))
+    const next = parseAnnexEnvelope(await fetchPage(page))
     const fresh = next.list.filter(a => !seen.has(identity(a)))
-    if (fresh.length === 0) break
+    if (fresh.length === 0) { stalled = true; break }
     fresh.forEach(a => seen.add(identity(a)))
     list.push(...fresh)
   }
 
-  return { list, type: first.type, totalCnt: first.totalCnt, truncated: first.totalCnt > list.length }
+  const truncated = first.totalCnt > list.length
+  return {
+    list,
+    type: first.type,
+    totalCnt: first.totalCnt,
+    truncated,
+    ...(truncated ? { reason: stalled ? "no-progress" as const : "page-cap" as const } : {}),
+  }
 }
