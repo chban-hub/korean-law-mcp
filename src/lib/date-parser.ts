@@ -181,16 +181,37 @@ const patterns: TimePattern[] = [
   },
 ]
 
+/**
+ * 시간 표현 바로 뒤에 남는 조사·부사.
+ * "최근 3년" 만 지우면 "이내 개정된 도로교통법" 이 검색어가 된다 — 실호출 NOT_FOUND 확인(#100).
+ * 뒤에 공백/문장끝이 오는 경우만 소비해 "간호법" 의 "간" 같은 낱글자를 갉아먹지 않는다.
+ */
+const TRAILING_PARTICLES =
+  /^(?:\s*(?:이내|이후|이래|이전|동안|무렵|사이|이랑|랑|에서|부터|까지|하고|간|에|의|와|과)(?=\s|$))+/
+
+/** 매칭된 시간 표현과 그 뒤 조사 잔재를 함께 제거 */
+function removeTimeExpression(query: string, matched: string): string {
+  const idx = query.indexOf(matched)
+  if (idx < 0) return query
+  const before = query.slice(0, idx)
+  const rest = query.slice(idx + matched.length)
+  const particles = rest.match(TRAILING_PARTICLES)
+  const after = particles ? rest.slice(particles[0].length) : rest
+  return `${before} ${after}`.replace(/\s+/g, " ").trim()
+}
+
 /** 쿼리에서 시간 조건을 추출하고, 날짜 표현을 제거한 검색어를 반환. */
 export function parseDateRange(query: string): DateParseResult {
   for (const p of patterns) {
     const m = query.match(p.regex)
     if (m) {
-      const range = p.resolve(m)
-      // 매칭된 부분을 제거하여 깨끗한 검색어 생성
-      const cleanQuery = query.replace(m[0], "").replace(/\s+/g, " ").trim()
-      return { range, cleanQuery }
+      return { range: p.resolve(m), cleanQuery: removeTimeExpression(query, m[0]) }
     }
   }
   return { cleanQuery: query }
+}
+
+/** 시간 표현만 걷어낸 검색어 (날짜 범위는 이미 확보했고 검색어만 정리할 때) */
+export function stripDateExpressions(query: string): string {
+  return parseDateRange(query).cleanQuery
 }

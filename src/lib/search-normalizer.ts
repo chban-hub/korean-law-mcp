@@ -264,6 +264,13 @@ const LAW_ALIAS_ENTRIES: LawAliasEntry[] = [
     aliases: ["대기환경법", "대기법"],
   },
   // ── 교통/운수 ──
+  // 도로교통법은 LexDiff 원본(chrisryugj/lexdiff lib/search-normalizer.ts, 2026-08-17 대조)에
+  // 없는 이 레포 전용 추가다. 음주운전 등 이 서버의 대표 사용례가 이 법이라 약칭 경로가 필요하다(#107).
+  {
+    canonical: "도로교통법",
+    aliases: ["도교법", "도로교통 법"],
+    alternatives: ["도로교통법 시행령", "도로교통법 시행규칙", "교통사고처리 특례법"],
+  },
   {
     canonical: "여객자동차 운수사업법",
     aliases: ["여객운수법", "여객자동차법"],
