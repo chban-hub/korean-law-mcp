@@ -5,7 +5,9 @@ import {
   extractLawName,
   resolveLawAnaphora,
   parseCitations,
+  verifyCitations,
 } from "./verify-citations.js"
+import type { LawApiClient } from "../lib/api-client.js"
 
 describe("extractLawName — 인용 직전 문맥에서 법령명 추출", () => {
   // 회귀: 「법령명」 제N조 는 법제처·판결문·실무 문서의 표준 표기인데, 닫는 낫표가
@@ -177,5 +179,56 @@ describe("'같은 법' 조응 — 문단 경계 이후", () => {
     const cites = parseCitations("「형법」 제250조와 같은 법 제251조를 본다.", 15)
     expect(cites[0].lawName).toBe("형법")
     expect(cites[1].lawName).toBe("형법")
+  })
+})
+
+describe("verifyCitations — 판례 인용 검증 범위 (#93)", () => {
+  const CIVIL_LAW_XML = `<?xml version="1.0" encoding="UTF-8"?><LawSearch><totalCnt>1</totalCnt>` +
+    `<law id="1"><법령일련번호>284415</법령일련번호><법령명한글><![CDATA[민법]]></법령명한글>` +
+    `<법령ID>001706</법령ID><법령구분명>법률</법령구분명></law></LawSearch>`
+
+  // 제999조의9는 없고 제1조~제1118조만 있는 응답
+  const LAW_JSON = JSON.stringify({
+    법령: { 조문: { 조문단위: [
+      { 조문여부: "조문", 조문번호: "1", 조문가지번호: "0", 조문제목: "법원" },
+      { 조문여부: "조문", 조문번호: "1118", 조문가지번호: "0", 조문제목: "준용규정" },
+    ] } },
+  })
+  const EMPTY_PREC = `<?xml version="1.0" encoding="UTF-8"?><PrecSearch><totalCnt>0</totalCnt><page>1</page></PrecSearch>`
+
+  function client(): LawApiClient {
+    return {
+      searchLaw: async () => CIVIL_LAW_XML,
+      getLawText: async () => LAW_JSON,
+      fetchApi: async () => EMPTY_PREC,
+    } as unknown as LawApiClient
+  }
+
+  it("법령 인용과 함께 사건번호 인용도 검증 대상에 넣는다", async () => {
+    const r = await verifyCitations(client(), {
+      text: "민법 제999조의9와 대법원 2099다99999 판결에 따르면 가능하다.",
+      maxCitations: 15,
+    })
+    expect(r.content[0].text).toContain("2099다99999")
+  })
+
+  it("검증 범위(법령 N건 / 판례 M건)를 헤더에 명시한다", async () => {
+    const r = await verifyCitations(client(), {
+      text: "민법 제999조의9와 대법원 2099다99999 판결에 따르면 가능하다.",
+      maxCitations: 15,
+    })
+    const text = r.content[0].text
+    expect(text).toMatch(/판례 인용 1건/)
+    expect(text).toMatch(/법령 인용 1건/)
+  })
+
+  it("업스트림 미검색은 부존재 단정이 아니라 '미확인'으로 표기한다", async () => {
+    const r = await verifyCitations(client(), {
+      text: "대법원 2013다61381 판결 참조.",
+      maxCitations: 15,
+    })
+    const text = r.content[0].text
+    expect(text).toContain("미확인")
+    expect(text).not.toContain("[HALLUCINATION_DETECTED]")
   })
 })

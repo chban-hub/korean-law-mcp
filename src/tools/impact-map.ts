@@ -1,22 +1,17 @@
 /**
  * impact_map — 조문 한 줄의 파급효과 그래프 (v4.0 killer feature)
  *
- * 입력: lawName + jo (조문번호)
- * 처리:
- *   1. 해당 조문 본문 조회 (참조 추출용)
- *   2. 병렬 역방향 탐색:
- *      - 그 조문을 인용한 판례 (대법원)
- *      - 그 조문을 인용한 해석례 (법령해석)
- *      - 그 조문을 인용한 행정심판례
- *      - 그 법령을 인용한 자치법규 (조례·규칙)
- *      - 그 조문이 인용한 다른 법령 (정방향)
- *   3. 텍스트 트리 + mermaid 그래프 출력
+ * lawName + jo(자연어 표기 또는 6자리 JO 코드)를 받아 조문 본문 조회와 5개 역방향 검색
+ * (판례·헌재·해석례·행정심판·자치법규)을 병렬로 돌리고, 조문 경계 앵커로 무관 조문 항목을
+ * 걸러 낸 뒤 텍스트 트리 + mermaid로 낸다.
  *
  * 차별점: 다른 모든 chain은 query 기반 단방향. 이 도구는 "특정 조문 → 영향받는 모든 곳" 역방향 그래프.
  */
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { findLaws, resolvedLawMatches } from "../lib/law-search.js"
+import { parseArticleAnchor } from "../lib/article-anchor.js"
+import { parseBucket, bucketNote, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { renderPrecedentSearchResult } from "./precedents.js"
@@ -29,7 +24,7 @@ import { getArticleDetail } from "./article-detail.js"
 
 export const ImpactMapSchema = z.object({
   lawName: z.string().describe("법령명 (예: '민법', '근로기준법')"),
-  jo: z.string().describe("조문 번호 (예: '제103조', '제750조', '제10조의2')"),
+  jo: z.string().describe("조문 번호 — 자연어 표기('제103조', '제10조의2') 또는 6자리 JO 코드('010300')"),
   includeOrdinances: z.boolean().optional().default(true).describe("자치법규 인용 검색 포함 (기본 true)"),
   includeMermaid: z.boolean().optional().default(true).describe("mermaid 그래프 코드 출력 (기본 true)"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달"),
@@ -73,75 +68,8 @@ async function searchPrecedentsWithoutFallback(
   }
 }
 
-interface BucketStat {
-  count: number      // "총 N건" 추출
-  topItems: string[] // 첫 N개 사건명/제목
-}
-
-/** 도구 결과에서 카운트 + 상위 항목 추출. NOT_FOUND나 isError면 0/빈배열 */
-function parseBucket(result: CallResult, n: number): BucketStat {
-  if (result.isError || !result.text || !result.text.trim()) return { count: 0, topItems: [] }
-  if (/\[NOT_FOUND\]/.test(result.text)) return { count: 0, topItems: [] }
-
-  // 카운트: "총 N건" / "(총 N건," / "검색 결과 (총 N건"
-  let count = 0
-  const cm = result.text.match(/총\s*(\d+)\s*건/)
-  if (cm) count = parseInt(cm[1], 10)
-
-  // 상위 항목: "사건번호: ..." / "1. ..." / "- ..." / "[NNNN] ..."
-  const lines = result.text.split("\n").map(s => s.trim()).filter(Boolean)
-  const items: string[] = []
-  for (const line of lines) {
-    if (line.length < 5) continue
-    if (/^(총|결과|검색|⚠️|💡|━|═|힌트:|재시도|링크:|http|\/DRF)/.test(line)) continue
-    if (/^(?:\d+\.\s|-\s|\[\d+\]\s|사건번호:)/.test(line) || /(?:\d{4}[가-힣]+\d+|선고|\d{4}년)/.test(line)) {
-      // URL/링크 라인 제외 후 짧게 트림
-      const trimmed = line.replace(/\s*\([^)]*OC=[^)]*\)\s*/g, "").slice(0, 100)
-      items.push(trimmed)
-      if (items.length >= n) break
-    }
-  }
-  // 카운트가 없을 때 항목 수 기반 추정
-  if (count === 0 && items.length > 0) count = items.length
-  return { count, topItems: items }
-}
-
-/** 조문 본문에서 인용된 다른 법령 추출 */
-function extractCitedLaws(articleText: string): string[] {
-  if (!articleText) return []
-  const cited = new Set<string>()
-  // "「OO법」", "「OO에 관한 법률」" 패턴
-  const bracketRe = /「([^」]{2,40}?(?:법|법률|시행령|시행규칙|규칙|규정))」/g
-  let m: RegExpExecArray | null
-  while ((m = bracketRe.exec(articleText)) !== null) {
-    cited.add(m[1].trim())
-  }
-  return [...cited].slice(0, 10)
-}
-
-function safeMermaidId(s: string): string {
-  return s.replace(/[^A-Za-z0-9가-힣]/g, "_").slice(0, 20)
-}
-
-function buildMermaid(
-  centerLabel: string,
-  buckets: { precedents: number; interpretations: number; appeals: number; constitutional: number; ordinances: number; citedLaws: string[] }
-): string {
-  const center = safeMermaidId(centerLabel) || "CENTER"
-  const lines: string[] = ["graph LR"]
-  lines.push(`    ${center}["⚖️ ${centerLabel}"]`)
-  if (buckets.precedents > 0) lines.push(`    ${center} --> P["📚 대법원 판례 ${buckets.precedents}건"]`)
-  if (buckets.constitutional > 0) lines.push(`    ${center} --> C["⚖️ 헌재 결정 ${buckets.constitutional}건"]`)
-  if (buckets.interpretations > 0) lines.push(`    ${center} --> I["📑 법령해석 ${buckets.interpretations}건"]`)
-  if (buckets.appeals > 0) lines.push(`    ${center} --> A["📋 행정심판 ${buckets.appeals}건"]`)
-  if (buckets.ordinances > 0) lines.push(`    ${center} --> O["🏛️ 자치법규 ${buckets.ordinances}건"]`)
-  if (buckets.citedLaws.length > 0) {
-    buckets.citedLaws.slice(0, 5).forEach((law, i) => {
-      const id = `L${i}`
-      lines.push(`    ${center} -.인용.-> ${id}["📖 ${law}"]`)
-    })
-  }
-  return lines.join("\n")
+function errorResponse(text: string) {
+  return { content: [{ type: "text", text }], isError: true }
 }
 
 export async function impactMap(
@@ -149,53 +77,56 @@ export async function impactMap(
   input: ImpactMapInput
 ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
   try {
+    // 0. 조문 번호 정규화 — get_law_text와 같은 계약(자연어 표기·JO 코드 모두 수용).
+    // 해석 못 한 입력을 그대로 검색어에 끼워 넣으면 전 항목 0건이 조용히 사실로 보고된다(#98).
+    const anchor = parseArticleAnchor(input.jo)
+    if (!anchor) {
+      return errorResponse(
+        `[INVALID_ARGUMENT] 조문 번호 '${input.jo}'을(를) 해석할 수 없습니다.\n` +
+        `지원 형식: '제103조', '제10조의2', 또는 6자리 JO 코드 '010300'.`
+      )
+    }
+    const joDisplay = anchor.display
+
     // 1. 법령 식별
     const laws = await findLaws(apiClient, input.lawName, input.apiKey, 1)
     if (laws.length === 0) {
-      return {
-        content: [{
-          type: "text",
-          text: `[NOT_FOUND] '${input.lawName}' 법령을 찾을 수 없습니다.\n⚠️ LLM은 법령·조문을 추측하지 마세요. 법령명을 확인하거나 search_law로 먼저 검색하세요.`,
-        }],
-        isError: true,
-      }
+      return errorResponse(
+        `[NOT_FOUND] '${input.lawName}' 법령을 찾을 수 없습니다.\n⚠️ LLM은 법령·조문을 추측하지 마세요. 법령명을 확인하거나 search_law로 먼저 검색하세요.`
+      )
     }
     const law = laws[0]
 
     // 가드: LIKE 부분매칭 1위를 맹신하면 무관한 법령의 영향 지도를
     // 헤더·그래프·후속 제안까지 확신형으로 그려버린다. 이름이 맞을 때만 진행.
     if (!resolvedLawMatches(input.lawName, law.lawName)) {
-      return {
-        content: [{
-          type: "text",
-          text: `[NOT_FOUND] '${input.lawName}' 법령을 정확히 찾지 못했습니다. 검색 최상위는 '${law.lawName}'이지만 요청한 법령과 다를 수 있습니다.\n⚠️ LLM은 법령·조문을 추측하지 마세요. search_law로 정식 법령명을 확인한 뒤 다시 호출하세요.`,
-        }],
-        isError: true,
-      }
+      return errorResponse(
+        `[NOT_FOUND] '${input.lawName}' 법령을 정확히 찾지 못했습니다. 검색 최상위는 '${law.lawName}'이지만 요청한 법령과 다를 수 있습니다.\n⚠️ LLM은 법령·조문을 추측하지 마세요. search_law로 정식 법령명을 확인한 뒤 다시 호출하세요.`
+      )
     }
 
     // 검색 쿼리 — 정확 매칭이 필요하니 법령명 + 조문번호 조합
-    const joDisplay = input.jo.startsWith("제") ? input.jo : `제${input.jo}`
     const searchQuery = `${law.lawName} ${joDisplay}`
 
-    // 2. 병렬 탐색
+    // 2. 병렬 탐색. display는 5개 경로 모두 10으로 맞춘다 — 표본이 검색 건수를 덮어야
+    // 경계 앵커 통과분을 확정 건수로 보고할 수 있다(덮지 못하면 검색 기준으로 남는다).
     const [articleR, precR, interpR, appealR, constR, ordinanceR] = await Promise.all([
       safeCall(getArticleDetail, apiClient, { mst: law.mst, jo: joDisplay, apiKey: input.apiKey }),
       safeCall(searchPrecedentsWithoutFallback, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
       safeCall(searchInterpretations, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
-      safeCall(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-      safeCall(searchConstitutionalDecisions, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+      safeCall(searchAdminAppeals, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
+      safeCall(searchConstitutionalDecisions, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
       input.includeOrdinances
-        ? safeCall(searchOrdinance, apiClient, { query: `${law.lawName} ${joDisplay}`, display: 10, apiKey: input.apiKey })
+        ? safeCall(searchOrdinance, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey })
         : Promise.resolve({ text: "", isError: true } as CallResult),
     ])
 
-    // 3. 결과 집계 (카운트 + 상위 항목)
-    const prec = parseBucket(precR, 5)
-    const interp = parseBucket(interpR, 5)
-    const appeal = parseBucket(appealR, 3)
-    const cons = parseBucket(constR, 3)
-    const ordinance = parseBucket(ordinanceR, 5)
+    // 3. 결과 집계 (경계 앵커 통과분만)
+    const prec = parseBucket(precR, anchor, 5)
+    const cons = parseBucket(constR, anchor, 3)
+    const interp = parseBucket(interpR, anchor, 5)
+    const appeal = parseBucket(appealR, anchor, 3)
+    const ordinance = parseBucket(ordinanceR, anchor, 5)
 
     const citedLaws = articleR.isError ? [] : extractCitedLaws(articleR.text)
 
@@ -211,23 +142,28 @@ export async function impactMap(
       parts.push(`▶ 대상 조문 본문 [NOT_FOUND] 조문 조회 실패 — 법령명·조문번호 확인 필요\n`)
     }
 
+    const rows: Array<{ label: string; stat: BucketStat; last?: boolean }> = [
+      { label: "📚 대법원 판례", stat: prec },
+      { label: "⚖️ 헌재 결정례", stat: cons },
+      { label: "📑 법령해석례", stat: interp },
+      { label: "📋 행정심판례", stat: appeal },
+    ]
+    if (input.includeOrdinances) rows.push({ label: "🏛️ 자치법규", stat: ordinance, last: true })
+
     parts.push(`▶ 영향 그래프 (이 조문이 인용된 곳)`)
-    parts.push(`├─ 📚 대법원 판례: ${prec.count}건`)
-    prec.topItems.forEach(l => parts.push(`│   • ${l}`))
-    parts.push(`├─ ⚖️ 헌재 결정례: ${cons.count}건`)
-    cons.topItems.forEach(l => parts.push(`│   • ${l}`))
-    parts.push(`├─ 📑 법령해석례: ${interp.count}건`)
-    interp.topItems.forEach(l => parts.push(`│   • ${l}`))
-    parts.push(`├─ 📋 행정심판례: ${appeal.count}건`)
-    appeal.topItems.forEach(l => parts.push(`│   • ${l}`))
-    if (input.includeOrdinances) {
-      parts.push(`└─ 🏛️ 자치법규: ${ordinance.count}건`)
-      ordinance.topItems.forEach(l => parts.push(`    • ${l}`))
+    for (const { label, stat, last } of rows) {
+      parts.push(`${last ? "└─" : "├─"} ${label}: ${stat.count}건${bucketNote(stat)}`)
+      stat.topItems.forEach(l => parts.push(`${last ? "    " : "│   "}• ${l}`))
+    }
+
+    const excludedTotal = rows.reduce((sum, r) => sum + r.stat.excluded, 0)
+    if (excludedTotal > 0) {
+      parts.push(`⚠️ 법제처 키워드 검색은 조번호를 부분 일치로 물어옵니다(${joDisplay} 질의에 유사 조번호 혼입). 다른 조문 항목 ${excludedTotal}건을 제외했습니다.`)
     }
 
     if (citedLaws.length > 0) {
       parts.push(`\n▶ 이 조문이 인용한 다른 법령 (정방향)`)
-      citedLaws.forEach(law => parts.push(`  → ${law}`))
+      citedLaws.forEach(cited => parts.push(`  → ${cited}`))
     }
 
     // 5. 합산 통계
