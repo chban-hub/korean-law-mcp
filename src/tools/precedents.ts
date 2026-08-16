@@ -6,6 +6,7 @@ import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { fetchWithRetry } from "../lib/fetch-with-retry.js"
 import { readResponseText } from "../lib/response-body.js"
 import { UpstreamRecordMissingError } from "../lib/upstream-miss.js"
+import { containsHtmlMarkup } from "../lib/body-shape.js"
 import {
   type ExternalHttpsProxyConfig,
   getExternalHttpsProxyConfig,
@@ -224,7 +225,7 @@ function extractTaxlawEditorBody(actionData: any): string {
 
   for (const item of editorList) {
     const value = typeof item?.dcmFleByte === "string" ? item.dcmFleByte : ""
-    if (!value.includes("<html") && !value.includes("<body") && value.length <= 100) continue
+    if (!containsHtmlMarkup(value) && value.length <= 100) continue
     const body = normalizeTaxlawBodyCandidate(value)
     if (body) return body
   }
