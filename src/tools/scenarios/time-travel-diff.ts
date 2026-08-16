@@ -128,6 +128,31 @@ export function diffArticles(oldList: ArticleSnapshot[], newList: ArticleSnapsho
  * 예산 안에서 통째로 싣는다 — 단서 조항이 중간에서 잘려 다른 규범으로 읽히는 일을
  * 막기 위해서다. 예산을 넘어 변경 구간까지 줄여야 하면 그 사실을 표기한다.
  */
+/** 항(①②③)·호(1. 2.)·목(가. 나.) 시작 지점 — 조문 본문의 자연스러운 단위 경계 */
+const CLAUSE_START = /[①-⑮]|(?:^|\s)\d{1,2}\.\s|(?:^|\s)[가-하]\.\s/g
+
+/**
+ * 발췌 시작점을 가까운 항·호·목 머리로 당긴다.
+ * 문장 한가운데서 시작하는 발췌는 단서와 본문의 구분이 흐려져 다른 규범으로
+ * 읽힐 수 있다. 앞으로 당기기만 하므로(내용이 늘기만 한다) 손실은 생기지 않고,
+ * 탐색 폭도 제한해 발췌가 통째로 커지지 않게 한다.
+ */
+const CLAUSE_SNAP_WINDOW = 60
+
+export function snapToClauseStart(body: string, start: number): number {
+  if (start <= 0) return 0
+  const from = Math.max(0, start - CLAUSE_SNAP_WINDOW)
+  const window = body.slice(from, start)
+  let best = -1
+  let m: RegExpExecArray | null
+  CLAUSE_START.lastIndex = 0
+  while ((m = CLAUSE_START.exec(window)) !== null) {
+    // 선행 공백은 경계에 포함하지 않는다
+    best = from + m.index + (/^\s/.test(m[0]) ? 1 : 0)
+  }
+  return best >= 0 ? best : start
+}
+
 export function changeExcerpt(
   oldBody: string,
   curBody: string,
@@ -151,7 +176,7 @@ export function changeExcerpt(
   const context = clipped ? 0 : Math.floor((perSide - longestChange) / 2)
 
   const cut = (body: string, changeLen: number) => {
-    const start = Math.max(0, prefix - context)
+    const start = snapToClauseStart(body, Math.max(0, prefix - context))
     const end = Math.min(body.length, prefix + Math.min(changeLen, perSide) + context)
     const head = start > 0 ? "…" : ""
     const tail = end < body.length ? "…" : ""

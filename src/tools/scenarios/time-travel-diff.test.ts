@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { changeExcerpt, excerptBudget, extractLawSnapshot, dot } from "./time-travel-diff.js"
+import { changeExcerpt, excerptBudget, extractLawSnapshot, dot, snapToClauseStart } from "./time-travel-diff.js"
 
 describe("extractLawSnapshot 출처 메타 (#96)", () => {
   const json = {
@@ -74,6 +74,34 @@ describe("changeExcerpt 변경 지점 중심 발췌 (#97)", () => {
   it("변경이 없으면 발췌도 비어 있다", () => {
     const ex = changeExcerpt("동일한 본문", "동일한 본문", 200)
     expect(ex.clipped).toBe(false)
+  })
+})
+
+describe("snapToClauseStart 단서 중간 시작 방지 (#97)", () => {
+  const body = "제8조(기간) ① 이 법에 따른 기간의 계산은 민법에 따른다. ② 다음 각 호의 날은 기한에서 제외한다. 1. 토요일 및 일요일 2. 공휴일"
+
+  it("항 머리(①②)로 당긴다", () => {
+    const mid = body.indexOf("다음 각 호의")
+    expect(body[snapToClauseStart(body, mid)]).toBe("②")
+  })
+
+  it("호 머리(1. 2.)로 당긴다", () => {
+    const mid = body.indexOf("토요일")
+    expect(body.slice(snapToClauseStart(body, mid))).toMatch(/^1\.\s/)
+  })
+
+  it("앞으로만 당긴다 — 내용을 잃지 않는다", () => {
+    const mid = body.indexOf("공휴일")
+    expect(snapToClauseStart(body, mid)).toBeLessThanOrEqual(mid)
+  })
+
+  it("탐색 폭 안에 경계가 없으면 그대로 둔다", () => {
+    const flat = "경계표시가전혀없는긴한글본문".repeat(20)
+    expect(snapToClauseStart(flat, 200)).toBe(200)
+  })
+
+  it("시작이 0이면 당기지 않는다", () => {
+    expect(snapToClauseStart(body, 0)).toBe(0)
   })
 })
 
