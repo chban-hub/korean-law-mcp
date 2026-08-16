@@ -6,6 +6,7 @@
  */
 
 import { toArray } from "../../lib/xml-parser.js"
+import { CIRCLED_DIGITS, cleanHtml } from "../../lib/article-parser.js"
 
 export interface ArticleSnapshot {
   joNum: string
@@ -25,13 +26,16 @@ export interface LawSnapshot {
   rrCls: string   // 제개정구분
 }
 
+/**
+ * diff 비교용 본문 정규화.
+ *
+ * 엔티티 디코딩은 cleanHtml 단일 원본에 맡긴다(Critical Rule 7) — 손으로 다시 짜면
+ * `&amp;` 를 먼저 푸는 순서가 되살아나 `&amp;lt;` 가 `<` 까지 두 번 풀린다.
+ * 태그만 여기서 **공백**으로 지운다: cleanHtml 은 `''` 로 지우는데, 그러면
+ * `제1조<br/>목적` 이 `제1조목적` 으로 붙어 없던 변경이 diff 에 잡힌다.
+ */
 export function normalizeText(s: string): string {
-  return (s || "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
+  return cleanHtml((s || "").replace(/<[^>]+>/g, " "))
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -128,8 +132,13 @@ export function diffArticles(oldList: ArticleSnapshot[], newList: ArticleSnapsho
  * 예산 안에서 통째로 싣는다 — 단서 조항이 중간에서 잘려 다른 규범으로 읽히는 일을
  * 막기 위해서다. 예산을 넘어 변경 구간까지 줄여야 하면 그 사실을 표기한다.
  */
-/** 항(①②③)·호(1. 2.)·목(가. 나.) 시작 지점 — 조문 본문의 자연스러운 단위 경계 */
-const CLAUSE_START = /[①-⑮]|(?:^|\s)\d{1,2}\.\s|(?:^|\s)[가-하]\.\s/g
+/**
+ * 항(①②③)·호(1. 2.)·목(가. 나.) 시작 지점 — 조문 본문의 자연스러운 단위 경계.
+ * 원숫자 목록은 article-parser 의 CIRCLED_DIGITS(㊿까지) 단일 원본을 쓴다 —
+ * `[①-⑮]` 같은 코드포인트 범위는 ㉑·㊱ 가 다른 유니코드 블록이라 성립하지 않고,
+ * 끊긴 지점 이상의 항에서는 경계를 못 찾아 발췌 머리 당김이 조용히 실패한다.
+ */
+const CLAUSE_START = new RegExp(`[${CIRCLED_DIGITS}]|(?:^|\\s)\\d{1,2}\\.\\s|(?:^|\\s)[가-하]\\.\\s`, "g")
 
 /**
  * 발췌 시작점을 가까운 항·호·목 머리로 당긴다.

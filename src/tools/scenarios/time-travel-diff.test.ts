@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { changeExcerpt, excerptBudget, extractLawSnapshot, dot, snapToClauseStart } from "./time-travel-diff.js"
+import { changeExcerpt, excerptBudget, extractLawSnapshot, dot, normalizeText, snapToClauseStart } from "./time-travel-diff.js"
 
 describe("extractLawSnapshot 출처 메타 (#96)", () => {
   const json = {
@@ -120,5 +120,37 @@ describe("excerptBudget 예산 배분 (#97)", () => {
   it("총 예산은 상한을 지킨다 (응답이 절단 한도로 밀리지 않게)", () => {
     const shown = 30
     expect(excerptBudget(shown) * 2 * shown).toBeLessThanOrEqual(12000)
+  })
+})
+
+// ─── 통합 배치 이음새 회귀 (지적 3·4) ────────────────────
+
+describe("지적 3 — normalizeText 가 cleanHtml 을 재사용한다 (Critical Rule 7)", () => {
+  it("&amp; 를 먼저 풀지 않는다 — 이중 인코딩이 리터럴 태그로 새지 않는다", () => {
+    // 손으로 짠 순서(&amp; → &lt;)는 `&amp;lt;` 를 `<` 까지 두 번 풀었다.
+    // 태그 스트립이 이미 지난 뒤라 리터럴 `<` 가 diff 본문에 남는다.
+    expect(normalizeText("&amp;lt;p&amp;gt; 조문")).toBe("&lt;p&gt; 조문")
+  })
+
+  it("&quot; · &#39; 도 푼다 (손으로 짠 목록에서 빠져 있었다)", () => {
+    expect(normalizeText("인용 &quot;가&quot; 및 &#39;나&#39;")).toBe('인용 "가" 및 \'나\'')
+  })
+
+  it("단독 &amp; 는 그대로 & 로 푼다", () => {
+    expect(normalizeText("A &amp; B")).toBe("A & B")
+  })
+
+  it("태그는 공백으로 지운다 — 낱말이 붙으면 diff 가 오탐한다", () => {
+    expect(normalizeText("제1조<br/>목적")).toBe("제1조 목적")
+  })
+})
+
+describe("지적 4 — CLAUSE_START 항 경계가 제16항 이상에서도 산다", () => {
+  // 커밋 1c67258 의 목적이 "발췌 시작점을 항·호·목 머리로 당김"인데
+  // 원숫자가 ⑮ 에서 끊겨 제16항 이상에서 best === -1 로 떨어져 무음 실패했다.
+  it.each(["①", "⑮", "⑯", "⑳", "㉑", "㊱", "㊿"])("%s 를 항 머리로 인식한다", (circled) => {
+    const body = `앞부분 채우기 텍스트 ${circled} 이 항의 본문이 여기서 시작한다 변경지점`
+    const start = body.indexOf("변경지점")
+    expect(snapToClauseStart(body, start)).toBe(body.indexOf(circled))
   })
 })
