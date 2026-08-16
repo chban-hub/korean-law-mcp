@@ -11,95 +11,10 @@
  */
 import type { ScenarioContext, ScenarioResult, ScenarioSection } from "./types.js"
 import { fetchHistoricalVersionsFull, type HistoricalVersion } from "../../lib/historical-utils.js"
-import { toArray } from "../../lib/xml-parser.js"
-
-interface ArticleSnapshot {
-  joNum: string
-  joBranch: string
-  title: string
-  body: string
-  key: string  // joNum + joBranch (식별자)
-}
-
-function normalizeText(s: string): string {
-  return (s || "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+/g, " ")
-    .trim()
-}
-
-function extractArticleSnapshots(lawJson: any): ArticleSnapshot[] {
-  const raw = lawJson?.법령?.조문?.조문단위
-  const units: any[] = toArray(raw)
-  const snapshots: ArticleSnapshot[] = []
-  for (const u of units) {
-    if (u?.조문여부 !== "조문") continue
-    const joNum = String(u.조문번호 || "")
-    const joBranch = String(u.조문가지번호 || "0")
-    const title = String(u.조문제목 || "")
-    let body = normalizeText(String(u.조문내용 || ""))
-    // 항/호/목 본문 합산 (정규화)
-    const hangs = toArray<any>(u.항)
-    for (const h of hangs) {
-      body += " " + normalizeText(String(h.항내용 || ""))
-      const hos = toArray<any>(h.호)
-      for (const ho of hos) {
-        body += " " + normalizeText(String(ho.호내용 || ""))
-      }
-    }
-    body = body.trim()
-    snapshots.push({
-      joNum,
-      joBranch,
-      title,
-      body,
-      key: `${joNum}-${joBranch}`,
-    })
-  }
-  return snapshots
-}
-
-function displayJo(joNum: string, joBranch: string): string {
-  const branch = parseInt(joBranch, 10)
-  return branch > 0 ? `제${joNum}조의${branch}` : `제${joNum}조`
-}
-
-function diffArticles(
-  oldList: ArticleSnapshot[],
-  newList: ArticleSnapshot[]
-): { added: ArticleSnapshot[]; removed: ArticleSnapshot[]; modified: Array<{ old: ArticleSnapshot; cur: ArticleSnapshot }> } {
-  const oldMap = new Map(oldList.map(a => [a.key, a]))
-  const newMap = new Map(newList.map(a => [a.key, a]))
-
-  const added: ArticleSnapshot[] = []
-  const removed: ArticleSnapshot[] = []
-  const modified: Array<{ old: ArticleSnapshot; cur: ArticleSnapshot }> = []
-
-  for (const [key, cur] of newMap) {
-    const old = oldMap.get(key)
-    if (!old) added.push(cur)
-    else if (old.body !== cur.body || old.title !== cur.title) modified.push({ old, cur })
-  }
-  for (const [key, old] of oldMap) {
-    if (!newMap.has(key)) removed.push(old)
-  }
-
-  // 정렬 (조문번호 순)
-  const sortFn = (a: ArticleSnapshot, b: ArticleSnapshot) => {
-    const an = parseInt(a.joNum, 10) - parseInt(b.joNum, 10)
-    if (an !== 0) return an
-    return parseInt(a.joBranch, 10) - parseInt(b.joBranch, 10)
-  }
-  added.sort(sortFn)
-  removed.sort(sortFn)
-  modified.sort((a, b) => sortFn(a.cur, b.cur))
-
-  return { added, removed, modified }
-}
+import {
+  changeExcerpt, diffArticles, displayJo, dot, excerptBudget, extractLawSnapshot,
+  type ArticleSnapshot, type LawSnapshot,
+} from "./time-travel-diff.js"
 
 /** efYd <= targetDate 중 가장 큰 (해당 시점 시행 버전) */
 export function pickVersion(versions: HistoricalVersion[], targetDate: string): HistoricalVersion | undefined {
@@ -203,8 +118,8 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
   }
 
   // Step 2: 두 시점 본문 raw 조회
-  let oldArticles: ArticleSnapshot[] = []
-  let newArticles: ArticleSnapshot[] = []
+  let oldSnap: LawSnapshot = { articles: [], ancNo: "", ancYd: "", rrCls: "" }
+  let newSnap: LawSnapshot = { articles: [], ancNo: "", ancYd: "", rrCls: "" }
   try {
     const [oldRaw, newRaw] = await Promise.all([
       ctx.apiClient.fetchApi({
@@ -216,8 +131,8 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
         extraParams: { MST: newVer.mst }, apiKey: ctx.apiKey,
       }),
     ])
-    oldArticles = extractArticleSnapshots(JSON.parse(oldRaw))
-    newArticles = extractArticleSnapshots(JSON.parse(newRaw))
+    oldSnap = extractLawSnapshot(JSON.parse(oldRaw))
+    newSnap = extractLawSnapshot(JSON.parse(newRaw))
   } catch (e) {
     sections.push({
       title: "Time Travel — 시점 비교 (v4.0)",
@@ -226,6 +141,8 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
     return { sections, suggestedActions }
   }
 
+  const oldArticles = oldSnap.articles
+  const newArticles = newSnap.articles
   if (oldArticles.length === 0 || newArticles.length === 0) {
     sections.push({
       title: "Time Travel — 시점 비교 (v4.0)",
@@ -241,18 +158,47 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
   const versionsInfo = totalCount > versions.length
     ? `연혁 ${versions.length}/${totalCount}개 수집(${fetchedPages}p)`
     : `연혁 ${versions.length}개 수집`
+
+  // 판본 출처(공포번호·공포일자)를 병기한다 (#96).
+  // 없으면 소비 LLM이 도구가 준 정답을 자기 사전지식으로 기각한다 — 관세법
+  // "기획재정부장관→재정경제부장관"이 정부조직 개편의 정상 반영인데도 "폐지된
+  // 부처이므로 도구 오류"라고 사용자에게 안내한 실측 사례가 있다.
+  const provenance = (snap: LawSnapshot, ver: HistoricalVersion) => {
+    const no = snap.ancNo || ver.ancNo
+    const ymd = dot(snap.ancYd || ver.ancYd)
+    const cls = snap.rrCls || ver.rrCls
+    const parts = [no ? `공포 제${String(parseInt(no, 10) || no)}호` : "", ymd ? `${ymd} 공포` : "", cls]
+    return parts.filter(Boolean).join(", ")
+  }
+
   const header =
-    `시점 A: ${oldVer.efYd} 시행 (MST ${oldVer.mst}, ${oldArticles.length}개 조문)\n` +
-    `시점 B: ${newVer.efYd} 시행 (MST ${newVer.mst}, ${newArticles.length}개 조문)\n` +
+    `시점 A: ${dot(oldVer.efYd) || oldVer.efYd} 시행 | MST ${oldVer.mst} | ${provenance(oldSnap, oldVer)} | ${oldArticles.length}개 조문\n` +
+    `시점 B: ${dot(newVer.efYd) || newVer.efYd} 시행 | MST ${newVer.mst} | ${provenance(newSnap, newVer)} | ${newArticles.length}개 조문\n` +
     `${versionsInfo}\n` +
     `요약: + ${added.length} 신설 | - ${removed.length} 삭제 | △ ${modified.length} 변경`
 
   let body = header
 
+  // 두 시점 사이에 낀 개정들 — 각 변경의 근거 공포를 특정할 수 있게 한다 (#96)
+  const between = versions
+    .filter(v => parseInt(v.efYd || "0", 10) > parseInt(oldVer.efYd || "0", 10)
+              && parseInt(v.efYd || "0", 10) <= parseInt(newVer.efYd || "0", 10))
+    .sort((x, y) => parseInt(x.efYd || "0", 10) - parseInt(y.efYd || "0", 10))
+  if (between.length > 0) {
+    body += `\n\n[구간 개정 연혁] ${between.length}건 — 아래 변경들의 근거`
+    for (const v of between.slice(0, 15)) {
+      const no = v.ancNo ? `공포 제${v.ancNo}호` : "공포번호 미상"
+      body += `\n  · ${dot(v.efYd) || v.efYd} 시행 | ${no}${v.ancYd ? ` (${dot(v.ancYd)} 공포)` : ""}${v.rrCls ? ` | ${v.rrCls}` : ""}`
+    }
+    if (between.length > 15) body += `\n  ... 외 ${between.length - 15}건`
+  }
+
+  const efNote = (a: ArticleSnapshot) => a.efYd ? ` [조문시행 ${dot(a.efYd) || a.efYd}]` : ""
+
   if (added.length > 0) {
     body += `\n\n[+ 신설 조문]`
     for (const a of added.slice(0, 30)) {
-      body += `\n  + ${displayJo(a.joNum, a.joBranch)}${a.title ? ` (${a.title})` : ""}`
+      body += `\n  + ${displayJo(a.joNum, a.joBranch)}${a.title ? ` (${a.title})` : ""}${efNote(a)}`
       if (a.body) body += `\n    ${a.body.slice(0, 200)}${a.body.length > 200 ? "..." : ""}`
     }
     if (added.length > 30) body += `\n  ... 외 ${added.length - 30}개`
@@ -268,12 +214,17 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
   }
 
   if (modified.length > 0) {
-    body += `\n\n[△ 변경 조문]`
+    // 변경 지점을 중심으로 신구대조를 실어 조문 재조회를 없앤다 (#97).
+    // 조문 수에 따라 예산을 나눠 응답이 절단 한도로 밀리지 않게 한다.
+    const shown = Math.min(modified.length, 30)
+    const perSide = excerptBudget(shown)
+    body += `\n\n[△ 변경 조문] (신구대조 발췌 — 변경 지점 중심, 조문당 ${perSide}자)`
     for (const m of modified.slice(0, 30)) {
-      body += `\n  △ ${displayJo(m.cur.joNum, m.cur.joBranch)}${m.cur.title ? ` (${m.cur.title})` : ""} ${summarizeChange(m.old, m.cur)}`
-      // 변경 전후 짧게 보여주기
-      body += `\n      [전] ${m.old.body.slice(0, 120)}${m.old.body.length > 120 ? "..." : ""}`
-      body += `\n      [후] ${m.cur.body.slice(0, 120)}${m.cur.body.length > 120 ? "..." : ""}`
+      const ex = changeExcerpt(m.old.body, m.cur.body, perSide)
+      body += `\n  △ ${displayJo(m.cur.joNum, m.cur.joBranch)}${m.cur.title ? ` (${m.cur.title})` : ""} ${summarizeChange(m.old, m.cur)}${efNote(m.cur)}`
+      body += `\n      [전] ${ex.before}`
+      body += `\n      [후] ${ex.after}`
+      if (ex.clipped) body += `\n      ⚠️ 변경 구간이 길어 발췌가 잘렸습니다 — 전문은 get_law_text(mst="${newVer.mst}", jo="${displayJo(m.cur.joNum, m.cur.joBranch)}")`
     }
     if (modified.length > 30) body += `\n  ... 외 ${modified.length - 30}개`
   }
