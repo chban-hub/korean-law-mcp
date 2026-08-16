@@ -146,7 +146,7 @@ import { NewToolSchema, newTool } from "./tools/new-tool.js"
 
 ```bash
 npm run build
-npm test                              # vitest (68 파일 / 618 테스트)
+npm test                              # vitest (74 파일 / 701 테스트, 2026-08 실측 — 수치는 릴리스마다 늘어난다)
 npm run gc                            # typecheck + knip + test + build 한 번에
 LAW_OC=your-key node build/index.js   # STDIO 모드 테스트
 npx @modelcontextprotocol/inspector build/index.js  # Inspector 테스트

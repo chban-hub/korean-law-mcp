@@ -150,6 +150,9 @@ export function extractTimeTravel(query: string): Record<string, unknown> {
   const dates = query.match(/\d{4}[.\-]?\d{0,2}[.\-]?\d{0,2}/g) || []
   const params: Record<string, unknown> = {}
   if (dates[0]) params.fromDate = toYmd(dates[0])
+  // 연도 없는 상대 과거("작년이랑 지금")는 여기서 연초로 확정해야 단독 완결된다(#150) —
+  // 비우면 시나리오가 입력 안내로 끝난다. 예전·과거·종전은 날짜가 정해지지 않아 그대로 둔다
+  else if (/재작년|작년/.test(query)) params.fromDate = `${new Date().getFullYear() - (/재작년/.test(query) ? 2 : 1)}0101`
   if (dates[1]) params.toDate = toYmd(dates[1])
   // "지금" 쪽 어휘는 date-patterns 한 벌에서 온다 — 여기만 좁으면 같은 질문이
   // "vs 현행"은 되고 "vs 올해"는 안 되는, 표현에 따라 갈리는 라우팅이 된다(#144 후속)
@@ -161,7 +164,10 @@ export function extractTimeTravel(query: string): Record<string, unknown> {
     query
       .replace(/\d{4}\s*[.\-년]?\s*\d{0,2}\s*[.\-월]?\s*\d{0,2}\s*일?/g, " ")
       .replace(new RegExp(`${RELATIVE_PAST_WORDS}|${RELATIVE_NOW_WORDS}`, "g"), " ")
-      .replace(/vs\.?|↔|~|이?랑|하고|대비|부터|까지|에서|와|과/gi, " ")
+      // 기호(vs·↔·~)는 어디서든, 한글 접속어는 홀로 남은 것만 걷는다 — 경계 없이 지우면
+      // "성과평가법"의 `과`가 잘린다(#150). 시점에 붙었던 조사("2024와")는 위에서 시점이 먼저 지워져 홀로 남는다
+      .replace(/vs\.?|↔|~/gi, " ")
+      .replace(/(?:^|\s)(?:이?랑|하고|대비|부터|까지|에서|와|과)(?=\s|$)/g, " ")
       .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전|두/g, " ")
   )
   params.query = lawName || query
@@ -183,8 +189,8 @@ export function hasProcedureIntent(query: string): boolean {
  * 접미사를 포함한 토큰 전체를 넘겨야 한다 — 앞부분만 보면 판정할 수 없다.
  */
 const NON_REGION_TOKENS = new Set([
-  "연구", "요구", "청구", "재청구", "지구", "추구", "촉구", "욕구", "탐구", "선거구",
-  "도시", "고시", "공시", "명시", "표시", "제시", "예시", "감시", "무시", "즉시", "임시", "실시",
+  "연구", "요구", "청구", "재청구", "지구", "추구", "촉구", "욕구", "탐구", "선거구", "지역구", "기구", "놀이기구",
+  "도시", "고시", "공시", "명시", "표시", "제시", "예시", "감시", "무시", "즉시", "임시", "실시", "대학입시",
   "장군", "학군", "동시", "당시", "일시", "상시", "수시",
 ])
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest"
 import { followLawAntibot, parseAntibotUrl } from "./law-antibot.js"
 import { requestContext } from "./session-state.js"
+import { DEFAULT_EXECUTION_LIMITS, RequestExecutionBudget } from "./execution-limits.js"
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -87,6 +88,31 @@ describe("parseAntibotUrl", () => {
     )).rejects.toThrow("later hop failed")
     expect(original.bodyUsed).toBe(false)
     expect(intermediate.bodyUsed).toBe(true)
+  })
+
+  // #150-5: 안티봇 검사가 clone 전체 본문을 읽으면 law.go.kr의 **모든** 성공 응답이
+  // 예산에 이중 청구된다 — 검사 자체가 정상 대형 응답을 예산 초과로 죽이기까지 한다.
+  // 판정 마커(location.assign)는 실측·픽스처 전부 첫 ~130바이트 안에 온다.
+  it("안티봇 검사는 프리픽스만 훔쳐보고 본문을 예산에 청구하지 않는다", async () => {
+    const body = `<?xml version="1.0"?><LawSearch>${"가".repeat(64 * 1024)}</LawSearch>`
+    const budget = new RequestExecutionBudget({
+      ...DEFAULT_EXECUTION_LIMITS,
+      maxUpstreamBodyBytes: 8_192,
+      maxTotalUpstreamBodyBytes: 8_192,
+    })
+
+    await requestContext.run({ budget }, async () => {
+      const response = new Response(body)
+      // 종전: clone 전체 읽기가 예산을 초과해 정상 응답인데도 ExecutionLimitError로 죽었다
+      await expect(followLawAntibot(
+        response,
+        "https://www.law.go.kr/DRF/lawSearch.do",
+        new Headers(),
+        1_000,
+      )).resolves.toBeNull()
+    })
+
+    expect(budget.snapshot().upstreamBodyBytes).toBe(0)   // 검사 몫의 청구 없음
   })
 
   it("releases the response when cancellation aborts inspection", async () => {

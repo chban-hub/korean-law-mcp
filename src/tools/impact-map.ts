@@ -11,7 +11,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { findLaws, resolvedLawMatches } from "../lib/law-search.js"
 import { parseArticleAnchor } from "../lib/article-anchor.js"
-import { parseBucket, bucketLine, lawMatchNote, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
+import { parseBucket, bucketLine, exclusionPhrase, lawMatchNote, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { renderPrecedentSearchResult } from "./precedents.js"
@@ -155,9 +155,11 @@ export async function impactMap(
       stat.topItems.forEach(l => parts.push(`${last ? "    " : "│   "}• ${l}`))
     }
 
-    const excludedTotal = rows.reduce((sum, r) => sum + r.stat.excluded, 0)
-    if (excludedTotal > 0) {
-      parts.push(`⚠️ 법제처 키워드 검색은 조번호를 부분 일치로 물어옵니다(${joDisplay} 질의에 유사 조번호 혼입). 다른 조문 항목 ${excludedTotal}건을 제외했습니다.`)
+    // 제외 사유는 축별로 적는다 — 합산하면 타 법령 제외까지 "조문 불일치"로 보고된다 (#150)
+    const excludedArticle = rows.reduce((sum, r) => sum + r.stat.excludedArticle, 0)
+    const excludedLaw = rows.reduce((sum, r) => sum + r.stat.excludedLaw, 0)
+    if (excludedArticle + excludedLaw > 0) {
+      parts.push(`⚠️ 법제처 키워드 검색은 조번호를 부분 일치로 물어옵니다(${joDisplay} 질의에 유사 조번호·타 법령 혼입). ${exclusionPhrase({ excludedArticle, excludedLaw })}을 제외했습니다.`)
     }
     parts.push(lawMatchNote(rows.map(r => r.stat)))
 

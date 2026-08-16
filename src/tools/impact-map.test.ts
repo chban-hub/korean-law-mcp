@@ -42,6 +42,9 @@ const DETC_XML = `<?xml version="1.0" encoding="UTF-8"?><DetcSearch><totalCnt>2<
   // #116: 법령명을 읽을 수 없다 — 보류로 유지돼야 한다
   `<Detc><헌재결정례일련번호>900002</헌재결정례일련번호><사건명><![CDATA[제103조 위헌소원]]></사건명>` +
   `<사건번호>2012헌바7</사건번호><종국일자>20130101</종국일자></Detc>` +
+  // #150: 구 제명 인용(제명변경 전신일 수 있음) — 확정 제외가 아니라 보류로 유지돼야 한다
+  `<Detc><헌재결정례일련번호>900003</헌재결정례일련번호><사건명><![CDATA[구 매장및묘지등에관한법률 제103조 위헌소원]]></사건명>` +
+  `<사건번호>2007헌가9</사건번호><종국일자>20070101</종국일자></Detc>` +
   `</DetcSearch>`
 
 const PREC_XML = `<?xml version="1.0" encoding="UTF-8"?><PrecSearch><totalCnt>1</totalCnt><page>1</page>` +
@@ -114,11 +117,13 @@ describe("impactMap — 조번호 경계 앵커 (#90)", () => {
     expect(text).not.toContain("[245007]")   // 제103조 명시 판례 — 제외
   })
 
-  it("경계 앵커로 제외된 건이 있으면 응답에 명시한다", async () => {
+  // #150: 제외 사유가 조문·법령 합산 단일 수치라 "다른 조문 N건 제외"로만 나갔다 —
+  // 상법 제103조(타 법령) 제외까지 조문 문제로 둔갑한다. 축별로 정직하게 적는다.
+  it("경계 앵커로 제외된 건이 있으면 축별로 명시한다", async () => {
     const r = await impactMap(civilLawClient(), {
       lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
     })
-    expect(r.content[0].text).toMatch(/조문 불일치|경계 불일치/)
+    expect(r.content[0].text).toContain("조문 불일치 1건·다른 법령 1건")
   })
 })
 
@@ -137,6 +142,15 @@ describe("impactMap — 법령명 축 (#116)", () => {
       lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
     })
     expect(r.content[0].text).toContain("[900002]")
+  })
+
+  // #150 실측: "구 매장및묘지등에관한법률 제5조 위헌소원"이 확정 different로 제외됐다.
+  // 위헌심판은 행위시법 심사라 구 제명 사건명이 흔하다 — 보류로 유지돼야 한다.
+  it("구 법령 제명 위헌소원은 제외가 아니라 보류로 유지한다 (#150)", async () => {
+    const r = await impactMap(civilLawClient(), {
+      lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
+    })
+    expect(r.content[0].text).toContain("[900003]")
   })
 
   it("법령명 대조 결과를 확정/보류로 밝힌다", async () => {
@@ -164,7 +178,8 @@ describe("parseBucket — 항목 경계", () => {
     ].join("\n")
     const stat = parseBucket({ text, isError: false }, parseArticleAnchor("제103조")!, 5)
     expect(stat.topItems).toEqual([])
-    expect(stat.excluded).toBe(1)
+    expect(stat.excludedArticle).toBe(1)
+    expect(stat.excludedLaw).toBe(0)
   })
 })
 

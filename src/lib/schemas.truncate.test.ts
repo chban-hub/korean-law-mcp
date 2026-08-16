@@ -17,13 +17,52 @@ describe("truncateResponse(summary) — 하드컷 대신 경계 절단", () => {
     expect(extracted.length).toBeGreaterThan(max)   // 이 입력이 초과 경로를 실제로 탄다
 
     const out = truncateResponse(text, { maxLength: max, summary: true })
-    expect(out).toBe(cutAtSafeBoundary(extracted, max))
     expect(out).not.toBe(extracted.slice(0, max))
     expect(out.length).toBeLessThanOrEqual(max)
   })
 
+  // 재절단이 문서 끝에서 자르면 맨 끝에 붙는 `📋 요약 모드` 꼬리부터 사라진다 —
+  // 절단·요약 사실이 무표기가 된다(#150). 꼬리 길이를 예산에서 예약해야 한다.
+  it("재절단 후에도 요약 모드 꼬리가 남는다 (#150 무표기 절단 금지)", () => {
+    const out = truncateResponse(text, { maxLength: max, summary: true })
+    expect(out.length).toBeLessThanOrEqual(max)
+    expect(out).toMatch(/📋 요약 모드: 원문 [\d,]+자 중 핵심만 추출 \([\d,]+자\)$/)
+  })
+
   it("상한 이내면 그대로 (회귀)", () => {
     expect(truncateResponse("짧은 응답", { maxLength: 1000, summary: true })).toBe("짧은 응답")
+  })
+})
+
+describe("하드컷 서로게이트 쌍 보호 (#150)", () => {
+  // `𠮷`(U+20BB7)는 UTF-16 유닛 2개다. 하드컷이 쌍 한가운데를 끊으면 isWellFormed()가
+  // 깨지고, JSON 직렬화 시 U+FFFD로 변형돼 전송된다.
+  it("cutAtSafeBoundary 폴백(경계 없음)이 아스트랄 문자를 반토막 내지 않는다", () => {
+    const text = "가".repeat(499) + "𠮷" + "나".repeat(600)  // 경계(줄·문장부호) 없음
+    const out = cutAtSafeBoundary(text, 500)                  // 500번째 유닛이 high surrogate
+    expect(out.isWellFormed()).toBe(true)
+    expect(out.length).toBeLessThanOrEqual(500)
+  })
+
+  it("truncateResponse 극소 예산(안내문보다 작음) 경로도 안전하다", () => {
+    const text = "가".repeat(19) + "𠮷" + "나".repeat(100)
+    const out = truncateResponse(text, 20)                    // notice 예산이 안 나와 slice 폴백
+    expect(out.isWellFormed()).toBe(true)
+  })
+
+  it("truncateSections 최종 재절단 폴백도 안전하다", () => {
+    const head = "▶ 제목\n"
+    const body = "가".repeat(19 - head.length) + "𠮷" + "나".repeat(30)
+    const out = truncateSections(head + body, 20, 300)        // 전체 상한 20 < 안내문 길이
+    expect(out.isWellFormed()).toBe(true)
+  })
+
+  it("아스트랄 문자만으로 된 입력을 어느 예산으로 잘라도 온전하다", () => {
+    const text = "𠮷".repeat(60)
+    for (let maxSize = 15; maxSize <= 60; maxSize++) {
+      expect(truncateResponse(text, maxSize).isWellFormed(), `maxSize=${maxSize}`).toBe(true)
+      expect(cutAtSafeBoundary(text, maxSize).isWellFormed(), `budget=${maxSize}`).toBe(true)
+    }
   })
 })
 

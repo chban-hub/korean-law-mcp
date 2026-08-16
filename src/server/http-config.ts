@@ -1,6 +1,7 @@
 /** Validated HTTP security configuration, kept separate so startup is testable. */
 
 import { parseIntegerLimit, readExecutionLimits, type ExecutionLimits } from "../lib/execution-limits.js"
+import { resolveChainDeadlineMs } from "../tools/chain-deadline.js"
 
 const DEFAULT_BODY_LIMIT_BYTES = 100 * 1024
 const MAX_BODY_LIMIT_BYTES = 10 * 1024 * 1024
@@ -84,6 +85,11 @@ export function readHttpServerConfig(env: NodeJS.ProcessEnv = process.env): Http
   // 폴백 게이트도 같은 이유로 시작 시점에 검증한다 — parseInt 로 두면 오타 하나가
   // NaN 이 되고, 토큰버킷/일일캡 비교가 통째로 무력화돼 서버 키가 무방비로 열린다.
   const fallbackRpm = parseIntegerLimit("FALLBACK_RATE_LIMIT_RPM", env.FALLBACK_RATE_LIMIT_RPM, 120, 0, 100_000)
+
+  // 체인 데드라인도 부팅 시점 fail-fast (#150). 값은 여기 담지 않는다 — 소비는 체인이
+  // 호출 시점에 env 에서 직접 한다. 검증만 앞당겨, 오타 배포가 "체인 도구만 조용히
+  // 죽는" 무증상 부분 장애로 남지 않게 한다.
+  resolveChainDeadlineMs(env)
 
   return {
     host,

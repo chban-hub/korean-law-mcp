@@ -13,9 +13,21 @@
  * 원본 재시도 성공" 경로는 제한적이다. 주 경로는 토큰 URL 직접 파싱이다.
  */
 
-import { readResponseText } from "./response-body.js"
+import { readBodyPrefix } from "./response-body.js"
 import { ExecutionLimitError } from "./execution-limits.js"
 import { combineAbortSignals, getRequestSignal, requestContext, throwIfRequestCancelled } from "./session-state.js"
+
+/**
+ * 안티봇 판정에 읽는 프리픽스 크기.
+ *
+ * 챌린지 페이지는 `location.assign` 마커와 난독화 URL이 문서 앞머리에 오는 작은
+ * 단독 `<script>` 문서다 — 픽스처 전부(law-antibot.test.ts 6종) 마커가 첫 ~130바이트
+ * 안이고, 이식 원본(LexLink-ko-mcp `_follow_antibot`)의 관측도 같다. 4KB면 관측
+ * 최대치의 30배 여유다. 종전처럼 clone 전체를 읽으면 law.go.kr의 **모든** 성공 응답
+ * 본문이 예산에 이중 청구된다(#115와 같은 뿌리, #150). 마커가 프리픽스 밖에 오는
+ * 미관측 변형은 놓치지만, 그 실패 방향은 기존과 같은 "원본 응답 그대로 진행"이다.
+ */
+const ANTIBOT_PROBE_BYTES = 4096
 
 /**
  * 안티봇 JS의 두 난독화 패턴에서 리다이렉트 경로를 복원한다.
@@ -80,7 +92,9 @@ export async function followLawAntibot(
     let text: string
     const inspection = current.clone()
     try {
-      text = await readResponseText(inspection)
+      // 판정에 필요한 앞부분만 훔쳐본다 — 예산에 청구하지 않는다(진짜 읽기가 다시
+      // 청구하므로 여기서 세면 이중 계상). 마커가 잘려 못 읽으면 원본 진행이다.
+      ;({ text } = await readBodyPrefix(inspection, ANTIBOT_PROBE_BYTES))
     } catch (error) {
       if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted) {
         // `clone()` tees the body; cancelling one branch can wait for the
@@ -96,6 +110,9 @@ export async function followLawAntibot(
       void inspection.body?.cancel().catch(() => {})
       return hopped ? await finishWith(current) : null
     }
+    // 프리픽스만 읽었다 — 남은 가지는 버린다. await 금지: tee 한쪽만 취소하면
+    // 다른 가지가 끝날 때까지 settle되지 않는다(#115).
+    void inspection.body?.cancel().catch(() => {})
 
     // 안티봇 페이지가 아니면 종료 (첫 홉이면 변경 없음 = null)
     if (!text.includes("location.assign")) {

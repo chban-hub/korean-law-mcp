@@ -75,6 +75,35 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
   it("중복은 1회만", () => {
     expect(extractCaseNumbers("2013다61381 및 2013다61381")).toEqual(["2013다61381"])
   })
+
+  // #150: 미래연도+실재부호+수량 명사 산문("2030도3000명 증가")이 추출되면
+  // isImpossibleCaseNumber가 미래연도로 ✗ 실존불가를 단정한다 — 산문에 환각 배너가 붙는다.
+  it("숫자 뒤 수량 명사가 붙은 산문을 사건번호로 만들지 않는다", () => {
+    expect(extractCaseNumbers("2030도3000명 증가 전망이다")).toEqual([])
+    expect(extractCaseNumbers("2029도500건을 처리했다")).toEqual([])
+    expect(extractCaseNumbers("연간 2030도1000회 운행한다")).toEqual([])
+    expect(extractCaseNumbers("2030도3000원 인상안")).toEqual([])
+    expect(extractCaseNumbers("예산 2030도5000억 편성")).toEqual([])
+  })
+
+  // #150 양방향 검증: 실인용 뒤에는 조사가 바로 붙는 것이 정상 표기다.
+  // 수량 블랙리스트가 조사까지 삼키면 정탐이 통째로 죽는다 — 그쪽이 더 나쁜 실패다.
+  it("실인용 뒤 조사는 추출을 막지 않는다", () => {
+    expect(extractCaseNumbers("2013다61381의 판시취지")).toEqual(["2013다61381"])
+    expect(extractCaseNumbers("2013다61381을 파기하고")).toEqual(["2013다61381"])
+    expect(extractCaseNumbers("2013다61381이 변경한 법리")).toEqual(["2013다61381"])
+    expect(extractCaseNumbers("2013다61381은 전원합의체 판결이다")).toEqual(["2013다61381"])
+    expect(extractCaseNumbers("2013다61381에 따르면")).toEqual(["2013다61381"])
+    expect(extractCaseNumbers("2013다61381도 같은 취지이다")).toEqual(["2013다61381"])   // '도'는 부호이자 조사
+    expect(extractCaseNumbers("2013다61381만 보더라도")).toEqual(["2013다61381"])       // '만'은 수량 접미이자 조사 — 블랙리스트 금지
+  })
+
+  // #150: 구 파산법 사건부호 '파' — main의 compact-query-planner에는 있었는데
+  // 단일 원본(CASE_CODES) 통합 때 빠져 사건번호로 인식되지 않았다.
+  it("구 파산 사건부호 '파'를 사건번호로 인식한다", () => {
+    expect(extractCaseNumbers("서울지방법원 2020파123 결정")).toEqual(["2020파123"])
+    expect(extractCaseNumbers("2001파12의 파산선고")).toEqual(["2001파12"])
+  })
 })
 
 describe("isImpossibleCaseNumber — 구조적으로 불가능한 사건번호", () => {
@@ -94,6 +123,24 @@ describe("isImpossibleCaseNumber — 구조적으로 불가능한 사건번호",
     expect(isImpossibleCaseNumber("2027예산500", 2026)).toBe(false)
     expect(isImpossibleCaseNumber("2030서울100", 2026)).toBe(false)
     expect(isImpossibleCaseNumber("2027회계3", 2026)).toBe(false)
+  })
+
+  // #150: '파'가 CASE_CODES에 실리면 두 경로(추출·부존재 단정)가 같이 살아난다
+  it("미래 연도 '파' 사건번호는 실존 불가로 단정한다", () => {
+    expect(isImpossibleCaseNumber("2099파1", 2026)).toBe(true)
+    expect(isImpossibleCaseNumber("2020파123", 2026)).toBe(false)
+  })
+})
+
+describe("verifyCaseCitations — 수량 산문 오단정 방지 (#150)", () => {
+  it("수량 산문에 ✗ 실존불가를 단정하지 않는다", async () => {
+    const client = {
+      fetchApi: async () => { throw new Error("산문에는 조회 자체가 없어야 한다") },
+    } as unknown as LawApiClient
+    const r = await verifyCaseCitations(client, "이 정책으로 2030도3000명 증가가 예상된다.")
+    expect(r.total).toBe(0)
+    expect(r.fail).toBe(0)
+    expect(r.lines).toEqual([])
   })
 })
 

@@ -9,6 +9,7 @@
  */
 
 import { z } from "zod"
+import { MAX_CHAIN_QUERY } from "./chains.js"
 import { TOOL_CATEGORIES, V3_EXPOSED, describeCallPath } from "../lib/tool-profiles.js"
 import { selectSections, suggestCategories, browsableCategories } from "../lib/tool-discovery.js"
 import { formatToolError } from "../lib/errors.js"
@@ -28,7 +29,9 @@ export function setAllToolsRef(tools: McpTool[]) {
 // ========================================
 
 export const DiscoverToolsSchema = z.object({
-  intent: z.string().describe("찾고 싶은 도구의 의도 또는 카테고리 (예: '공정위', '조약', '용어', '헌재')"),
+  // 상한은 체인 query(#121)와 같은 값 — 무제한 텍스트가 별칭·설명 매칭 루프에 그대로 들어간다(#150)
+  intent: z.string().max(MAX_CHAIN_QUERY)
+    .describe("찾고 싶은 도구의 의도 또는 카테고리 (예: '공정위', '조약', '용어', '헌재')"),
 })
 
 /**
@@ -71,8 +74,9 @@ export async function discoverTools(
     return `[${section.category}]\n${section.tools.map(toolLine).join("\n")}`
   }).join("\n\n")
   // 잘린 게 있으면 반드시 말한다 — 조용히 자르면 소비자는 그게 전부인 줄 안다.
+  // "연관도 낮은"이라고 말하지 않는다 — 연관도 계산은 없고 티어·coverage 순 절단이다(#150).
   const cut = omitted > 0
-    ? `\n\n(연관도 낮은 ${omitted}개 카테고리 생략 — intent를 좁히면 나머지가 보입니다.)`
+    ? `\n\n(그 외 ${omitted}개 카테고리 생략 — intent를 좁히면 나머지가 보입니다.)`
     : ""
 
   return {

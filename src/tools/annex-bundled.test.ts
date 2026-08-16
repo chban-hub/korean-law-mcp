@@ -52,6 +52,18 @@ describe("extractBundledSection — 가지번호 (부록 1)", () => {
     expect(isBundledAnnex("[별표1~5] 과태료 부과기준")).toBe(true)
     expect(isBundledAnnex("[별표4] 대지안의 공지기준")).toBe(false)
   })
+
+  // #150-4: 묶음 표제도 호 중위 표기("## [별표 제1호의2]")로 올 수 있다.
+  it("'## [별표 제1호의2]' 호 중위 표제를 읽는다", () => {
+    const md = "## [별표 제1호의2] 가지 내용\n본문A\n## [별표 2] 다음\n본문B"
+    const out = extractBundledSection(md, "1의2")
+    expect(out).toContain("가지 내용")
+    expect(out).not.toContain("본문B")
+  })
+
+  it("본번 요청은 호 중위 가지 표제를 삼키지 않는다", () => {
+    expect(extractBundledSection("## [별표 제1호의2] 가지\n본문A", "1")).toBeNull()
+  })
 })
 
 // ─── 도구 표면: 못 찾으면 조용한 폴백 대신 명시 실패 ───

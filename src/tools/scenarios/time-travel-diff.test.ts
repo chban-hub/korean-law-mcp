@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { changeExcerpt, excerptBudget, extractLawSnapshot, dot, normalizeText, snapToClauseStart } from "./time-travel-diff.js"
+import { changeExcerpt, diffArticles, excerptBudget, extractLawSnapshot, dot, normalizeText, snapToClauseStart } from "./time-travel-diff.js"
 
 describe("extractLawSnapshot 출처 메타 (#96)", () => {
   const json = {
@@ -32,6 +32,50 @@ describe("extractLawSnapshot 출처 메타 (#96)", () => {
   it("dot는 YYYYMMDD를 표기용으로 바꾼다", () => {
     expect(dot("20231231")).toBe("2023.12.31")
     expect(dot("")).toBe("")
+  })
+})
+
+// #150 승계: 항내용+항.호.호내용만 순회해 목(目)·조문 직속 호가 스냅샷에서 빠졌다.
+// 목만 개정된 조문은 "본문 동일"로 무음 누락된다 — diff 도구의 무음 누락은 "개정 없음" 단정이다.
+// 순회 대상은 article-parser extractHangContent와 같은 대응(hang.목 형제 배열·ho.목).
+describe("extractLawSnapshot 목·조문 직속 호 합산 (#150)", () => {
+  const lawWithMok = (mokContent: string) => ({
+    법령: {
+      기본정보: {},
+      조문: { 조문단위: [{
+        조문여부: "조문", 조문번호: "5", 조문제목: "임원",
+        조문내용: "제5조(임원) 조합에 다음 각 호의 임원을 둔다.",
+        항: { 항내용: "① 임원은 다음 각 호와 같다.", 호: { 호내용: "1. 이사장 1명", 목: { 목내용: mokContent } } },
+      }] },
+    },
+  })
+
+  it("호 아래 목 텍스트가 스냅샷 본문에 실린다", () => {
+    expect(extractLawSnapshot(lawWithMok("가. 상근 이사")).articles[0].body).toContain("가. 상근 이사")
+  })
+
+  it("목만 개정돼도 본문 변화로 잡힌다", () => {
+    const oldS = extractLawSnapshot(lawWithMok("가. 상근 이사"))
+    const newS = extractLawSnapshot(lawWithMok("가. 상근 이사 및 감사"))
+    expect(diffArticles(oldS.articles, newS.articles).modified).toHaveLength(1)
+  })
+
+  it("항 레벨 형제 배열로 오는 목도 스냅샷에 실린다", () => {
+    const law = { 법령: { 기본정보: {}, 조문: { 조문단위: [{
+      조문여부: "조문", 조문번호: "6", 조문내용: "제6조(사업) 조합은 다음 사업을 한다.",
+      항: { 항내용: "① 다음 각 호의 사업을 한다.", 호: [{ 호내용: "1. 지도 사업" }], 목: [{ 목번호: "가", 목내용: "가. 회원 지도" }] },
+    }] } } }
+    expect(extractLawSnapshot(law).articles[0].body).toContain("가. 회원 지도")
+  })
+
+  it("항 없이 조문 직속으로 오는 호도 스냅샷에 실린다", () => {
+    const law = { 법령: { 기본정보: {}, 조문: { 조문단위: [{
+      조문여부: "조문", 조문번호: "2", 조문내용: "제2조(정의) 이 법에서 사용하는 용어의 뜻은 다음과 같다.",
+      호: [{ 호내용: "1. \"조합\"이란 사업자 단체를 말한다.", 목: { 목내용: "가. 지역 조합" } }],
+    }] } } }
+    const body = extractLawSnapshot(law).articles[0].body
+    expect(body).toContain("\"조합\"이란")
+    expect(body).toContain("가. 지역 조합")
   })
 })
 

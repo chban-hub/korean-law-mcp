@@ -27,11 +27,13 @@ export interface ArticleAnchor {
 
 /**
  * match  = 조번호 일치 + 법령명 확정 일치
- * hold   = 조번호 일치, 법령명 판정 불가 → **유지**한다
- * mismatch = 조번호 불일치, 또는 법령이 확정적으로 다름 → 제외
+ * hold   = 조번호 일치, 법령명 판정 불가(구 제명 가능성 포함) → **유지**한다
+ * mismatch = 조번호 불일치 → 제외
+ * law-mismatch = 조번호는 맞으나 법령이 확정적으로 다름 → 제외.
+ *   mismatch와 합쳐 두면 제외 사유가 전부 "조문 불일치"로 보고된다 (#150)
  * silent = 조문 표기 자체가 없음 → 유지
  */
-export type AnchorVerdict = "match" | "hold" | "mismatch" | "silent"
+export type AnchorVerdict = "match" | "hold" | "mismatch" | "law-mismatch" | "silent"
 
 /** 한자·이체자 표기를 한글 표기로 접는다 (law-parser의 정규화와 같은 대응) */
 function foldNotation(text: string): string {
@@ -133,6 +135,16 @@ export function classifyLawName(candidate: string, target: string): LawNameVerdi
   return isContractionOf(c, t) ? "unknown" : "different"
 }
 
+// "구 매장및묘지등에관한법률 제5조 위헌소원" — 위헌심판은 행위시법 심사라 구 제명 인용이
+// 흔하다. 제명변경 전신 여부는 문자열만으로 알 수 없으므로 "구 " 신호가 있는 different만
+// 보류로 완화한다(#150). 어절 끝 '구'(동대문구 등)를 신호로 읽지 않도록 앞이 한글이면
+// 성립하지 않고, 낫표 열림·한자 舊 표기는 허용한다.
+const OLD_LAW_PREFIX_RE = /(?:^|[^가-힣])[구舊]\s*[「『【〔]?\s*$/
+
+function hasOldLawPrefix(text: string, lawNameStart: number): boolean {
+  return OLD_LAW_PREFIX_RE.test(text.slice(0, lawNameStart))
+}
+
 /** 텍스트가 앵커 조문을 가리키는지 판정. 조문 표기가 없으면 silent(판정 보류). */
 export function classifyArticleRefs(text: string, anchor: ArticleAnchor): AnchorVerdict {
   const folded = foldNotation(text || "")
@@ -148,6 +160,7 @@ export function classifyArticleRefs(text: string, anchor: ArticleAnchor): Anchor
 
   let sawRef = false
   let held = false
+  let lawMismatch = false
   let m: RegExpExecArray | null
   ARTICLE_REF_RE.lastIndex = 0
   while ((m = ARTICLE_REF_RE.exec(folded)) !== null) {
@@ -160,9 +173,11 @@ export function classifyArticleRefs(text: string, anchor: ArticleAnchor): Anchor
     // 조번호는 맞다. 이 참조가 어느 법령의 것인지 본다.
     const verdict = m[1] ? classifyLawName(m[1], anchor.lawName) : "unknown"
     if (verdict === "same") return "match"
-    if (verdict === "unknown") held = true
-    // different면 이 참조는 남의 법령 것 — 다음 참조를 계속 본다
+    // 법령명 그룹이 패턴 선두라 m[1]이 있으면 m.index가 곧 법령명 시작 — 구 접두는 그 앞을 본다
+    if (verdict === "unknown" || hasOldLawPrefix(folded, m.index)) held = true
+    else lawMismatch = true                       // 확정 타법 — 다음 참조를 계속 본다
   }
   if (held) return "hold"
+  if (lawMismatch) return "law-mismatch"
   return sawRef ? "mismatch" : "silent"
 }

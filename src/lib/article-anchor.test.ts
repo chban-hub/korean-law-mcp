@@ -139,8 +139,10 @@ describe("classifyLawName — 법령명 축 (#116)", () => {
 describe("classifyArticleRefs — 법령명 축 결합 (#116)", () => {
   const a1 = parseArticleAnchor("제1조", "형법")!
 
+  // #150: 제외 사유를 축별로 보고하기 위해 "조번호 불일치(mismatch)"와
+  // "조번호 일치·타법 확정(law-mismatch)"을 구분한다 — 둘 다 제외 대상인 것은 그대로다.
   it("다른 법령의 같은 조번호는 제외한다 (형법 제1조 → 군형법 제1조)", () => {
-    expect(classifyArticleRefs("군형법 제1조 제3항 제3호 등 위헌소원", a1)).toBe("mismatch")
+    expect(classifyArticleRefs("군형법 제1조 제3항 제3호 등 위헌소원", a1)).toBe("law-mismatch")
   })
 
   it("같은 법령은 확정 매칭", () => {
@@ -167,5 +169,37 @@ describe("classifyArticleRefs — 법령명 축 결합 (#116)", () => {
   it("법령명을 주지 않으면 종전대로 조번호만 본다 (법령 축 미적용)", () => {
     const noName = parseArticleAnchor("제1조")!
     expect(classifyArticleRefs("군형법 제1조 위헌소원", noName)).toBe("match")
+  })
+})
+
+describe("classifyArticleRefs — 구 법령 접두 보류 (#150)", () => {
+  const aJangsa = parseArticleAnchor("제5조", "장사 등에 관한 법률")!
+
+  // 위헌심판은 행위시법 심사라 "구 OO법 제N조 위헌소원" 사건명이 흔하다. 제명변경 전신
+  // (매장및묘지등에관한법률 → 장사 등에 관한 법률)은 문자열만으로 알 수 없으므로,
+  // "구 " 신호가 있으면 확정 제외(different)를 보류로 완화한다 — false drop이 최악이다.
+  it("'구 ' 접두 인용의 타법 판정은 제외가 아니라 보류다", () => {
+    expect(classifyArticleRefs("구 매장및묘지등에관한법률 제5조 위헌소원", aJangsa)).toBe("hold")
+  })
+
+  it("낫표·한자 舊 표기도 같은 보류를 받는다", () => {
+    expect(classifyArticleRefs("구 「매장및묘지등에관한법률」 제5조 위헌소원", aJangsa)).toBe("hold")
+    expect(classifyArticleRefs("舊 매장및묘지등에관한법률 제5조 위헌소원", aJangsa)).toBe("hold")
+  })
+
+  // #116의 경계는 그대로다 — 접두 없는 진짜 타법은 계속 확정 제외.
+  it("접두 없는 타법은 계속 제외된다", () => {
+    expect(classifyArticleRefs("매장및묘지등에관한법률 제5조 위헌소원", aJangsa)).toBe("law-mismatch")
+  })
+
+  // '구'로 끝나는 보통 어절(행정구역 등)은 구 법령 신호가 아니다.
+  it("어절 끝의 '구'는 구 법령 신호로 읽지 않는다", () => {
+    const a5 = parseArticleAnchor("제5조", "형법")!
+    expect(classifyArticleRefs("동대문구 조례 제5조", a5)).toBe("law-mismatch")
+  })
+
+  // 보류는 법령 축에만 적용된다 — 조번호가 다르면 구법령이라도 살릴 이유가 없다.
+  it("'구 ' 접두라도 조번호 불일치는 제외", () => {
+    expect(classifyArticleRefs("구 매장및묘지등에관한법률 제17조 위헌소원", aJangsa)).toBe("mismatch")
   })
 })

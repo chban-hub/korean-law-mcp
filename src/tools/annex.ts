@@ -8,7 +8,9 @@ import { fetchWithRetry } from "../lib/fetch-with-retry.js"
 import { readResponseArrayBuffer } from "../lib/response-body.js"
 import { isDownloadNoticeOnly, parseAnnexFile } from "../lib/annex-file-parser.js"
 import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js"
-import { ErrorCodes, formatToolError, notFoundResponse } from "../lib/errors.js"
+import { ErrorCodes, formatToolError, LawApiError, notFoundResponse } from "../lib/errors.js"
+import { ExecutionLimitError } from "../lib/execution-limits.js"
+import { getRequestSignal } from "../lib/session-state.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
 import { fetchLawAnnexUnits, findMissingUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
 import { parseLawNameAndHint } from "../lib/annex-notation.js"
@@ -60,38 +62,59 @@ export async function getAnnexes(
       listReason = r.reason
     }
 
+    // "rung이 던졌다(장애)"와 "정상 응답인데 0건(부존재)"은 다른 사실이다 (#150).
+    // 장애를 삼키고 전멸 끝에 "DB에 없습니다"를 내면 일시 장애가 부존재 단정으로 둔갑한다.
+    const rungFailures: string[] = []
+    const noteRungFailure = (error: unknown): void => {
+      // 예산 소진·취소는 장애 관측이 아니라 중단 명령 — 다음 단으로 넘어가면 안 된다.
+      if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted) throw error
+      rungFailures.push(error instanceof Error ? error.message : String(error))
+    }
+
     // 1차: 원래 법령명 + knd 필터
-    adopt(await collectAnnexList(apiClient, {
-      lawName: normalizedLawName, knd: input.knd, apiKey: input.apiKey
-    }))
+    try {
+      adopt(await collectAnnexList(apiClient, {
+        lawName: normalizedLawName, knd: input.knd, apiKey: input.apiKey
+      }))
+    } catch (error) {
+      noteRungFailure(error)
+    }
 
     // 2차: 결과 없으면 knd 제거 (법제처가 "별표"를 "서식"으로 분류하는 경우)
     if (annexList.length === 0 && input.knd) {
-      adopt(await collectAnnexList(apiClient, {
-        lawName: normalizedLawName, apiKey: input.apiKey
-      }))
+      try {
+        adopt(await collectAnnexList(apiClient, {
+          lawName: normalizedLawName, apiKey: input.apiKey
+        }))
+      } catch (error) {
+        noteRungFailure(error)
+      }
     }
 
     // 3차: 모법명으로 재검색 ("여권법 시행규칙" → "여권법")
     if (annexList.length === 0) {
       const parentName = extractParentLawName(normalizedLawName)
       if (parentName) {
-        const result3 = await collectAnnexList(apiClient, {
-          lawName: parentName, apiKey: input.apiKey
-        })
-        // 원래 법령명 매칭 필터
-        const filtered = result3.list.filter((a: AnnexItem) => {
-          const name = String(a.관련법령명 || a.관련자치법규명 || a.관련행정규칙명 || "").replace(/<[^>]+>/g, "")
-          return name === normalizedLawName
-        })
-        // 필터가 걸리면 표시 모집단이 모법 전체가 아니다 — 그때의 절단은 이 목록의 사실이 아니다
-        const narrowed = filtered.length > 0
-        adopt({
-          list: narrowed ? filtered : result3.list,
-          type: result3.type,
-          truncated: narrowed ? false : result3.truncated,
-          reason: narrowed ? undefined : result3.reason,
-        })
+        try {
+          const result3 = await collectAnnexList(apiClient, {
+            lawName: parentName, apiKey: input.apiKey
+          })
+          // 원래 법령명 매칭 필터
+          const filtered = result3.list.filter((a: AnnexItem) => {
+            const name = String(a.관련법령명 || a.관련자치법규명 || a.관련행정규칙명 || "").replace(/<[^>]+>/g, "")
+            return name === normalizedLawName
+          })
+          // 필터가 걸리면 표시 모집단이 모법 전체가 아니다 — 그때의 절단은 이 목록의 사실이 아니다
+          const narrowed = filtered.length > 0
+          adopt({
+            list: narrowed ? filtered : result3.list,
+            type: result3.type,
+            truncated: narrowed ? false : result3.truncated,
+            reason: narrowed ? undefined : result3.reason,
+          })
+        } catch (error) {
+          noteRungFailure(error)
+        }
       }
     }
 
@@ -105,12 +128,23 @@ export async function getAnnexes(
           lawName: normalizedLawName, apiKey: input.apiKey
         })
         if (result4.list.length > 0) adopt({ ...result4, type: "admin" })
-      } catch {
-        // admin fallback 실패 → 무시하고 진행
+      } catch (error) {
+        noteRungFailure(error)
       }
     }
 
     if (annexList.length === 0) {
+      // 어느 단도 정상 목록을 주지 못했고 장애 관측이 있다 — 부존재를 단정할 근거가 없다.
+      if (rungFailures.length > 0) {
+        return formatToolError(new LawApiError(
+          `"${normalizedLawName}" 별표/서식 조회 실패 — 존재 여부를 확인할 수 없습니다 (업스트림 장애: ${rungFailures[0]})`,
+          ErrorCodes.UPSTREAM_NO_DATA,
+          [
+            "⚠️ 이 응답은 별표/서식의 부존재를 증명하지 않습니다. '해당 별표 없음'으로 단정하지 마세요.",
+            "잠시 후 같은 호출을 다시 시도하세요.",
+          ],
+        ), "get_annexes")
+      }
       return notFoundResponse(
         `"${normalizedLawName}"에 대한 별표/서식이 법제처 DB에 없습니다.`,
         [

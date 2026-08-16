@@ -36,6 +36,14 @@ describe("HTTP security configuration", () => {
     expect(() => readHttpServerConfig({ MCP_MAX_BODY_BYTES: "NaN" })).toThrow("MCP_MAX_BODY_BYTES must be an integer")
   })
 
+  // #150: 다른 MCP_MAX_* 처럼 부팅 시점 fail-fast — 호출 시점 throw로 남기면
+  // 오타 배포가 "체인 도구만 조용히 죽는" 무증상 부분 장애가 된다.
+  it("fails startup for an invalid chain deadline instead of at call time", () => {
+    expect(() => readHttpServerConfig({ MCP_CHAIN_DEADLINE_MS: "45s" })).toThrow("MCP_CHAIN_DEADLINE_MS")
+    expect(() => readHttpServerConfig({ MCP_CHAIN_DEADLINE_MS: "1000" })).toThrow("MCP_CHAIN_DEADLINE_MS")
+    expect(() => readHttpServerConfig({ MCP_CHAIN_DEADLINE_MS: "30000" })).not.toThrow()
+  })
+
   it("validates the HTTP port as a whole number", () => {
     expect(parseHttpPort(undefined, { PORT: "8123" })).toBe(8123)
     expect(() => parseHttpPort(undefined, { PORT: "8123oops" })).toThrow("PORT must be an integer")

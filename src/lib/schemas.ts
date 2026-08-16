@@ -3,7 +3,7 @@
  */
 
 import { z } from "zod"
-import { cutAtSafeBoundary, extractSummary } from "./truncate-text.js"
+import { cutAtSafeBoundary, extractSummary, sliceWellFormed, summaryTail } from "./truncate-text.js"
 
 /**
  * 날짜 스키마 (YYYYMMDD 형식)
@@ -95,14 +95,22 @@ export function truncateResponse(text: string, maxSizeOrOpts: number | TruncateO
   // 같은 커밋이 하드컷을 없애려고 cutAtSafeBoundary를 만들어 놓고 이 경로만 빠뜨렸다(#145).
   if (summary) {
     const extracted = extractSummary(text, maxSize)
-    return extracted.length <= maxSize ? extracted : cutAtSafeBoundary(extracted, maxSize)
+    if (extracted.length <= maxSize) return extracted
+    // 꼬리(📋 표기)는 문서 맨 끝이라 끝에서 자르면 꼬리부터 사라진다 — 절단·요약
+    // 사실이 무표기가 된다(#150). 꼬리 길이를 예산에서 예약하고 본문만 경계 절단 후
+    // 다시 붙인다 — 아래 최상위 절단(#92)과 같은 패턴. 재부착 꼬리는 본문이 줄어든
+    // 만큼 짧아지거나 같으므로 상한을 넘지 않는다.
+    const tailBudget = maxSize - summaryTail(text.length, extracted.length).length
+    if (tailBudget <= 0) return sliceWellFormed(extracted, maxSize)
+    const body = cutAtSafeBoundary(extracted, tailBudget)
+    return body + summaryTail(text.length, body.length)
   }
 
   // 안내문은 슬라이스 "뒤에" 붙으므로 그 길이를 미리 빼야 한다.
   // 빼지 않으면 결과가 maxSize+안내문 길이(5만 자 요청에 50,030자)가 된다(#92).
   const notice = `\n\n⚠️ 응답이 너무 길어 ${maxSize.toLocaleString()}자로 잘렸습니다.`
   const budget = maxSize - notice.length
-  if (budget <= 0) return text.slice(0, maxSize)
+  if (budget <= 0) return sliceWellFormed(text, maxSize)
   return cutAtSafeBoundary(text, budget) + notice
 }
 
@@ -159,7 +167,7 @@ export function truncateSections(
   if (result.length > totalMax) {
     const notice = `\n\n⚠️ 전체 응답이 ${totalMax.toLocaleString()}자로 잘렸습니다.`
     const budget = totalMax - notice.length
-    result = budget > 0 ? cutAtSafeBoundary(result, budget) + notice : result.slice(0, totalMax)
+    result = budget > 0 ? cutAtSafeBoundary(result, budget) + notice : sliceWellFormed(result, totalMax)
   }
 
   return result

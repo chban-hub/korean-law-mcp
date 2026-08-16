@@ -14,6 +14,7 @@ import {
   startChainDeadline,
   raceDeadline,
   timedOutSection,
+  timedOutChainNotice,
 } from "./chain-deadline.js"
 
 /** 절대 스스로 끝나지 않는 갈래 — 데드라인이 끊어 줘야 한다 */
@@ -95,5 +96,12 @@ describe("미완 섹션 마커", () => {
     expect(s).toContain("관련 판례")
     expect(s).toContain("시간 한도")
     expect(s).toContain("search_precedents")
+  })
+
+  // 프리픽스(기반 탐색) 만료는 섹션 단위가 아니라 "여기서부터 전부"라 별도 표시가 필요하다(#150)
+  it("프리픽스 만료 말미 표시도 원인과 다음 행동을 밝힌다", () => {
+    const s = timedOutChainNotice()
+    expect(s).toContain("시간 한도")
+    expect(s).toContain("개별 도구")
   })
 })

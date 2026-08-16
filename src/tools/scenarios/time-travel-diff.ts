@@ -49,13 +49,20 @@ export function extractLawSnapshot(lawJson: any): LawSnapshot {
     const joNum = String(u.조문번호 || "")
     const joBranch = String(u.조문가지번호 || "0")
     let body = normalizeText(String(u.조문내용 || ""))
-    // 항/호/목 본문 합산 (정규화)
+    // 항/호/목 본문 합산 (정규화). 순회 대상은 article-parser extractHangContent와 같다 —
+    // 목은 호 자식으로도, 항 레벨 형제 배열로도 오고, 호는 항 없이 조문 직속으로도 온다.
+    // 어느 하나라도 빼먹으면 그 단위만 개정된 조문이 "본문 동일"로 무음 누락된다 (#150).
+    // 표시용 순서 복원(groupMokByReset)은 diff에 불필요 — 텍스트 존재만 반영한다.
+    const appendHo = (ho: any) => {
+      body += " " + normalizeText(String(ho.호내용 || ""))
+      for (const mok of toArray<any>(ho.목)) body += " " + normalizeText(String(mok.목내용 || ""))
+    }
     for (const h of toArray<any>(u.항)) {
       body += " " + normalizeText(String(h.항내용 || ""))
-      for (const ho of toArray<any>(h.호)) {
-        body += " " + normalizeText(String(ho.호내용 || ""))
-      }
+      for (const ho of toArray<any>(h.호)) appendHo(ho)
+      for (const mok of toArray<any>(h.목)) body += " " + normalizeText(String(mok.목내용 || ""))
     }
+    for (const ho of toArray<any>(u.호)) appendHo(ho)
     articles.push({
       joNum,
       joBranch,

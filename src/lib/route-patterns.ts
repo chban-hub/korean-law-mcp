@@ -51,6 +51,21 @@ const CASE_NO_RE = new RegExp(CASE_NO_SRC)
 /** cite_check 트리거 어휘 — 두 어순이 같은 목록을 본다 */
 const CITE_CHECK_KEYWORDS = "유효|살아|변경|폐기|뒤집|생사|추적|아직|citator"
 
+/** 법령명 접미사를 가졌지만 법령명이 아닌 일반 낱말 — explicit_law·statistics 공용 블랙리스트 */
+const NON_LAW_WORD_RE = /^(?:방법|변경법|입법|사법|문법|용법|어법|수법|기법|활법|진법|심법|산법)$/
+
+/**
+ * 특정 법령·조문을 지목하는 신호 — query 를 버리는 패턴(statistics)의 _skip 판정용(#150).
+ * `법령`은 법으로 끝나지 않아 걸리지 않고, `방법` 류는 블랙리스트로 거른다.
+ */
+function hasLawNameSignal(query: string): boolean {
+  if (/제\s*\d{1,4}\s*조/.test(query)) return true
+  for (const m of query.matchAll(/(?<![가-힣])([가-힣]+(?:법|법률|시행령|시행규칙)|법률)(?![가-힣])/g)) {
+    if (!NON_LAW_WORD_RE.test(m[1])) return true
+  }
+  return false
+}
+
 // `(?<![가-힣])` 는 낱말 중간에서 시작하는 시도를 O(1) 에 쳐낸다 —
 // 없으면 `[가-힣]+` 가 붙어 있는 한글 덩어리에서 시작 위치마다 끝까지 훑어 제곱이 된다(#121)
 const routePatterns: Pattern[] = [
@@ -199,7 +214,9 @@ const routePatterns: Pattern[] = [
   {
     name: "precedent",
     patterns: [
-      /판례|판결|대법원\s*판/,
+      // `판례`는 심판례 합성어(행정심판례·조세심판례)의 꼬리를 물지 않는다 — 물면
+      // admin_appeal/tax_tribunal 의 양보 가드(#150)가 합성어 질의까지 넘겨 #129 가 역행한다
+      /(?<!심)판례|판결|대법원\s*판/,
     ],
     tool: "search_precedents",
     // `전문`은 낱말 경계 필수 — 전문가·전문의·전문성이 "가"·"의"·"성"으로 잘린다.
@@ -228,8 +245,9 @@ const routePatterns: Pattern[] = [
       /헌재|헌법재판|위헌/,
     ],
     tool: "search_constitutional_decisions",
-    // 탐지는 `위헌` 도 보지만 제거하지는 않는다 — "위헌성"이 "성"으로 잘린다
-    extract: searchExtract(/헌재|헌법\s*재판소?|결정례?/g),
+    // 탐지는 `위헌` 도 보지만 제거하지는 않는다 — "위헌성"이 "성"으로 잘린다.
+    // `결정례?` 는 "결정문"에서 고아 "문"을 남긴다(#150) — 례·문을 통으로 걷는다
+    extract: searchExtract(/헌재|헌법\s*재판소?|결정(?:례|문)?/g),
     reason: "헌재 키워드 → 헌재 결정례 검색",
     priority: 10,
   },
@@ -244,7 +262,9 @@ const routePatterns: Pattern[] = [
     // `례` 단독 제거 금지 — 사례·선례·관례·비례가 전부 잘린다
     extract: searchExtract(/행정\s*심판례?|행심/g),
     // `행정심판례` 는 `판례` 를 품는다 — precedent(10)보다 앞서야 심판례 질의를 뺏기지 않는다(#129).
-    // 한글엔 낱말 경계가 없어 `판례` 쪽 부정 예측(#111 반증 사례)보다 순위 조정이 안전하다
+    // 역방향(#150): "재결 취소 대법원 판례"처럼 법원 판례를 명시하면 precedent 가 받아 간다 —
+    // precedent 의 `판례`가 (?<!심) 이라 합성어는 넘어가지 않으므로 두 방향이 동시에 성립한다
+    yieldsTo: ["precedent"],
     reason: "행정심판 키워드 → 행정심판례 검색",
     priority: 9,
   },
@@ -256,8 +276,11 @@ const routePatterns: Pattern[] = [
       /조세\s*심판|세금\s*심판/,
     ],
     tool: "search_tax_tribunal_decisions",
-    extract: searchExtract(/조세\s*심판원?|세금\s*심판|결정례?/g),
-    // `조세심판례` 도 `판례` 를 품는다 — 같은 이유로 precedent 보다 앞선다(#129)
+    // `심판원?` 만으로는 "조세심판례"에서 고아 `례`가, `결정례?` 는 "결정문"에서 고아 `문`이 남는다(#150)
+    extract: searchExtract(/조세\s*심판(?:원|례)?|세금\s*심판|결정(?:례|문)?/g),
+    // `조세심판례` 도 `판례` 를 품는다 — 같은 이유로 precedent 보다 앞서고(#129),
+    // 법원 판례를 명시한 질의는 admin_appeal 과 같은 가드로 양보한다(#150)
+    yieldsTo: ["precedent"],
     reason: "조세심판 키워드 → 조세심판 결정례 검색",
     priority: 9,
   },
@@ -401,7 +424,8 @@ const routePatterns: Pattern[] = [
       /공정위|공정거래\s*위원회?|시장지배|불공정\s*거래|담합/,
     ],
     tool: "search_ftc_decisions",
-    extract: searchExtract(/공정거래\s*위원회?|공정위|결정문?/g),
+    // `결정문?` 은 "결정례"에서 고아 "례"를 남긴다(#150) — 결정계 strip 은 `결정(?:례|문)?` 로 통일
+    extract: searchExtract(/공정거래\s*위원회?|공정위|결정(?:례|문)?/g),
     reason: "공정위 키워드 → 공정위 결정문 검색",
     priority: 10,
   },
@@ -413,7 +437,7 @@ const routePatterns: Pattern[] = [
       /개인정보\s*위|개인정보\s*보호\s*위원회?|개인정보\s*침해/,
     ],
     tool: "search_pipc_decisions",
-    extract: searchExtract(/개인정보\s*보호\s*위원회?|개인정보\s*위|결정문?/g),
+    extract: searchExtract(/개인정보\s*보호\s*위원회?|개인정보\s*위|결정(?:례|문)?/g),
     reason: "개인정보위 키워드 → 개인정보위 결정문 검색",
     priority: 10,
   },
@@ -425,7 +449,7 @@ const routePatterns: Pattern[] = [
       /노동\s*위원회?|부당\s*해고|부당\s*노동|노동위/,
     ],
     tool: "search_nlrc_decisions",
-    extract: searchExtract(/중앙\s*노동\s*위원회?|노동\s*위원회?|노동위|결정문?/g),
+    extract: searchExtract(/중앙\s*노동\s*위원회?|노동\s*위원회?|노동위|결정(?:례|문)?/g),
     reason: "노동위 키워드 → 노동위 결정문 검색",
     priority: 10,
   },
@@ -474,6 +498,10 @@ const routePatterns: Pattern[] = [
     ],
     tool: "get_law_statistics",
     extract: (query) => {
+      // 특정 법령·조문을 지목한 질의("최근 개정된 근로기준법 제60조")는 전국 통계가 아니라
+      // 그 법령의 개정 이력 의도다 — 여기서 받으면 query 를 버리므로 법령명·조문이 통째로
+      // 사라진다(#150). _skip 으로 다음 순위(amendment 10)에 넘긴다
+      if (hasLawNameSignal(query)) return { _skip: true }
       const daysMatch = query.match(/(\d+)\s*일/)
       return { days: daysMatch ? parseInt(daysMatch[1], 10) : 30, count: 20 }
     },
@@ -712,14 +740,13 @@ const routePatterns: Pattern[] = [
     tool: "search_law",
     extract: (query) => {
       const q = query.trim()
-      // "방법", "변경법" 등 법령명이 아닌 일반 단어 블랙리스트
-      const nonLawSuffixes = /^(방법|변경법|입법|사법|문법|용법|어법|수법|기법|활법|진법|심법|산법)$/
-      if (nonLawSuffixes.test(q)) {
+      // "방법", "변경법" 등 법령명이 아닌 일반 단어는 블랙리스트(NON_LAW_WORD_RE 공용)로 거른다
+      if (NON_LAW_WORD_RE.test(q)) {
         // 단독 비법령어 → 다음 패턴으로 (없으면 chain_full_research 폴백)
         return { _skip: true }
       }
       const lastWord = q.split(/\s+/).pop() || ""
-      if (nonLawSuffixes.test(lastWord)) {
+      if (NON_LAW_WORD_RE.test(lastWord)) {
         return { _skip: true }
       }
       return { query: q }

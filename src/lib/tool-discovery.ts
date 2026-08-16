@@ -122,7 +122,8 @@ export function selectSections(query: string, tool: ToolLookup): Discovery {
     if (matched.length > 0) found.push({ category, tools: matched, tier: TIER_DESCRIPTION })
   }
 
-  // Array#sort 는 안정 정렬 — 같은 티어 안에서는 TOOL_CATEGORIES 삽입 순서가 유지된다.
+  // Array#sort 는 안정 정렬 — 같은 티어 안에서 도구 귀속(아래 dedup의 선점 순서)은
+  // TOOL_CATEGORIES 삽입 순서가 유지된다.
   found.sort((a, b) => a.tier - b.tier)
 
   const claimed = new Set<string>()
@@ -132,6 +133,16 @@ export function selectSections(query: string, tool: ToolLookup): Discovery {
     fresh.forEach(name => claimed.add(name))
     if (fresh.length > 0) unique.push({ ...section, tools: fresh })
   }
+
+  // 표시 순서: 설명 매칭(티어 3)만은 삽입 순서가 아니라 ①노출 도구를 실제로 싣는
+  // 섹션(1-hop이 곧 가장 싼 경로 — #110·browsableCategories 와 같은 원칙),
+  // ②싣는 도구 수 순으로 세운다 — 삽입 순서만 따르면 뒤에 선언된 결정례통합
+  // (search_decisions, 노출)이 `판례`에서 상한 5에 잘렸다(#150). dedup 뒤에 세워야
+  // legal_research 중복 매칭으로 비게 된 껍데기 섹션이 노출 자리를 차지하지 않는다.
+  const exposedFresh = (s: DiscoverySection) => (s.tools.some(name => V3_EXPOSED.has(name)) ? 1 : 0)
+  unique.sort((a, b) =>
+    a.tier - b.tier
+    || (a.tier === TIER_DESCRIPTION ? (exposedFresh(b) - exposedFresh(a) || b.tools.length - a.tools.length) : 0))
 
   return {
     sections: unique.slice(0, MAX_SECTIONS),

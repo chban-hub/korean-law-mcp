@@ -16,6 +16,8 @@
 import type { LawApiClient } from "./api-client.js"
 import { lawCache } from "./cache.js"
 import { classifyArticleRefs, parseArticleAnchor } from "./article-anchor.js"
+import { ExecutionLimitError } from "./execution-limits.js"
+import { getRequestSignal } from "./session-state.js"
 
 /** 건당 1왕복이 붙는다 — 기본값을 올릴 땐 요청 예산(기본 48회)과 함께 보라 */
 export const DEFAULT_RELEVANCE_LIMIT = 10
@@ -46,7 +48,10 @@ async function fetchBody(apiClient: LawApiClient, id: string, apiKey?: string): 
     const text = await apiClient.getOrdinance(id, undefined, apiKey)
     lawCache.set(key, text)
     return text
-  } catch {
+  } catch (error) {
+    // 예산 소진·취소는 '미확인'이 아니라 요청 중단이다 — 삼키면 남은 병렬 조회와
+    // 후속 작업이 계속 돈다 (#150).
+    if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted) throw error
     return ""   // 조회 실패는 '무관'이 아니라 '미확인'
   }
 }
@@ -79,11 +84,15 @@ export async function filterByArticleRelevance<T>(
 
   const confirmed: T[] = []
   const unconfirmed: T[] = []
+  let checked = 0
   head.forEach((item, i) => {
+    // 본문을 실제로 받아낸 건만 "열어본" 것으로 센다 — 조회 실패를 계상하면
+    // "상위 N건 조회"가 열지 못한 건수까지 과대 보고한다 (#150).
+    if (bodies[i]) checked++
     // 인용이 확정된 것만 승격한다. hold/silent는 "못 읽었다"이지 "인용한다"가 아니다.
     if (bodies[i] && classifyArticleRefs(bodies[i], anchor) === "match") confirmed.push(item)
     else unconfirmed.push(item)
   })
 
-  return { confirmed, unconfirmed: [...unconfirmed, ...tail], checked: head.length, skipped: tail.length }
+  return { confirmed, unconfirmed: [...unconfirmed, ...tail], checked, skipped: tail.length }
 }

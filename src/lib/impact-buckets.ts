@@ -14,8 +14,11 @@ export interface BucketStat {
   /** 업스트림 키워드 검색이 보고한 총건수. 유사 조번호·타 법령이 섞인 상한값이다 */
   searchCount: number
   topItems: string[]
-  /** 조문 경계 불일치·타 법령으로 제외한 건수 */
-  excluded: number
+  /** 조번호 불일치로 제외한 건수 */
+  excludedArticle: number
+  /** 조번호는 맞으나 법령이 확정적으로 달라 제외한 건수.
+   *  합산 단일 카운터는 제외 사유를 전부 "조문 불일치"로 둔갑시켰다 (#150) */
+  excludedLaw: number
   /** 표본이 업스트림 검색 건수를 전부 덮었는지 */
   covered: boolean
   /** 법령명까지 확정 일치한 건수 */
@@ -25,7 +28,7 @@ export interface BucketStat {
 }
 
 const EMPTY: BucketStat = {
-  verified: 0, searchCount: 0, topItems: [], excluded: 0, covered: true, lawConfirmed: 0, lawHeld: 0,
+  verified: 0, searchCount: 0, topItems: [], excludedArticle: 0, excludedLaw: 0, covered: true, lawConfirmed: 0, lawHeld: 0,
 }
 
 // 사건명이 비어 `[111] `만 오는 항목도 항목이다. `\S`를 요구하면 그 항목과 딸린
@@ -85,12 +88,13 @@ export function parseBucket(
   }
 
   const judged = blocks.map(b => ({ block: b, verdict: classifyArticleRefs(b.join(" "), anchor) }))
-  const kept = judged.filter(j => j.verdict !== "mismatch")
+  const kept = judged.filter(j => j.verdict !== "mismatch" && j.verdict !== "law-mismatch")
   return {
     verified: kept.length,
     searchCount,
     topItems: kept.slice(0, maxItems).map(j => summarizeItem(j.block)),
-    excluded: judged.length - kept.length,
+    excludedArticle: judged.filter(j => j.verdict === "mismatch").length,
+    excludedLaw: judged.filter(j => j.verdict === "law-mismatch").length,
     covered: blocks.length >= searchCount,
     lawConfirmed: judged.filter(j => j.verdict === "match").length,
     // silent(조문 표기 없음)도 법령명으로 확인된 바 없으므로 보류로 센다.
@@ -104,10 +108,20 @@ export function parseBucket(
  * 문장으로 못박는다 — 예전에는 이 자리에 총건수만 적혀서 유사 조번호가 섞인 수를
  * "이 조문을 인용한 건수"로 단정했다(#90의 오탐이 수치에 그대로 남아 있었다).
  */
+/** 제외 사유를 축별로 적는다 — 합산해 "조문 불일치"로만 적으면 타 법령 제외가 조문 문제로 둔갑한다 (#150) */
+export function exclusionPhrase(stat: Pick<BucketStat, "excludedArticle" | "excludedLaw">): string {
+  const parts: string[] = []
+  if (stat.excludedArticle > 0) parts.push(`조문 불일치 ${stat.excludedArticle}건`)
+  if (stat.excludedLaw > 0) parts.push(`다른 법령 ${stat.excludedLaw}건`)
+  return parts.join("·")
+}
+
 export function bucketLine(stat: BucketStat): string {
-  const excl = stat.excluded > 0 ? ` (조문 불일치 ${stat.excluded}건 제외)` : ""
+  const phrase = exclusionPhrase(stat)
+  const excl = phrase ? ` (${phrase} 제외)` : ""
   if (stat.covered) return `${stat.verified}건${excl}`
-  return `${stat.verified}건 확인${excl} / 검색 ${stat.searchCount}건 — 표본 ${stat.verified + stat.excluded}건만 경계 확인, 나머지는 미확인`
+  const sampled = stat.verified + stat.excludedArticle + stat.excludedLaw
+  return `${stat.verified}건 확인${excl} / 검색 ${stat.searchCount}건 — 표본 ${sampled}건만 경계 확인, 나머지는 미확인`
 }
 
 /**

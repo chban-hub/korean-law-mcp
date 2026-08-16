@@ -14,6 +14,18 @@
 /** 경계 후퇴 상한(자). 이 안에 경계가 없으면 하드컷을 유지한다. */
 const MAX_BOUNDARY_BACKTRACK = 400
 
+/**
+ * 하드컷 전용 슬라이스 — 절단 위치가 서로게이트 쌍 한가운데면 1 후퇴한다(#150).
+ * `𠮷` 같은 아스트랄 문자는 UTF-16 유닛 2개다. high surrogate 뒤를 끊으면
+ * isWellFormed()가 깨진 문자열이 되고 JSON 직렬화에서 U+FFFD로 변형돼 나간다.
+ */
+export function sliceWellFormed(text: string, end: number): string {
+  if (end <= 0) return ""
+  if (end >= text.length) return text
+  const last = text.charCodeAt(end - 1)
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? end - 1 : end)
+}
+
 /** s 안에서 "종결부호 + 공백(또는 끝)"의 마지막 위치 → 종결부호 바로 뒤 인덱스 */
 function lastSentenceEnd(s: string): number {
   let best = -1
@@ -49,8 +61,13 @@ export function cutAtSafeBoundary(text: string, budget: number): string {
   const sentence = lastSentenceEnd(hard.slice(floor))
   if (sentence > 0) return hard.slice(0, floor + sentence)
 
-  // 상한 안에 경계 없음 → 후퇴하지 않는다(무단 손실 0)
-  return hard
+  // 상한 안에 경계 없음 → 후퇴하지 않는다(무단 손실 0). 단, 서로게이트 쌍 반토막만 피한다
+  return sliceWellFormed(text, budget)
+}
+
+/** 요약 모드 꼬리 — 조립(extractSummary)과 재절단 후 재부착(truncateResponse)이 같은 원본을 쓴다(#150) */
+export function summaryTail(originalLength: number, keptLength: number): string {
+  return `\n\n📋 요약 모드: 원문 ${originalLength.toLocaleString()}자 중 핵심만 추출 (${keptLength.toLocaleString()}자)`
 }
 
 /**
@@ -89,6 +106,6 @@ export function extractSummary(text: string, maxSize: number): string {
     i++
   }
 
-  const tail = `\n\n📋 요약 모드: 원문 ${text.length.toLocaleString()}자 중 핵심만 추출 (${collected.join("\n").length.toLocaleString()}자)`
-  return collected.join("\n") + tail
+  const body = collected.join("\n")
+  return body + summaryTail(text.length, body.length)
 }

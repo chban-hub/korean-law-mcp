@@ -68,7 +68,11 @@ export function findMatchingAnnex(
     // 번호가 안 맞아도 별표가 유일 1건이면 그 별표를 정답으로 폴백.
     // 여권법 시행령 '수수료 및 사무의 대행에 드는 비용(제39조 관련)'처럼 번호 없는 단일 별표는
     // 모델이 "별표1" 등 임의 번호로 불러도 매칭 0건 → NOT_FOUND로 새는 대신 유일 별표를 반환.
-    if (annexList.length === 1) return annexList[0]
+    // 단, 가지번호(1의2) 요청은 폴백 금지 — 유일 항목이 본번(별표 1)이어도 다른 별표라서,
+    // 위 buildSelectorCandidates가 막은 "별표 1 무음 오선택"이 여기로 재개방되면 안 된다.
+    if (annexList.length === 1 && parseAnnexNumber(annexSelector)?.sub == null) {
+      return annexList[0]
+    }
     return undefined
   }
   if (matches.length === 1) return matches[0]
@@ -98,6 +102,20 @@ export function buildSelectorCandidates(selector: string): Set<string> {
   }
 
   candidates.add(trimmed)
+
+  // 6자리 입력은 이미 정본 코드(AAAABB)다. 자연어 번호로 다시 읽으면 "000102"
+  // (별표 1의2)가 parseInt를 거쳐 "102" 후보를 만들어 무관한 별표 102를 집는다 —
+  // 코드로 해독해 정본 후보만 생성한다. 가지번호 코드는 아래 원칙 그대로 본번 후보 금지.
+  if (/^\d{6}$/.test(trimmed)) {
+    const decoded = fromAnnexCode(trimmed)
+    if (decoded) {
+      if (decoded.sub === 0) {
+        candidates.add(String(decoded.main))
+        candidates.add(String(decoded.main).padStart(6, "0"))
+      }
+      return candidates
+    }
+  }
 
   const rawDigits = trimmed.match(/\d{1,6}/)?.[0]
   const parsed = parseAnnexNumber(trimmed)
@@ -160,14 +178,20 @@ export function extractSelectorNumbers(selector: string): string[] {
 }
 
 function titleMatchesAnnexNumber(title: string, annexNumber: string): boolean {
-  const escapedNumber = escapeRegex(annexNumber)
+  // 법제처 제목은 가지번호에 호를 중위로 끼운다 — "[별지 제59호의2서식]" (#150).
+  // selector의 "59의2"를 리터럴로 찾으면 이 표기를 통째로 놓치므로, 가지번호는
+  // 본번 뒤 호를 허용하는 패턴으로 푼다. 본번은 종전 리터럴 그대로다.
+  const parsed = parseAnnexNumber(annexNumber)
+  const numberSrc = parsed?.sub != null
+    ? `${parsed.main}\\s*(?:호)?\\s*의\\s*${parsed.sub}`
+    : escapeRegex(annexNumber)
   const kw = ANNEX_KEYWORDS.join("|")
   // 어휘는 annex-notation 단일 원본에서 온다 — 여기 `별표|서식`만 적어 두면
   // 이 파일이 대표 사례로 드는 `[별지 제4호서식]` 제목이 제 번호에 안 걸린다.
   // 꼬리의 `서식`까지 받는 이유도 그 표기다(번호가 낱말 사이에 낀다).
   const patterns = [
-    new RegExp(`\\[\\s*(?:${kw})\\s*(?:제)?\\s*${escapedNumber}\\s*(?:호)?\\s*(?:서식)?\\s*\\]`),
-    new RegExp(`(?:${kw})\\s*제?\\s*${escapedNumber}\\s*(?:호)?`),
+    new RegExp(`\\[\\s*(?:${kw})\\s*(?:제)?\\s*${numberSrc}\\s*(?:호)?\\s*(?:서식)?\\s*\\]`),
+    new RegExp(`(?:${kw})\\s*제?\\s*${numberSrc}\\s*(?:호)?`),
   ]
 
   if (patterns.some((pattern) => pattern.test(title))) {
@@ -220,8 +244,9 @@ export function extractBundledSection(markdown: string, targetNum: string): stri
   const parsed = parseAnnexNumber(targetNum)
   if (!parsed) return null
 
+  // 묶음 표제도 호 중위 표기("## [별표 제1호의2]")로 온다 — 본번 뒤 호를 허용 (#150)
   const label = parsed.sub != null
-    ? `${parsed.main}\\s*의\\s*${parsed.sub}`
+    ? `${parsed.main}\\s*(?:호)?\\s*의\\s*${parsed.sub}`
     : String(parsed.main)
   const pattern = new RegExp(
     `(${BUNDLED_HEADING_SRC}${label}\\s*(?:호)?\\s*(?:서식)?\\s*\\][\\s\\S]*?)(?=${BUNDLED_HEADING_SRC}\\d|$)`

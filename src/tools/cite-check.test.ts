@@ -50,6 +50,23 @@ describe("citeCheck — 판시사항 노출 (#95)", () => {
   })
 })
 
+// #150: nb=는 전방 일치라 "2013다6138" 입력에 "2013다61381"이 특정되고, includes 판정이
+// 그 차이를 삼켜 다른 판례의 생사가 입력 사건번호의 것으로 읽혔다. 부분 입력 관용(특정
+// 로직)은 기능으로 유지하되, 입력과 다른 판례가 특정된 사실을 경고로 병기한다.
+describe("citeCheck — 대상 특정이 입력과 다르면 경고 (#150)", () => {
+  it("전방 일치로 이웃 판례가 특정되면 경고 한 줄을 병기한다", async () => {
+    const r = await citeCheck(stubClient(), { caseNumber: "2013다6138", display: 20, deepScan: false })
+    const text = r.content[0].text
+    expect(text).toContain("입력 사건번호와 다른 판례가 특정됨")
+    expect(text).toContain("2013다6138 → 2013다61381")
+  })
+
+  it("정확 일치 특정에는 경고를 붙이지 않는다", async () => {
+    const r = await citeCheck(stubClient(), { caseNumber: "2013다61381", display: 20, deepScan: false })
+    expect(r.content[0].text).not.toContain("다른 판례가 특정됨")
+  })
+})
+
 describe("extractHolding — 응답 필드 shape 변동 (CLAUDE.md 규칙 6)", () => {
   it("배열·객체로 와도 사람이 읽을 문장을 낸다", () => {
     expect(extractHolding({ 판시사항: ["[1] 조약의 해석 방법", "[2] 위자료청구권"] })?.text)

@@ -60,13 +60,17 @@ export async function parseAnnexFile(buffer: ArrayBuffer): Promise<AnnexParseRes
  * 별표(여권법 수수료표)는 정상이고, 안내문이 있어도 본문이 함께 실린 별표가 있다.
  */
 const DOWNLOAD_NOTICE = /자세한\s*내용은[\s\S]{0,120}?(?:다운로드|주소창)/
+// 치환용 전역 사본 — 안내문이 두 번 실리면 non-global 치환은 두 번째를 "실질 내용"으로
+// 남겨 판정을 뒤집는다 (#150). 판정(test)은 non-global 원본을 유지한다: 전역 regex를
+// test()에 쓰면 lastIndex가 남아 호출마다 답이 달라진다.
+const DOWNLOAD_NOTICE_ALL = new RegExp(DOWNLOAD_NOTICE.source, "g")
 const SUBSTANTIVE_MIN_CHARS = 150
 
 export function isDownloadNoticeOnly(markdown: string): boolean {
   if (!DOWNLOAD_NOTICE.test(markdown)) return false
 
   const substantive = markdown
-    .replace(DOWNLOAD_NOTICE, " ")
+    .replace(DOWNLOAD_NOTICE_ALL, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")   // 이미지
     .replace(/\[[^\]]*\]\([^)]*\)/g, " ")    // 링크
     .replace(/https?:\/\/\S+/g, " ")         // 맨 URL

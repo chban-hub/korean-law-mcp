@@ -6,7 +6,7 @@
 import { z } from "zod"
 import { LawApiClient } from "./api-client.js"
 import { allTools } from "../tool-registry.js"
-import { routeQuery } from "./query-router.js"
+import { routeQuery, type RouteResult } from "./query-router.js"
 import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
 import type { ToolResponse } from "./types.js"
 import { fmt, printRouteInfo, formatOutput } from "./cli-format.js"
@@ -63,6 +63,17 @@ export async function executeTool(
 // ────────────────────────────────────────
 
 /**
+ * 자연어에서 뽑힌 날짜 범위를 검색 파라미터에 주입 (두 실행 경로 공용).
+ * 이미 라우팅이 확정한 fromDate/toDate 는 보존한다 — "관세법 2024 vs 올해"에서
+ * time_travel 이 뽑은 20240101 을 '올해' 규칙의 범위로 덮으면 앵커가 파괴된다(#150)
+ */
+export function applyDateRange(route: RouteResult): void {
+  if (!route.dateRange) return
+  if (route.params.fromDate === undefined) route.params.fromDate = route.dateRange.from
+  if (route.params.toDate === undefined) route.params.toDate = route.dateRange.to
+}
+
+/**
  * 자연어 쿼리 실행 (라우팅 + 파이프라인)
  */
 export async function executeNaturalQuery(
@@ -95,8 +106,7 @@ export async function executeNaturalQuery(
 
   // 날짜 범위가 있으면 검색 파라미터에 주입
   if (route.dateRange) {
-    route.params.fromDate = route.dateRange.from
-    route.params.toDate = route.dateRange.to
+    applyDateRange(route)
     // 받지 못하는 도구면 Zod가 조용히 버린다 — 필터가 사라졌다는 사실은 알려야 한다
     if (!acceptsDateRange(route.tool)) {
       console.log(fmt.yellow(
@@ -167,10 +177,7 @@ export async function executeNaturalQueryJson(
   const route = routeQuery(query)
   try {
     // 날짜 범위가 있으면 검색 파라미터에 주입
-    if (route.dateRange) {
-      route.params.fromDate = route.dateRange.from
-      route.params.toDate = route.dateRange.to
-    }
+    applyDateRange(route)
 
     const result = await executeTool(apiClient, route.tool, route.params)
 

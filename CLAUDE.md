@@ -29,7 +29,7 @@ src/
 │   ├── xml-parser.ts     # 공통 XML 파싱
 │   ├── errors.ts         # 에러 표준화
 │   ├── schemas.ts        # 날짜/응답크기 검증 (truncateResponse)
-│   ├── search-normalizer.ts  # 검색어 정규화 (LexDiff, 약칭 표제 60개)
+│   ├── search-normalizer.ts  # 검색어 정규화 (LexDiff, 약칭 표제 60건 — LAW_ALIAS_ENTRIES 항목 수 기준)
 │   ├── upcoming-laws.ts  # 시행예정 법령 감지 (eflaw 보조검색 — 제명변경·미시행 개정 병기)
 │   ├── abolished-laws.ts # 폐지 감지 (법령=eflaw·행정규칙=nw=2 연혁 — 폐지사유·후속 통합 규정 안내)
 │   ├── law-parser.ts     # JO 코드 변환 (LexDiff)
@@ -106,7 +106,7 @@ korean-law get_law_text --mst 160001 --jo "제1조"
 - `MCP_MAX_UPSTREAM_REQUESTS`: 한 outer request가 사용할 수 있는 upstream attempt 수 (기본 `48`, 재시도/안티봇 hop 포함)
 - `MCP_MAX_UPSTREAM_BODY_BYTES` / `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES`: 단일/전체 upstream 응답 본문 byte 한도
 - `MCP_MAX_TOOL_RESPONSE_CHARS`: MCP 도구 응답 문자 한도 (기본 `50000`)
-- `MCP_CHAIN_DEADLINE_MS`: 체인(`legal_research`) 한 건의 데드라인 (기본 `45000`, 허용 `5000`~`300000`). 만료 시 받은 갈래까지 조립해 **부분 결과**를 돌려주고 못 받은 자리는 마커로 남긴다 — MCP 클라이언트 기본 타임아웃 60초보다 넉넉히 짧게 잡을 것
+- `MCP_CHAIN_DEADLINE_MS`: 체인 한 건의 데드라인 (기본 `45000`, 허용 `5000`~`300000`, HTTP 모드는 부팅 시점 fail-fast 검증). **적용 task는 `legal_research` 8종 중 `action_basis`·`full_research`·`dispute_prep` 3종** — 순차 사다리가 길어 인질 시나리오가 실측된 체인들이다. 나머지 task는 아직 미적용(개별 fetch 타임아웃만). 적용 체인은 기반 법령 탐색(프리픽스)부터 시계 안이며, 만료 시 받은 갈래까지 조립해 **부분 결과**를 돌려주고 못 받은 자리는 마커로 남긴다 — MCP 클라이언트 기본 타임아웃 60초보다 넉넉히 짧게 잡을 것
 
 ## Domain Knowledge
 
@@ -142,10 +142,10 @@ get_law_text(mst, jo="006300") → 제63조(휴직) 조회
    - `citation-content-matcher.ts`도 LexDiff 이식본이다. 헤더가 "동작 동일" 재구현만 허용하므로 동작이 바뀌는 수정은 상류 대조 없이 넣지 않는다
 2. **파일 크기 200줄 미만**: 초과 시 `src/lib/`로 분리 (예외: `risk-rules.ts`는 데이터 선언 위주라 500줄 경계 허용)
    - **(제안, 미확정)** `route-patterns.ts`도 같은 계열의 예외 후보다 — 본문 대부분이 단일 `Pattern[]` 데이터 배열이고, 도메인 축으로 쪼개면 "어느 규칙이 이겼는가"를 한 파일에서 못 읽게 된다. 채택하려면 예외 기준("데이터 선언 위주")을 명문화할 것
-   - 현실 고지: 이 규칙을 넘긴 파일이 현재 38개다. 신규 파일에는 엄격히 적용하되, 기존 초과분 정리는 별도 과제
+   - 현실 고지: 이 규칙을 넘긴 파일이 현재 45개다(테스트 제외 `src/**/*.ts` 200줄 초과, 2026-08 실측). 신규 파일에는 엄격히 적용하되, 기존 초과분 정리는 별도 과제
 3. **Zod 스키마**: 모든 도구 입력에 Zod 검증 필수
 4. **도구 추가**: `tool-registry.ts`의 `allTools` 배열에 추가
-5. **truncateResponse 필수**: 모든 도구의 최종 출력에 `truncateResponse()` 적용. 한도는 **5만 자(UTF-16 code unit)**이지 50KB가 아니다 — 한글은 UTF-8로 자당 3바이트라 5만 자는 최대 150KB다(#92). `MCP_MAX_TOOL_RESPONSE_CHARS`로 조정
+5. **truncateResponse 필수**: 모든 도구의 최종 출력에 `truncateResponse()` 적용. 한도는 **5만 자(UTF-16 code unit)**이지 50KB가 아니다 — 한글은 UTF-8로 자당 3바이트라 5만 자는 최대 150KB다(#92). `MCP_MAX_TOOL_RESPONSE_CHARS`는 **tool-registry의 최종 출력 게이트에만** 적용된다 — 도구 내부 호출들이 쓰는 기본 상수(`MAX_RESPONSE_SIZE`, 5만)는 env 로 움직이지 않으므로, 상향은 내부 절단에 막혀 무효이고 **하향만 실효**한다
 6. **단일 객체 정규화**: API 응답의 배열 필드가 단일 객체로 올 수 있음 — `Array.isArray(x) ? x : [x]` 패턴 사용
 7. **cleanHtml 재사용**: HTML 엔티티 디코딩은 `article-parser.ts`의 `cleanHtml()` 사용 (수동 디코딩 금지)
 8. **console.log/error 금지**: STDIO 모드에서 간섭 방지. 에러는 throw로 전파. HTTP 모드 에러 로깅은 반드시 `scrubError()` 경유 (API 키 유출 방지)

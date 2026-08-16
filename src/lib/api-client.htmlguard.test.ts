@@ -29,4 +29,17 @@ describe("checkHtmlError — 술어 단일화 (#141)", () => {
 
     await expect(new LawApiClient({ apiKey: "test" }).searchLaw("민법")).rejects.toThrow()
   }, 30000)
+
+  // #150-1: getAnnexes만 이 가드가 빠져 있었다. HTML이 그대로 반환되면
+  // parseAnnexEnvelope의 JSON.parse catch가 무음으로 빈 목록을 만들고,
+  // 사다리 전멸 끝에 "법제처 DB에 없습니다"라는 부존재 단정으로 둔갑한다.
+  it("getAnnexes: HTML 안내 페이지를 무음 빈 목록이 아니라 오류로 표면화한다", async () => {
+    const page = `<!DOCTYPE html><html><body>점검 중</body></html>`
+    let n = 0
+    vi.stubGlobal("fetch", vi.fn(async () => { n++; return new Response(page, { status: 200 }) }))
+
+    await expect(new LawApiClient({ apiKey: "test" }).getAnnexes({ lawName: "도로교통법" }))
+      .rejects.toThrow(/HTML/)
+    expect(n).toBe(4)   // 검색 계열 재시도 사다리는 그대로 (소진 후 표면화)
+  }, 30000)
 })

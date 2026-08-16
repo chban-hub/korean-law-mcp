@@ -402,7 +402,10 @@ async function fetchHtmlFallbackPrecedent(
   const hiddenPrecSeq = extractHiddenPrecSeq(html)
   const iframeSrc = extractIframeSrc(html)
   const iframeUrl = iframeSrc ? normalizeUrl(iframeSrc) : ""
-  if (hiddenPrecSeq !== args.id && !iframeMatchesPrecedentId(iframeUrl, args.id)) {
+  // 부존재 단정에는 양성 신호가 필요하다: 뷰어 페이지가 실제로 렌더됐고(precSeq 마커
+  // 존재) 그 값이 요청 ID와 다를 때만 "그 판례가 없다"의 둘째 증거다. 마커 자체가 없는
+  // 페이지(점검·안티봇 변형 등)는 자료 부존재가 아니라 폴백 기구 고장으로 취급한다.
+  if (hiddenPrecSeq && hiddenPrecSeq !== args.id && !iframeMatchesPrecedentId(iframeUrl, args.id)) {
     throw new PrecedentAbsentError(args.id)
   }
   if (!iframeUrl) {

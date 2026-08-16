@@ -67,4 +67,13 @@ describe("isDownloadNoticeOnly (#91)", () => {
     const shortReal = `■ 여권법 시행령 [별표]\n\n수수료(제39조 관련)\n\n1. 일반여권 10년 53,000원\n2. 단수여권 20,000원`
     expect(isDownloadNoticeOnly(shortReal)).toBe(false)
   })
+
+  // #150-8: 치환이 non-global이면 안내문이 두 번 실린 파일에서 두 번째 안내문이
+  // "실질 내용"으로 계상돼 판정이 뒤집힌다 — 본문 없는 별표가 정상으로 통과한다.
+  it("안내문이 두 번 실려도 판정이 뒤집히지 않는다", () => {
+    // 안내문 하나가 SUBSTANTIVE_MIN_CHARS(150)에 근접하도록 regex 창(120자) 안에서 늘린다
+    const notice = `자세한 내용은 ${"가".repeat(118)} 다운로드`
+    const md = `관세법 시행령 별표 제1호 관세율표 안내\n${notice}\n${notice}`
+    expect(isDownloadNoticeOnly(md)).toBe(true)
+  })
 })

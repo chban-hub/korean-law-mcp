@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { discoverTools } from "./meta-tools.js"
+import { discoverTools, DiscoverToolsSchema } from "./meta-tools.js"
 import { TOOL_ALIASES, TOOL_CATEGORIES, V3_EXPOSED } from "../lib/tool-profiles.js"
 import { MAX_SECTIONS, browsableCategories } from "../lib/tool-discovery.js"
 // import 부수효과로 setAllToolsRef(allTools)가 실행된다 — discover_tools가 도구
@@ -271,6 +271,28 @@ describe("무매칭 응답 축약 (#126 부록)", () => {
       expect(Object.keys(TOOL_CATEGORIES)).toContain(category)
       expect(TOOL_CATEGORIES[category].some(t => V3_EXPOSED.has(t))).toBe(true)
     }
+  })
+})
+
+describe("설명 매칭(tier-3) 랭킹은 삽입 순서가 아니라 매칭 강도다 (#150)", () => {
+  // 회귀: tier-3가 TOOL_CATEGORIES 삽입 순서라, `판례`에서 뒤쪽에 선언된
+  // 결정례통합(search_decisions·get_decision_text — 노출 도구 2종)이 상한 5에 잘렸다.
+  it("'판례' intent에서 결정례통합이 상한에 잘리지 않는다", async () => {
+    expect(await discoverSections("판례")).toContain("결정례통합")
+  })
+
+  it("생략 고지는 계산하지 않는 연관도를 주장하지 않는다", async () => {
+    const text = await discoverText("법령")
+    expect(text).toMatch(/그 외 \d+개 카테고리 생략/)
+    expect(text).not.toContain("연관도 낮은")
+  })
+})
+
+describe("intent 길이 상한 (#150)", () => {
+  // 체인 query(.max(2000), #121)와 같은 상한 — 무제한 텍스트가 매칭 루프에 들어가는 것을 막는다.
+  it("2000자 초과 intent는 스키마에서 거부된다", () => {
+    expect(DiscoverToolsSchema.safeParse({ intent: "판".repeat(2001) }).success).toBe(false)
+    expect(DiscoverToolsSchema.safeParse({ intent: "판".repeat(2000) }).success).toBe(true)
   })
 })
 

@@ -15,7 +15,7 @@ import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { parsePrecedentXML, type PrecedentItem } from "../lib/xml-parser.js"
-import { extractCaseNumbers } from "../lib/case-citation.js"
+import { extractCaseNumbers, fieldHasExactCase } from "../lib/case-citation.js"
 import { extractHolding, scanTreatment, fieldText } from "../lib/precedent-body.js"
 import type { ToolResponse } from "../lib/types.js"
 
@@ -154,6 +154,12 @@ export async function citeCheck(
     const lines: string[] = []
     lines.push(`═══ 판례 인용 추적 (Citator): ${caseNo} ═══`)
     lines.push(`대상: ${target.법원명 || ""} ${target.선고일자 || ""} 선고 ${target.사건번호 || caseNo} ${isEnBancItem(target) ? "전원합의체 " : ""}판결`)
+    // nb=는 전방 일치라 잘린 입력("2013다6138")에도 이웃 판례가 특정된다. 부분 입력 관용은
+    // 기능으로 유지하되, 입력과 다른 판례가 특정되면 그 사실을 병기한다 — 무경고면 다른
+    // 판례의 생사 판정이 입력 사건번호의 것으로 읽힌다 (#150).
+    if (!fieldHasExactCase(target.사건번호 || "", caseNo)) {
+      lines.push(`⚠ 입력 사건번호와 다른 판례가 특정됨: ${caseNo} → ${target.사건번호 || "(사건번호 없음)"} — 아래 판정은 특정된 판례 기준입니다.`)
+    }
     if (target.판례명) lines.push(`사건명: ${target.판례명}`)
     // 사건명만으로는 판결의 정체성을 알 수 없다 — 생사만 답하면 오소개로 이어진다(#95).
     const holding = extractHolding(targetDetail)

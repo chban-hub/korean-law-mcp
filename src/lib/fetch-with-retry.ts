@@ -97,6 +97,8 @@ export async function fetchWithRetry(
   const externalSignal = callerSignal ?? undefined
 
   let lastError: Error | null = null
+  // 단건 조회의 미스 확정용: 빈 본문/HTML 관측 이력 (시도 순번과 무관)
+  let sawBadBody = false
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     throwIfRequestCancelled()
@@ -152,9 +154,12 @@ export async function fetchWithRetry(
             // 단건 조회에서 이 본문은 대개 "그 레코드 없음"이다. 본문만으로는 미스와
             // 일시 장애를 가를 수 없으므로 짧게 한 번 더 확인하고, 같은 답이면 사다리를
             // 마저 태우지 않고 미스로 표면화한다(빈 결과를 성공으로 반환하지 않는다).
-            if (singleRecordLookup && attempt >= 1) {
+            // 판정 기준은 시도 순번이 아니라 "비정상 본문을 이미 봤는가"다 — 503·네트워크
+            // 오류 뒤의 첫 빈 본문(관측 1회)이 미스로 확정되면 안 된다.
+            if (singleRecordLookup && sawBadBody) {
               throw new UpstreamRecordMissingError(maskSensitiveUrl(url), bad)
             }
+            sawBadBody = true
             lastError = new Error(
               `법제처 API 비정상 응답(${bad === "empty" ? "빈 본문" : "HTML 페이지"}) - ${maskSensitiveUrl(url)}`
             )
@@ -214,14 +219,21 @@ export async function fetchWithRetry(
   throw lastError || new Error("Request failed after retries")
 }
 
-/** Retry-After 헤더 우선, 없으면 exponential backoff + jitter */
+/**
+ * Retry-After 방어 상한. 값을 그대로 믿으면 업스트림 헤더 하나가 대기를 임의로
+ * 늘린다(3600 → 1시간 sleep). 업스트림 왕복(≤1.1초)보다 충분히 크고, 도구
+ * 타임아웃(DEFAULT_TIMEOUT 30초)과 같은 자리에서 자른다.
+ */
+const MAX_RETRY_AFTER_MS = 30_000
+
+/** Retry-After 헤더 우선(상한 클램프), 없으면 exponential backoff + jitter */
 function getRetryDelay(response: Response | null, retryDelay: number, attempt: number): number {
   if (response) {
     const retryAfter = response.headers.get("Retry-After")
     if (retryAfter) {
       const seconds = Number(retryAfter)
       if (!isNaN(seconds) && seconds > 0) {
-        return seconds * 1000
+        return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS)
       }
     }
   }

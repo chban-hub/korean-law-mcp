@@ -69,6 +69,32 @@ describe("lawService.do 단건 조회 미스 — 확인 1회 후 표면화", () 
     await expect(client.searchLaw("민법")).rejects.toThrow()
     expect(n).toBe(4)                              // 1회 + 재시도 3회 = 기존 방어 그대로
   }, 30000)
+
+  // #150-2: "빈 본문 = 미스일 수 있다"는 실측표상 prec·thdCmp·lsStmd 뿐이다.
+  // endpoint 단위 배선은 target=law까지 사다리를 2회로 자르고, 오류 문안에
+  // "자료가 실제로 없음"이라는 부존재 후보를 섞는다 — 거기 빈 본문은 진짜 장애다.
+  it("미스가 정상 봉투로 오는 target(law)은 빈 본문을 장애로 보고 사다리를 유지한다", async () => {
+    let n = 0
+    vi.stubGlobal("fetch", vi.fn(async () => { n++; return emptyJson() }))
+
+    const client = new LawApiClient({ apiKey: "test" })
+    await expect(client.fetchApi({
+      endpoint: "lawService.do",
+      target: "law",
+      type: "JSON",
+      extraParams: { MST: "160001" },
+    })).rejects.toThrow(/빈 응답/)
+    expect(n).toBe(4)                              // 미스 확정(2회)이 아니라 장애 사다리(4회)
+  }, 30000)
+
+  it("getLawText(eflaw)도 빈 본문에서 미스 확정 대신 사다리를 유지한다", async () => {
+    let n = 0
+    vi.stubGlobal("fetch", vi.fn(async () => { n++; return emptyJson() }))
+
+    const client = new LawApiClient({ apiKey: "test" })
+    await expect(client.getLawText({ mst: "160001" })).rejects.toThrow(/빈 응답/)
+    expect(n).toBe(4)
+  }, 30000)
 })
 
 describe("빈 응답 가드 — 파서가 아니라 여기서 잡힌다", () => {

@@ -91,3 +91,12 @@ export async function raceDeadline<T>(
 export function timedOutSection(title: string, toolHint: string): string {
   return `▶ ${title}\n⏱ 시간 한도로 이 섹션은 수집하지 못했습니다 — 개별 도구(${toolHint})로 조회하세요.`
 }
+
+/**
+ * 프리픽스(기반 탐색·선행 단계)에서 만료된 체인의 말미 표시 (#150).
+ * 섹션 단위 마커와 달리 "여기서부터 전부 못 받았다"를 밝힌다 — 위에 실린 것이
+ * 시간 안에 받은 전부라는 사실까지 말해야 소비자가 빈 자리를 추측으로 메우지 않는다.
+ */
+export function timedOutChainNotice(): string {
+  return "⏱ 체인 시간 한도로 이후 단계를 수집하지 못했습니다 — 위까지가 시간 안에 받은 전부입니다. 나머지는 개별 도구로 조회하거나 잠시 후 재시도하세요."
+}

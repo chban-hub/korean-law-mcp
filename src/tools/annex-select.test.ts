@@ -119,4 +119,42 @@ describe("buildSelectorCandidates 별표번호 코드 체계", () => {
     expect(findMatchingAnnex(list, "1의2")?.별표번호).toBe("000102")
     expect(findMatchingAnnex(list, "1")?.별표번호).toBe("000100")
   })
+
+  // #150-3: 6자리 입력은 이미 정본 코드다. 자연어 번호로 다시 읽으면 "000102"
+  // (별표 1의2)가 parseInt를 거쳐 "102" 후보를 만들어 무관한 별표 102를 집는다 —
+  // 가지번호 요청에 본번 후보를 금지한 파일 상단 원칙이 코드 입력에서만 뚫린다.
+  it("6자리 가지 코드는 해독해 정본 후보만 만든다 — '000102'가 '102'를 내지 않는다", () => {
+    const c = buildSelectorCandidates("000102")
+    expect(c).toContain("000102")
+    expect(c.has("102")).toBe(false)
+  })
+
+  it("6자리 본번 코드는 본번으로 해독된다 — '002800'은 28이지 2800이 아니다", () => {
+    const c = buildSelectorCandidates("002800")
+    expect(c).toContain("002800")
+    expect(c).toContain("28")
+    expect(c.has("2800")).toBe(false)
+  })
+})
+
+// #150-4: 법제처 제목은 가지번호에 호를 중위로 끼운다 — "[별지 제59호의2서식]".
+// selector의 "59의2"를 리터럴로 찾으면 이 표기를 통째로 놓쳐 NOT_FOUND로 샌다.
+describe("제목 매칭 — '제N호의M'(호 중위) 표기 (#150)", () => {
+  const FORMS: AnnexItem[] = [
+    { 별표번호: "", 별표명: "[별지 제59호서식] 원본", 별표종류: "서식" },
+    { 별표번호: "", 별표명: "[별지 제59호의2서식] 가지", 별표종류: "서식" },
+  ]
+
+  it("'별지 제59호의2' selector가 호 중위 제목과 매칭된다", () => {
+    expect(findMatchingAnnex(FORMS, "별지 제59호의2", "2")?.별표명).toContain("59호의2")
+  })
+
+  it("맨 번호 표기 '59의2'도 같은 제목에 도달한다", () => {
+    expect(findMatchingAnnex(FORMS, "59의2", "2")?.별표명).toContain("59호의2")
+  })
+
+  it("본번 selector가 여전히 본번 제목을 고른다 (회귀)", () => {
+    // 패턴 확장이 본번 요청을 가지 제목으로 흘려보내면 안 된다
+    expect(findMatchingAnnex([FORMS[0]], "59", "2")?.별표명).toContain("제59호서식")
+  })
 })

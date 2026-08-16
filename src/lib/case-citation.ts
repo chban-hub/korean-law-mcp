@@ -56,8 +56,9 @@ const CASE_CODES = [
   "허", "후", "취",
   // 헌재
   "헌가", "헌나", "헌다", "헌라", "헌마", "헌바", "헌사", "헌아",
-  // 회생·파산·개인회생
-  "회단", "회합", "회확", "회기", "회", "개회", "개확", "간회", "간확",
+  // 회생·파산·개인회생 — '파'는 구 파산법 사건부호(예: 2020파123). main의
+  // compact-query-planner에는 있었는데 단일 원본 통합 때 빠졌다(#150).
+  "회단", "회합", "회확", "회기", "회", "개회", "개확", "간회", "간확", "파",
   // 재심
   "재고합", "재나", "재다", "재두", "재누", "재",
 ] as const
@@ -74,9 +75,22 @@ export const COURT_CASE_PATTERN = `(?:19|20)\\d{2}\\s*${CASE_CODE_PATTERN}\\s*\\
 // 여기서 통과시키면 "지어낸 인용"이라고 사용자에게 단정하게 된다.
 const KNOWN_CASE_CODE_RE = new RegExp(`^${CASE_CODE_PATTERN}$`)
 
+/**
+ * 사건번호일 수 없는 후행 음절 — 일련번호 마지막 숫자 직후 한 음절만 본다 (#150).
+ * "2030도3000명 증가" 같은 산문(연도형 숫자+실재 부호+수량)이 추출되면
+ * isImpossibleCaseNumber가 미래연도로 ✗ 실존불가를 단정한다 — 산문에 환각 배너.
+ * 수량 명사(명·개·원·건·회·차·호·억·천)와 단위 음절(조·항·목·년·월·일)은 실존
+ * 사건번호 바로 뒤에 붙는 일이 없어 안전하게 자를 수 있다.
+ * ⚠️ 조사(의·을·를·이·가·은·는·에·도·만)는 넣지 않는다 — "2013다61381의 판시취지"처럼
+ * 실인용 뒤에 조사가 바로 붙는 것이 정상 표기라, 넣으면 정탐이 통째로 죽는다.
+ */
+const NON_CASE_SYLLABLES = "명개원건회차호년월일조항목억천"
+
 // 추출 규칙 (위 주석의 균형 참조). 부호는 CASE_CODES에 실재하는 것만 인정한다.
+// 후행 lookahead에 숫자를 함께 두는 것이 잘림 방어다 — 숫자를 빼면 "…61381명"에서
+// 백트래킹이 "…6138"로 물러나 잘린 사건번호를 만들어낸다.
 const CASE_NO_RE = new RegExp(
-  `(?<![\\d제])(\\d{2,4})(${CASE_CODE_PATTERN})(\\d{1,7})(?!\\d)`,
+  `(?<![\\d제])(\\d{2,4})(${CASE_CODE_PATTERN})(\\d{1,7})(?![\\d${NON_CASE_SYLLABLES}])`,
   "g"
 )
 
@@ -110,8 +124,9 @@ export function isImpossibleCaseNumber(caseNo: string, currentYear: number): boo
   return Number.parseInt(m[1], 10) > currentYear
 }
 
-/** 업스트림 사건번호 필드는 "2017다360, 2017다377"처럼 여러 건이 붙어 온다 */
-function fieldHasExactCase(field: string, caseNo: string): boolean {
+/** 업스트림 사건번호 필드는 "2017다360, 2017다377"처럼 여러 건이 붙어 온다.
+ *  cite_check도 "입력과 다른 판례가 특정됐는지" 판정에 같은 규칙을 쓴다 (#150). */
+export function fieldHasExactCase(field: string, caseNo: string): boolean {
   return field
     .replace(/\s/g, "")
     .split(/[,·;/]/)
