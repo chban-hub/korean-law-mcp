@@ -54,8 +54,15 @@ const ACTION_PLAN_GUIDANCE = [
   /실행\s*가이드|시민\s*가이드|단계\s*별|단계별|step\s*by\s*step|action\s*plan/i,
 ]
 
-/** 두 시점이 명시된 형태 — "2024 vs 2026", "2024년과 2025년", "2020년부터 2023년까지" */
-const TIME_TRAVEL_TWO_POINTS = /(\d{4})\s*[.\-년]?\s*(?:vs\.?|↔|~|와|과|부터|에서)\s*(?:\d{4}|현행|지금|현재)/i
+/**
+ * 두 시점이 명시된 형태 — "2024 vs 2026", "2024년과 2025년", "2020년부터 2023년까지".
+ * 뒤쪽 시점의 어휘는 date-patterns 한 벌에서 온다 — 여기만 좁으면 "vs 현행"은 되고
+ * "vs 올해"는 안 되는, 표현에 따라 갈리는 라우팅이 된다(#144 후속)
+ */
+const TIME_TRAVEL_TWO_POINTS = new RegExp(
+  `(\\d{4})\\s*[.\\-년]?\\s*(?:vs\\.?|↔|~|와|과|부터|에서)\\s*(?:\\d{4}|${RELATIVE_NOW_WORDS})`,
+  "i"
+)
 /** 상대 시점 두 개 — "작년이랑 지금". 어휘는 date-patterns 한 벌만 쓴다(#144) */
 const TIME_TRAVEL_RELATIVE = new RegExp(
   `(?:${RELATIVE_PAST_WORDS})\\s*(?:이?랑|와|과|하고|대비)\\s*(?:${RELATIVE_NOW_WORDS})`
