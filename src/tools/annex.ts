@@ -152,6 +152,7 @@ export async function getAnnexes(
     // 별표 선택값 미지정 → 목록 반환. 법령은 현행 본문 별표단위와 대조해
     // licbyl 인덱스에 없는 항목(개정 신설 별표 등)을 병합 표시 (#77 후속)
     let listForDisplay = filtered
+    let mergeIssue: string | undefined
     if (lawType === "law") {
       const msts = new Set(filtered.map((a) => String(a.관련법령일련번호 || "")))
       const mst = msts.size === 1 ? [...msts][0] : ""
@@ -171,8 +172,12 @@ export async function getAnnexes(
             })),
           ]
         } catch {
-          // 정본 목록 조회 실패 → licbyl 목록만 표시
+          // 병합 실패를 삼키면 신설 별표가 빠진 목록이 완전한 목록으로 보인다 (#127).
+          // 목록 자체는 유효하므로 isError가 아니라 마커로 알린다.
+          mergeIssue = "현행 본문 조회 실패"
         }
+      } else {
+        mergeIssue = "대상 법령일련번호 미확정"
       }
     }
 
@@ -184,7 +189,7 @@ export async function getAnnexes(
     if (scoped.matched && scoped.keywords.length > 0 && onlySeq) {
       return await extractAnnexContent(apiClient, scoped.list, onlySeq, normalizedLawName, lawType, input)
     }
-    return formatAnnexList(scoped.list, lawType, input, normalizedLawName, scoped)
+    return formatAnnexList(scoped.list, lawType, input, normalizedLawName, scoped, mergeIssue)
   } catch (error) {
     return formatToolError(error, "get_annexes")
   }
@@ -206,6 +211,7 @@ async function extractAnnexContent(
 
   // 법령은 현행 본문(lawService)의 별표단위 링크를 정본으로 우선 사용 (#77 — licbyl
   // 인덱스가 구본/결함 파일을 가리키거나 신설 별표를 누락하는 사례). 실패 시 licbyl 폴백.
+  let canonicalIssue = false
   if (lawType === "law") {
     const mst = matched?.관련법령일련번호 || annexList[0]?.관련법령일련번호
     if (mst) {
@@ -228,7 +234,9 @@ async function extractAnnexContent(
           }
         }
       } catch {
-        // 정본 조회 실패 → licbyl 링크로 진행
+        // 정본 조회 실패 → licbyl 링크로 진행. 그 링크가 구본을 가리킬 수 있다는
+        // 사실을 삼키면 구본 내용이 현행으로 읽힌다 (#127, #77과 같은 손실).
+        canonicalIssue = true
       }
     }
   }
@@ -316,7 +324,11 @@ async function extractAnnexContent(
     if (extracted) markdown = extracted
   }
 
-  const header = `${normalizedLawName} - ${annexTitle}\n(파일 형식: ${result.fileType.toUpperCase()}${result.pageCount ? `, ${result.pageCount}페이지` : ""})\n\n`
+  const canonicalNote = canonicalIssue
+    ? `⚠️ 정본 링크 확인 불가 (현행 본문 조회 실패) — 검색 인덱스(licbyl) 링크로 조회했습니다.\n` +
+      `   최신 개정이 반영되지 않은 구본일 수 있습니다.\n`
+    : ""
+  const header = `${normalizedLawName} - ${annexTitle}\n(파일 형식: ${result.fileType.toUpperCase()}${result.pageCount ? `, ${result.pageCount}페이지` : ""})\n${canonicalNote}\n`
   const fullText = header + markdown
   return {
     content: [{
@@ -333,7 +345,8 @@ function formatAnnexList(
   lawType: string,
   input: GetAnnexesInput,
   normalizedLawName: string,
-  scope?: { keywords: string[], matched: boolean }
+  scope?: { keywords: string[], matched: boolean },
+  mergeIssue?: string
 ): { content: Array<{ type: string, text: string }> } {
   const kndLabel = input.knd === "1" ? "별표"
                  : input.knd === "2" ? "서식"
@@ -353,6 +366,13 @@ function formatAnnexList(
     resultText = `법령명: ${normalizedLawName}\n` +
       `⚠️ query="${scope.keywords.join(" ")}"와 일치하는 별표명이 없어 전체 목록을 표시합니다.\n` +
       `${kndLabel} 목록 (총 ${annexList.length}건):\n\n`
+  }
+
+  // 병합 미수행은 목록 맨 앞에 — 20건 표시 상한이나 절단에 밀려 사라지면 안 된다 (#127)
+  if (mergeIssue) {
+    resultText = `⚠️ 신설 별표 병합 확인 불가 (${mergeIssue}) — 아래는 검색 인덱스(licbyl) 기준 목록이며,\n` +
+      `   최근 개정으로 신설된 별표가 빠져 있을 수 있습니다. 찾는 별표가 없으면 법령 본문에서 직접 확인하세요.\n\n` +
+      resultText
   }
 
   const maxItems = Math.min(annexList.length, 20)
