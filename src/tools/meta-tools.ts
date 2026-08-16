@@ -10,7 +10,7 @@
 
 import { z } from "zod"
 import { TOOL_CATEGORIES, V3_EXPOSED, describeCallPath } from "../lib/tool-profiles.js"
-import { selectSections } from "../lib/tool-discovery.js"
+import { selectSections, suggestCategories, browsableCategories } from "../lib/tool-discovery.js"
 import { formatToolError } from "../lib/errors.js"
 import type { LawApiClient } from "../lib/api-client.js"
 import type { McpTool, ToolResponse } from "../lib/types.js"
@@ -53,12 +53,14 @@ export async function discoverTools(
   const { sections, omitted } = selectSections(query, name => _toolIndex.get(name))
 
   if (sections.length === 0) {
-    // 전체 카테고리 목록 반환
-    const categoryList = Object.entries(TOOL_CATEGORIES)
-      .map(([cat, tools]) => `• ${cat}: ${tools.length}개 도구`)
-      .join("\n")
+    // 카테고리를 통째로 나열해 봐야 소비자는 그중 무엇이 자기 질의에 가까운지
+    // 모른다 — 표면이 가까운 것만 짚고 넓혀 볼 방향 한 줄을 준다 (#126).
+    const near = suggestCategories(query)
+    const nearLine = near.length > 0 ? `\n가까운 카테고리: ${near.join(", ")}` : ""
+    const anchors = browsableCategories().join("·")
+    const total = Object.keys(TOOL_CATEGORIES).length
     return {
-      content: [{ type: "text", text: `"${input.intent}"에 해당하는 도구를 찾지 못했습니다.\n\n사용 가능한 카테고리:\n${categoryList}\n\n카테고리명으로 다시 검색해주세요.` }]
+      content: [{ type: "text", text: `"${input.intent}"에 해당하는 도구를 찾지 못했습니다.${nearLine}\n카테고리 ${total}개 — ${anchors} 같은 넓은 말이나 도구 이름으로 다시 시도하세요.` }]
     }
   }
 

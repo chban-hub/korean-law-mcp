@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { discoverTools } from "./meta-tools.js"
-import { TOOL_ALIASES, TOOL_CATEGORIES } from "../lib/tool-profiles.js"
-import { MAX_SECTIONS } from "../lib/tool-discovery.js"
+import { TOOL_ALIASES, TOOL_CATEGORIES, V3_EXPOSED } from "../lib/tool-profiles.js"
+import { MAX_SECTIONS, browsableCategories } from "../lib/tool-discovery.js"
 // import 부수효과로 setAllToolsRef(allTools)가 실행된다 — discover_tools가 도구
 // 설명을 읽으려면 이 주입이 선행돼야 하므로 레지스트리를 직접 import한다.
 import { allTools } from "../tool-registry.js"
@@ -238,6 +238,38 @@ describe("섹션 랭킹과 상한 (#126-2)", () => {
     ]
     for (const [intent, answer] of answers) {
       expect(await discoverSections(intent)).toContain(answer)
+    }
+  })
+})
+
+describe("무매칭 응답 축약 (#126 부록)", () => {
+  // 카테고리를 통째로 나열해 봐야 소비자는 그중 무엇이 자기 질의에 가까운지
+  // 모른다 — 상한·포인터화와 같은 원칙으로 줄인다.
+  it("전체 카테고리 목록을 나열하지 않는다", async () => {
+    const text = await discoverText("하자")
+    expect(text).toContain("찾지 못했습니다")
+    expect(text).not.toContain("사용 가능한 카테고리:")
+    expect(text.split("\n").length).toBeLessThanOrEqual(4)
+  })
+
+  it("표면이 가까운 카테고리를 짚어 준다 (오타·유사어 구제)", async () => {
+    expect(await discoverText("세금")).toContain("가까운 카테고리: 조세심판")
+    expect(await discoverText("영문볍령")).toContain("가까운 카테고리: 영문법령")
+    expect(await discoverText("자치볍규")).toContain("가까운 카테고리: 자치법규")
+  })
+
+  it("정말 미등록인 어휘에는 헛제안을 붙이지 않는다", async () => {
+    for (const intent of ["하자", "손해배상", "특허", "근로시간"]) {
+      expect(await discoverText(intent)).not.toContain("가까운 카테고리")
+    }
+  })
+
+  it("넓혀 볼 카테고리 안내는 실재하는 카테고리이고 1-hop 도구를 담는다", () => {
+    const anchors = browsableCategories()
+    expect(anchors.length).toBeGreaterThan(0)
+    for (const category of anchors) {
+      expect(Object.keys(TOOL_CATEGORIES)).toContain(category)
+      expect(TOOL_CATEGORIES[category].some(t => V3_EXPOSED.has(t))).toBe(true)
     }
   })
 })

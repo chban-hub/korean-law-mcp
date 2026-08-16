@@ -5,7 +5,7 @@
  * meta-tools 는 "MCP 도구로 어떻게 내보내나". 실측 근거가 붙는 매칭 규칙은 전부 여기 모인다.
  */
 
-import { TOOL_CATEGORIES, TOOL_ALIASES } from "./tool-profiles.js"
+import { TOOL_CATEGORIES, TOOL_ALIASES, V3_EXPOSED } from "./tool-profiles.js"
 
 /** 한국어에는 낱말 사이 공백이 없으므로 "글자가 아닌 것"을 낱말 경계로 본다. */
 const WORD_CHAR = /[\p{L}\p{N}_]/u
@@ -137,4 +137,58 @@ export function selectSections(query: string, tool: ToolLookup): Discovery {
     sections: unique.slice(0, MAX_SECTIONS),
     omitted: Math.max(0, unique.length - MAX_SECTIONS),
   }
+}
+
+// ── 무매칭일 때 ──────────────────────────────────────────────────────
+// 전체 카테고리를 나열해 봐야 소비자는 그중 무엇이 자기 질의와 가까운지 모른다.
+// 표면이 가까운 몇 개만 짚고 넓혀 볼 방향 한 줄을 준다.
+
+const SUGGEST_LIMIT = 3
+/** 질의·후보 바이그램의 1/3 이상이 겹칠 때만 제안. */
+const SUGGEST_MIN_SIMILARITY = 1 / 3
+
+function bigrams(text: string): string[] {
+  const packed = text.toLowerCase().replace(/\s+/g, "")
+  if (packed.length < 2) return packed ? [packed] : []
+  return Array.from({ length: packed.length - 1 }, (_, i) => packed.slice(i, i + 2))
+}
+
+/** 문자 바이그램 Dice 계수 — 한국어 짧은 명사구의 오타·어미 차이에 견딘다. */
+function similarity(a: string, b: string): number {
+  const left = bigrams(a)
+  const right = bigrams(b)
+  if (left.length === 0 || right.length === 0) return 0
+  const bag = new Set(right)
+  return (2 * left.filter(gram => bag.has(gram)).length) / (left.length + right.length)
+}
+
+/**
+ * 무매칭 질의와 표면이 가까운 카테고리 (카테고리명·별칭 중 최대 점수).
+ *
+ * 컷오프 실측: 1/3 이상이면 `세금`→조세심판(0.50), `영문볍령`→영문법령(0.33),
+ * `자치볍규`→자치법규(0.33)처럼 오타·유사어가 구제되고 진짜 미등록 어휘
+ * (하자·손해배상·특허·근로시간)에는 아무것도 안 걸린다. 0.25로 낮추면
+ * `환경영향평가`→영향그래프 같은 헛제안이 들어온다.
+ */
+export function suggestCategories(query: string): string[] {
+  return Object.keys(TOOL_CATEGORIES)
+    .map(category => ({
+      category,
+      score: Math.max(...[category, ...(TOOL_ALIASES[category] ?? [])].map(c => similarity(query, c))),
+    }))
+    .filter(hit => hit.score >= SUGGEST_MIN_SIMILARITY)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, SUGGEST_LIMIT)
+    .map(hit => hit.category)
+}
+
+/**
+ * 넓혀서 다시 물어볼 만한 대표 카테고리.
+ * 1-hop 노출 도구를 담은 카테고리부터 — 제안이 곧 가장 싼 경로가 되게.
+ */
+export function browsableCategories(limit = 4): string[] {
+  return Object.entries(TOOL_CATEGORIES)
+    .filter(([, tools]) => tools.some(name => V3_EXPOSED.has(name)))
+    .slice(0, limit)
+    .map(([category]) => category)
 }
