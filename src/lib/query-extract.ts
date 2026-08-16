@@ -53,28 +53,22 @@ export function wantsFullText(query: string): boolean {
     /전체\s*본문|풀\s*텍스트|축약\s*(?:없이|해제)/.test(query)
 }
 
-// ────────────────────────────────────────
-// 후행 의도 어휘 — specific_article 양보 판단용 (#99)
-// ────────────────────────────────────────
-
-/** 인용 검증 의도 ("검증", "맞는지 봐줘") */
-export const INTENT_VERIFY = /검증|맞는지|맞나요?|사실인지|실존|인용\s*(?:확인|체크)/
-
-/** 비교 의도 — 단독 "비교"는 너무 넓어 3단비교·신구대조·vs·차이만 잡는다 */
-export const INTENT_COMPARE = /3단\s*비교|신구\s*?대조|\bvs\.?\b|차이|다른\s*점/i
-
-/** 판례 의도 */
-export const INTENT_PRECEDENT = /판례|판결|인용한/
-
-/** 개정 이력 의도 */
-export const INTENT_HISTORY = /개정|연혁|이력/
-
-/** 조문번호 뒤에 붙은 "다른 의도"가 있는가 — 있으면 조문 단독 조회로 축소하지 않는다 */
-export function hasFollowOnIntent(query: string): boolean {
-  return INTENT_VERIFY.test(query) ||
-    INTENT_COMPARE.test(query) ||
-    INTENT_PRECEDENT.test(query) ||
-    INTENT_HISTORY.test(query)
+/**
+ * 검색 도구용 extract 를 만든다 — 트리거 어휘를 걷어낸 나머지가 검색어다.
+ *
+ * `strip` 은 탐지용 `patterns` 와 별개다. 탐지는 부분 일치를 허용해도 되지만
+ * (`위헌`으로 헌재 질의를 알아본다) 제거는 낱말을 잘라선 안 된다(`위헌성` → `성`).
+ * 그래서 두 정규식은 같은 어휘를 다루되 같은 것일 수 없다 — 대신 선언을 나란히 둬
+ * 어긋남이 눈에 보이게 한다. 어긋나면 "유권 해석"의 반쪽만 지워지고
+ * "법령 용어 선의"가 "선"으로 잘린다(#119).
+ *
+ * 트리거가 곧 질의 전부여서 남는 게 없으면 원문을 돌려준다 — 빈 검색어는 업스트림에 보내지 않는다.
+ */
+export function searchExtract(strip: RegExp) {
+  return (query: string): Record<string, unknown> => {
+    const out = query.replace(strip, " ").replace(/\s+/g, " ").trim()
+    return { query: out || query.trim() }
+  }
 }
 
 /**
@@ -131,7 +125,7 @@ export function extractTimeTravel(query: string): Record<string, unknown> {
       .replace(/\d{4}\s*[.\-년]?\s*\d{0,2}\s*[.\-월]?\s*\d{0,2}\s*일?/g, " ")
       .replace(/작년|재작년|예전|과거|종전|지금|현재|현행|오늘|올해/g, " ")
       .replace(/vs\.?|↔|~|이?랑|하고|대비|부터|까지|에서|와|과/gi, " ")
-      .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전/g, " ")
+      .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전|두/g, " ")
   )
   params.query = lawName || query
   return params

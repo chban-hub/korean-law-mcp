@@ -55,7 +55,9 @@ export const LegalResearchSchema = z.preprocess((raw) => {
   }
   return o
 }, z.object({
-  query: z.string().optional()
+  // 노출 진입점이라 여기서 막지 않으면 무제한 텍스트가 체인 스키마를 우회해
+  // routeQuery 로 그대로 들어간다 — chains.ts 의 MAX_CHAIN_QUERY 와 같은 상한(#121)
+  query: z.string().max(2000).optional()
     .describe("자연어 질문/법령명/키워드 (예: '음주운전 처벌 기준', '관세법 체계'). document_review 외 모든 task에서 필수"),
   task: z.enum([
     "full_research", "law_system", "action_basis", "dispute_prep",

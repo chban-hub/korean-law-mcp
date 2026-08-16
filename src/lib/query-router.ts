@@ -8,8 +8,8 @@
  */
 
 import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
-import { parseDateRange, stripDateExpressions, type DateRange } from "./date-parser.js"
-import { sortedRoutePatterns, type Pattern } from "./route-patterns.js"
+import { parseDateRange, stripMatchedDate, type DateRange } from "./date-parser.js"
+import { sortedRoutePatterns, yieldsToOther, type Pattern } from "./route-patterns.js"
 import { detectScenarioName } from "./scenario-rules.js"
 import { wantsFullText } from "./query-extract.js"
 
@@ -28,6 +28,10 @@ export interface RouteResult {
   autoChain?: boolean
   /** 자연어에서 추출된 날짜 범위 (검색 도구에 자동 적용) */
   dateRange?: DateRange
+  /** 의도는 읽었으나 목적지 도구가 받지 않는 파라미터 — 무음 폐기 대신 표면화(#120) */
+  unsupportedParams?: string[]
+  /** 해석이 갈리는 질의에 대한 확인 요청 문구 (#122) */
+  clarify?: string
 }
 
 /**
@@ -53,8 +57,8 @@ export function routeQuery(query: string): RouteResult {
   const dateParsed = parseDateRange(q)
   if (dateParsed.range) {
     result.dateRange = dateParsed.range
-    if (typeof result.params.query === "string") {
-      const cleaned = stripDateExpressions(result.params.query)
+    if (typeof result.params.query === "string" && dateParsed.matched) {
+      const cleaned = stripMatchedDate(result.params.query, dateParsed.matched)
       if (cleaned) result.params.query = cleaned
     }
   }
@@ -64,6 +68,11 @@ export function routeQuery(query: string): RouteResult {
   if (result.tool.startsWith("chain_")) {
     const scenario = detectScenarioName(q, result.tool)
     if (scenario) result.params.scenario = scenario
+  }
+
+  // 빈 검색어는 업스트림에 보내지 않는다 — 트리거 어휘가 곧 질의 전부인 경우의 마지막 방어(#119)
+  if (typeof result.params.query === "string" && !result.params.query.trim()) {
+    result.params.query = q
   }
 
   return result
@@ -76,7 +85,15 @@ function _matchRoute(q: string): RouteResult {
       const match = q.match(regex)
       if (!match) continue
 
+      // 후행 의도가 있으면 양보 — 가드 어휘는 수신 패턴에서 파생된다(#123)
+      if (yieldsToOther(pattern, q)) break
+
       const params = pattern.extract(q, match)
+
+      // _clarify 는 조기 return(_fallback/_reroute)보다 먼저 떼어낸다 —
+      // 뒤에서 떼면 그 경로로 나갈 때 내부 플래그가 도구 파라미터로 샌다
+      const clarify = typeof params._clarify === "string" ? params._clarify : undefined
+      delete params._clarify
 
       // _skip 플래그: 이 패턴은 매칭되었으나 의도가 다름 → 다음 패턴으로 진행
       // break로 inner loop(regex 목록) 전체를 빠져나가야 outer loop(패턴 목록)이 다음으로 진행
@@ -110,19 +127,29 @@ function _matchRoute(q: string): RouteResult {
       // 검색 도구에 상세조회 체인이 설정되어 있으면 자동 파이프라인 추가
       const chain = SEARCH_DETAIL_CHAINS[pattern.tool]
       if (chain) {
-        // "판결 전문 보여줘" 처럼 축약 해제를 요구하면 상세조회에 전달(#103)
-        const detailParams = wantsFullText(q) ? { full: true } : {}
+        // "판결 전문 보여줘" 처럼 축약 해제를 요구하면 상세조회에 전달(#103).
+        // 받지 못하는 도구면 Zod 가 조용히 버리므로 미적용 사실을 남긴다(#120)
+        const wantsFull = wantsFullText(q)
+        const supported = wantsFull && chain.supportsFull === true
         return {
           tool: pattern.tool,
           matchedPattern: pattern.name,
           params,
           reason: pattern.reason,
-          pipeline: [{ tool: chain.detailTool, params: detailParams }],
+          pipeline: [{ tool: chain.detailTool, params: supported ? { full: true } : {} }],
           autoChain: true,
+          ...(wantsFull && !supported ? { unsupportedParams: ["full"] } : {}),
+          ...(clarify ? { clarify } : {}),
         }
       }
 
-      return { tool: pattern.tool, matchedPattern: pattern.name, params, reason: pattern.reason }
+      return {
+        tool: pattern.tool,
+        matchedPattern: pattern.name,
+        params,
+        reason: pattern.reason,
+        ...(clarify ? { clarify } : {}),
+      }
     }
   }
 
@@ -158,26 +185,3 @@ function _mstPipeline(q: string, pattern: Pattern, params: Record<string, unknow
   }
 }
 
-/**
- * 쿼리 의도 분석 결과 (디버깅/로깅용)
- */
-export function explainRoute(query: string): string {
-  const result = routeQuery(query)
-  let explanation = `질의: "${query}"\n`
-  explanation += `도구: ${result.tool}\n`
-  explanation += `근거: ${result.reason}${result.matchedPattern ? ` [${result.matchedPattern}]` : ""}\n`
-  explanation += `파라미터: ${JSON.stringify(result.params, null, 2)}\n`
-
-  if (result.dateRange) {
-    explanation += `날짜범위: ${result.dateRange.from} ~ ${result.dateRange.to}\n`
-  }
-
-  if (result.pipeline) {
-    explanation += `파이프라인:\n`
-    for (const step of result.pipeline) {
-      explanation += `  → ${step.tool}(${JSON.stringify(step.params)})\n`
-    }
-  }
-
-  return explanation
-}

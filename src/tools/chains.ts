@@ -14,6 +14,7 @@ import {
   type LawInfo,
 } from "../lib/law-search.js"
 import { routeQuery } from "../lib/query-router.js"
+import { resolveChainBaseLaw } from "./chain-law-lookup.js"
 import { runScenario, detectScenario, formatSections, formatSuggestedActions } from "./scenarios/index.js"
 import type { ScenarioType, ScenarioContext } from "./scenarios/index.js"
 
@@ -41,6 +42,17 @@ import {
 } from "./precedent-search-core.js"
 import { fetchPrecedentEvidence, validatePrecedentSearchResult } from "./precedent-evidence.js"
 import { getRequestSignal, throwIfRequestCancelled } from "../lib/session-state.js"
+
+/**
+ * 체인 query 길이 상한 (#121).
+ *
+ * 체인 query 는 "법령명 + 키워드"라 짧다. 평가 세트(R/B 케이스 76건)의 최장 정상 질의가
+ * 145자(인용 검증용 붙여넣기)이므로 그 13배가 넘는 여유를 뒀다.
+ * 상한이 없으면 무제한 사용자 텍스트가 routeQuery 의 O(n²) 패턴에 그대로 들어가
+ * 이벤트 루프를 장기 점유한다(8.5k자 476ms, HTTP body 한도 100kb 안에서도 통과).
+ */
+const MAX_CHAIN_QUERY = 2000
+const chainQuery = (desc: string) => z.string().max(MAX_CHAIN_QUERY).describe(desc)
 
 // ========================================
 // Types
@@ -182,11 +194,16 @@ function secOrSkip(title: string, result: CallResult): string {
   return `\n▶ ${title} [NOT_FOUND / FAILED]\n   ⚠️ 이 섹션은 조회 실패 — LLM은 내용을 추측/생성하지 마세요.\n`
 }
 
-function noResult(query: string): ToolResponse {
+function noResult(query: string, attempts: string[] = []): ToolResponse {
   const keywords = query.trim().split(/\s+/)
   const lines = [`[NOT_FOUND] '${query}' 관련 법령을 찾을 수 없습니다.`]
   lines.push("")
   lines.push("⚠️ 이 체인은 기반 법령을 찾지 못해 실행을 중단했습니다. LLM은 법령·조문·판례를 추측/생성하지 마세요. 사용자에게 '검색 실패'를 명시 보고하세요.")
+  // 무엇으로 찾아봤는지 밝힌다 — 안 밝히면 이용자는 다르게 물을 방법을 모른다(#105)
+  if (attempts.length) {
+    lines.push("")
+    lines.push(`시도한 검색어: ${attempts.map(a => `"${a}"`).join(" → ")}`)
+  }
   if (keywords.length >= 2) {
     lines.push("")
     lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
@@ -302,7 +319,7 @@ function wrapError(error: unknown, toolName?: string): ToolResponse {
 // ========================================
 
 export const chainLawSystemSchema = z.object({
-  query: z.string().describe("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
+  query: chainQuery("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
   articles: z.array(z.string()).optional().describe("조회할 조문 번호 (예: ['제38조', '제39조'])"),
   scenario: z.enum(["delegation", "impact"]).optional()
     .describe("확장 시나리오. delegation=위임입법 미이행 감시, impact=개정 영향도 분석. 미지정 시 쿼리에서 자동 감지."),
@@ -314,8 +331,9 @@ export async function chainLawSystem(
   input: z.infer<typeof chainLawSystemSchema>
 ): Promise<ToolResponse> {
   try {
-    const laws = await findLaws(apiClient, input.query, input.apiKey)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     const parts = [
@@ -364,7 +382,7 @@ export async function chainLawSystem(
 // ========================================
 
 export const chainActionBasisSchema = z.object({
-  query: z.string().describe("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
+  query: chainQuery("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
   scenario: z.enum(["penalty"]).optional()
     .describe("확장 시나리오. penalty=처분·벌칙 기준 종합 (별표 처분기준표 + 감경 판례 + 개정이력). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -375,8 +393,9 @@ export async function chainActionBasis(
   input: z.infer<typeof chainActionBasisSchema>
 ): Promise<ToolResponse> {
   try {
-    const laws = await findLaws(apiClient, input.query, input.apiKey)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     const parts = [`═══ 처분 근거 확인: ${p.lawName} ═══`]
@@ -434,7 +453,7 @@ export async function chainActionBasis(
 // ========================================
 
 export const chainDisputePrepSchema = z.object({
-  query: z.string().describe("분쟁 키워드 (예: '건축허가 취소 행정심판', '징계처분 감경')"),
+  query: chainQuery("분쟁 키워드 (예: '건축허가 취소 행정심판', '징계처분 감경')"),
   domain: z.enum(["tax", "labor", "privacy", "competition", "general"]).optional()
     .describe("전문 분야 (tax=조세심판, labor=노동위, privacy=개인정보위, competition=공정위). 미지정 시 쿼리에서 자동 감지"),
   apiKey: z.string().optional(),
@@ -521,7 +540,7 @@ export async function chainDisputePrep(
 // ========================================
 
 export const chainAmendmentTrackSchema = z.object({
-  query: z.string().describe("법령명 (예: '관세법', '지방세특례제한법')"),
+  query: chainQuery("법령명 (예: '관세법', '지방세특례제한법')"),
   mst: z.string().optional().describe("법령일련번호 (알고 있으면)"),
   lawId: z.string().optional().describe("법령ID (알고 있으면)"),
   scenario: z.enum(["timeline", "time_travel"]).optional()
@@ -544,8 +563,9 @@ export async function chainAmendmentTrack(
 
     // 법령 검색 (MST 모르면)
     if (!mst && !lawId) {
-      const laws = await findLaws(apiClient, input.query, input.apiKey, 1)
-      if (laws.length === 0) return noResult(input.query)
+      const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 1)
+      const laws = base.laws
+      if (laws.length === 0) return noResult(input.query, base.attempts)
       mst = laws[0].mst
       lawId = laws[0].lawId
       lawName = laws[0].lawName
@@ -588,7 +608,7 @@ export async function chainAmendmentTrack(
 // ========================================
 
 export const chainOrdinanceCompareSchema = z.object({
-  query: z.string().describe("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
+  query: chainQuery("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
   parentLaw: z.string().optional().describe("상위 법령명 (예: '지방자치법'). 미지정 시 자동 검색."),
   scenario: z.enum(["compliance"]).optional()
     .describe("확장 시나리오. compliance=조례 상위법 적합성 검증 (헌재·행심 위법 판결 + 상위법 근거 분석). 미지정 시 쿼리에서 자동 감지."),
@@ -658,7 +678,7 @@ export async function chainOrdinanceCompare(
 // ========================================
 
 export const chainFullResearchSchema = z.object({
-  query: z.string().describe("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
+  query: chainQuery("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
   scenario: z.enum(["customs", "action_plan"]).optional()
     .describe("확장 시나리오. customs=관세·통관 종합 | action_plan=이럴 땐 이렇게, 5단계 안내(v4.0, 진단→권리→기관/기한→서류→함정). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -674,7 +694,7 @@ export async function chainFullResearch(
     // Step 1: AI 검색 + 법령 검색 + 해석례를 병렬 실행하고, 판례는 AI 구조화 신호를 받은 뒤 공통 core로 검색한다.
     // findLaws를 안전하게 래핑 (throw 시 Promise.all 전체 reject 방지)
     const safeFindLaws = async (): Promise<LawInfo[]> => {
-      try { return await findLaws(apiClient, input.query, input.apiKey, 2) }
+      try { return (await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 2)).laws }
       catch { return [] }
     }
     const [aiResult, rawLawsResult, interpResult] = await Promise.all([
@@ -741,7 +761,7 @@ export async function chainFullResearch(
 // ========================================
 
 export const chainProcedureDetailSchema = z.object({
-  query: z.string().describe("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
+  query: chainQuery("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
   scenario: z.enum(["manual"]).optional()
     .describe("확장 시나리오. manual=공무원 처리 매뉴얼 (행정규칙 + 자치법규 특칙 + 해석례 추가). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -755,8 +775,9 @@ export async function chainProcedureDetail(
     const parts = [`═══ 절차/비용 안내: ${input.query} ═══`]
 
     // Step 1: 법령 검색
-    const laws = await findLaws(apiClient, input.query, input.apiKey, 3)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 3)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     parts.push(`법령: ${p.lawName} (${p.lawType}) | MST: ${p.mst}`)

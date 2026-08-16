@@ -18,7 +18,7 @@ import { z } from "zod"
 import * as readline from "readline"
 import { LawApiClient } from "./lib/api-client.js"
 import { allTools } from "./tool-registry.js"
-import { explainRoute } from "./lib/query-router.js"
+import { explainRoute } from "./lib/route-explain.js"
 import { VERSION } from "./version.js"
 import {
   fmt, printBanner, formatOutput,
