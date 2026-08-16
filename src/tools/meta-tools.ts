@@ -3,10 +3,14 @@
  *
  * discover_tools: 의도/카테고리로 사용 가능한 도구 목록 반환
  * execute_tool:   discover로 찾은 도구를 프록시 실행
+ *
+ * 어떤 intent 가 어떤 카테고리로 가는지는 lib/tool-discovery 가 정한다 —
+ * 여기는 그 결과를 어떻게 보여주고 어떻게 실행하느냐만 본다.
  */
 
 import { z } from "zod"
-import { TOOL_CATEGORIES, TOOL_ALIASES, describeCallPath } from "../lib/tool-profiles.js"
+import { TOOL_CATEGORIES, V3_EXPOSED, describeCallPath } from "../lib/tool-profiles.js"
+import { selectSections } from "../lib/tool-discovery.js"
 import { formatToolError } from "../lib/errors.js"
 import type { LawApiClient } from "../lib/api-client.js"
 import type { McpTool, ToolResponse } from "../lib/types.js"
@@ -26,56 +30,17 @@ export const DiscoverToolsSchema = z.object({
   intent: z.string().describe("찾고 싶은 도구의 의도 또는 카테고리 (예: '공정위', '조약', '용어', '헌재')"),
 })
 
-/** 한국어에는 낱말 사이 공백이 없으므로 "글자가 아닌 것"을 낱말 경계로 본다. */
-const WORD_CHAR = /[\p{L}\p{N}_]/u
-
 /**
- * 질의가 별칭을 **낱말 단위로** 포함하는지 (#106).
+ * 도구 한 줄.
  *
- * 역방향(별칭 ⊃ 질의) 금지 — `판례`가 `조세심판례`에 흡수됐다. 정방향도 시작
- * 경계 필요 — `행정규칙`이 자치법규 별칭 `규칙`을 꼬리에 담아 오해석됐다.
- * 끝 경계는 요구하지 않는다: 한국어는 조사가 붙어 `조세심판원에`처럼 쓰인다.
+ * 노출 도구(V3_EXPOSED)의 description 은 ListTools 로 이미 클라이언트 컨텍스트에
+ * 들어가 있다 — 여기서 다시 실으면 순수 중복이다. 게다가 legal_research(640자)·
+ * legal_analysis(480자)는 거의 모든 법률 어휘를 담고 있어 어지간한 intent 의
+ * description 매칭에 다 걸린다. 이름과 호출 방식만 알린다 (#126).
  */
-function matchesAlias(query: string, alias: string): boolean {
-  if (query === alias) return true
-  for (let from = 0; ; ) {
-    const at = query.indexOf(alias, from)
-    if (at < 0) return false
-    if (at === 0 || !WORD_CHAR.test(query[at - 1])) return true
-    from = at + 1
-  }
-}
-
-/**
- * 별칭/자연어 입력을 카테고리명으로 해석.
- * TOOL_ALIASES에서 매칭되는 경우 해당 카테고리 키 반환, 없으면 undefined.
- */
-function resolveAliasToCategory(query: string): string | undefined {
-  const q = query.toLowerCase().trim()
-  for (const [category, aliases] of Object.entries(TOOL_ALIASES)) {
-    if (aliases.some(alias => matchesAlias(q, alias.toLowerCase()))) {
-      return category
-    }
-  }
-  return undefined
-}
-
-/**
- * 별칭 배열에 섞여 있는 도구명을 질의가 직접 가리키는지 확인.
- *
- * 도구명 판정은 레지스트리 실재 여부로 한다 — 접두사 열거는 `cite_check`·
- * `applicable_law`를 놓쳤다 (#108). 영어 낱말 별칭(citator·treaty)은 레지스트리에
- * 없어 자연히 걸러진다.
- */
-function resolveAliasToTools(query: string): string[] | undefined {
-  const q = query.toLowerCase().trim()
-  for (const aliases of Object.values(TOOL_ALIASES)) {
-    const toolNames = aliases.filter(alias => _toolIndex.has(alias))
-    if (toolNames.some(name => matchesAlias(q, name))) {
-      return toolNames
-    }
-  }
-  return undefined
+function toolLine(name: string): string {
+  if (V3_EXPOSED.has(name)) return `  - ${name}: 노출 도구 — 직접 호출 (설명은 도구 목록 참조)`
+  return `  - ${name}: ${_toolIndex.get(name)?.description || "(설명 없음)"}`
 }
 
 export async function discoverTools(
@@ -85,45 +50,9 @@ export async function discoverTools(
   // trim은 정규화 초입에서 한 번만 — 안 하면 앞뒤 공백이 description 매칭을
   // 통째로 막아 `"  판례  "`가 `"판례"`보다 적은 결과를 냈다 (#111).
   const query = input.intent.toLowerCase().trim()
-  const matches: Array<{ category: string; tools: string[] }> = []
+  const { sections, omitted } = selectSections(query, name => _toolIndex.get(name))
 
-  // 1단계: 별칭 → 카테고리 해석
-  const aliasCategory = resolveAliasToCategory(query)
-
-  // 2단계: 별칭 → 특정 도구 매칭
-  const aliasTools = resolveAliasToTools(query)
-  if (aliasTools && aliasTools.length > 0) {
-    matches.push({ category: `별칭 매칭 (${input.intent})`, tools: aliasTools })
-  }
-
-  for (const [category, toolNames] of Object.entries(TOOL_CATEGORIES)) {
-    // 별칭으로 해석된 카테고리는 무조건 포함
-    if (aliasCategory === category) {
-      matches.push({ category, tools: toolNames })
-      continue
-    }
-    // 카테고리 직접 매칭은 별칭과 달리 양방향 부분일치를 유지한다 (#111).
-    // 카테고리명은 한국어 합성명사라 역방향(카테고리 ⊃ 질의)이 곧 상위어 질의다:
-    // `법령`→법령검색(수식어)과 `분석`→비교분석(핵심어)을 둘 다 살려야 한다.
-    // 실측 — 낱말 경계를 걸면 대표 intent 10개 중 9개가 완전 동일(`법령` 21섹션
-    // 50도구 불변, 탈락한 영문법령은 아래 description 경로가 복구)이고 `분석`만
-    // 5섹션 9도구→4섹션 5도구로 손실. 이득 0·손실 1이라 적용하지 않았다.
-    if (category.includes(query) || query.includes(category)) {
-      matches.push({ category, tools: toolNames })
-      continue
-    }
-    // 도구 이름/설명에서도 매칭
-    const matchedTools = toolNames.filter(name => {
-      const tool = _toolIndex.get(name)
-      if (!tool) return false
-      return name.includes(query) || tool.description.toLowerCase().includes(query)
-    })
-    if (matchedTools.length > 0) {
-      matches.push({ category, tools: matchedTools })
-    }
-  }
-
-  if (matches.length === 0) {
+  if (sections.length === 0) {
     // 전체 카테고리 목록 반환
     const categoryList = Object.entries(TOOL_CATEGORIES)
       .map(([cat, tools]) => `• ${cat}: ${tools.length}개 도구`)
@@ -133,22 +62,18 @@ export async function discoverTools(
     }
   }
 
-  // 통합 진입점(legal_research 등)은 여러 카테고리에 속해, 그대로 두면 600자짜리
-  // description이 한 응답에 최대 4번 실린다 — 처음 나온 섹션에만 싣는다 (#109/#110).
-  const seen = new Set<string>()
-  const sections = matches.map(m => {
-    const fresh = m.tools.filter(name => !seen.has(name))
-    fresh.forEach(name => seen.add(name))
-    if (fresh.length === 0) return ""
-    const toolDetails = fresh.map(name => {
-      const tool = _toolIndex.get(name)
-      return `  - ${name}: ${tool?.description || "(설명 없음)"}`
-    }).join("\n")
-    return `[${m.category}]\n${toolDetails}`
-  }).filter(section => section !== "").join("\n\n")
+  const listed = new Set<string>()
+  const body = sections.map(section => {
+    section.tools.forEach(name => listed.add(name))
+    return `[${section.category}]\n${section.tools.map(toolLine).join("\n")}`
+  }).join("\n\n")
+  // 잘린 게 있으면 반드시 말한다 — 조용히 자르면 소비자는 그게 전부인 줄 안다.
+  const cut = omitted > 0
+    ? `\n\n(연관도 낮은 ${omitted}개 카테고리 생략 — intent를 좁히면 나머지가 보입니다.)`
+    : ""
 
   return {
-    content: [{ type: "text", text: `"${input.intent}" 관련 도구:\n\n${sections}\n\n${describeCallPath(seen)}` }]
+    content: [{ type: "text", text: `"${input.intent}" 관련 도구:\n\n${body}${cut}\n\n${describeCallPath(listed)}` }]
   }
 }
 
