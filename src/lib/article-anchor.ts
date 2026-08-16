@@ -15,8 +15,10 @@ export interface ArticleAnchor {
   code: string
   /** 자연어 표기 (제103조 / 제10조의2) */
   display: string
-  jo: number
-  branch: number
+  /** 조번호 — 정수. 레포 전반의 `jo`는 문자열(코드·표기)이라 이름을 겹치지 않게 한다 */
+  articleNo: number
+  /** 가지번호 (의X). 없으면 0 */
+  branchNo: number
 }
 
 export type AnchorVerdict = "match" | "mismatch" | "silent"
@@ -50,10 +52,10 @@ export function parseArticleAnchor(raw: string): ArticleAnchor | null {
     }
   }
 
-  const jo = Number.parseInt(code.slice(0, 4), 10)
-  const branch = Number.parseInt(code.slice(4, 6), 10)
-  if (!Number.isFinite(jo) || jo <= 0 || !Number.isFinite(branch)) return null
-  return { code, display: formatJO(code), jo, branch }
+  const articleNo = Number.parseInt(code.slice(0, 4), 10)
+  const branchNo = Number.parseInt(code.slice(4, 6), 10)
+  if (!Number.isFinite(articleNo) || articleNo <= 0 || !Number.isFinite(branchNo)) return null
+  return { code, display: formatJO(code), articleNo, branchNo }
 }
 
 /** 텍스트가 앵커 조문을 가리키는지 판정. 조문 표기가 없으면 silent(판정 보류). */
@@ -64,9 +66,9 @@ export function classifyArticleRefs(text: string, anchor: ArticleAnchor): Anchor
   ARTICLE_REF_RE.lastIndex = 0
   while ((m = ARTICLE_REF_RE.exec(folded)) !== null) {
     sawRef = true
-    const jo = Number.parseInt(m[1], 10)
-    const branch = m[2] ? Number.parseInt(m[2], 10) : 0
-    if (jo === anchor.jo && branch === anchor.branch) return "match"
+    const articleNo = Number.parseInt(m[1], 10)
+    const branchNo = m[2] ? Number.parseInt(m[2], 10) : 0
+    if (articleNo === anchor.articleNo && branchNo === anchor.branchNo) return "match"
   }
   return sawRef ? "mismatch" : "silent"
 }

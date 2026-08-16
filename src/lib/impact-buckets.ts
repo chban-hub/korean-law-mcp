@@ -21,7 +21,10 @@ export interface BucketStat {
 const EMPTY: BucketStat = { count: 0, topItems: [], excluded: 0, covered: true }
 
 const ITEM_HEADER_RE = /^\[\d+\]\s*\S/
-const ITEM_DETAIL_RE = /^(사건번호|안건번호|해석례번호|청구번호|지자체)\s*:\s*(.+)$/
+// 5개 렌더러가 실제로 내보내는 식별 키만 적는다 — precedents/constitutional-decisions/
+// admin-appeals는 `사건번호:`, interpretations는 `해석례번호:`, ordinance-search는 `지자체:`.
+// 없는 키를 넣어두면 죽은 분기가 조용히 쌓인다.
+const ITEM_DETAIL_RE = /^(사건번호|해석례번호|지자체)\s*:\s*(.+)$/
 
 function summarizeItem(block: string[]): string {
   const header = block[0].replace(/\s*\([^)]*OC=[^)]*\)\s*/g, "").slice(0, 110)

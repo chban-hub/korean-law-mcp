@@ -14,6 +14,16 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
     expect(extractCaseNumbers("헌재 2024헌바107")).toEqual(["2024헌바107"])
   })
 
+  // 자기리뷰 지적: 부호를 음절 블랙리스트로 거르면 실존 부호를 조용히 놓친다.
+  // 회생(회합·회단)·가정보호(호)는 실존 사건부호이므로 제외 대상이 아니다.
+  it("회생·가정보호 등 덜 흔한 사건부호도 놓치지 않는다", () => {
+    expect(extractCaseNumbers("서울회생법원 2019회단100123 결정")).toEqual(["2019회단100123"])
+    expect(extractCaseNumbers("서울회생법원 2020회합100 결정")).toEqual(["2020회합100"])
+    expect(extractCaseNumbers("2019호1234")).toEqual(["2019호1234"])
+    expect(extractCaseNumbers("1988다카12345")).toEqual(["1988다카12345"])
+    expect(extractCaseNumbers("2020즈합50")).toEqual(["2020즈합50"])
+  })
+
   it("조문 인용을 사건번호로 오인하지 않는다", () => {
     expect(extractCaseNumbers("민법 제999조의9")).toEqual([])
     expect(extractCaseNumbers("민법 제103조 제1항 제2호")).toEqual([])
@@ -24,6 +34,8 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
     expect(extractCaseNumbers("2023. 5. 10. 시행")).toEqual([])
     expect(extractCaseNumbers("1970년대 30명")).toEqual([])
     expect(extractCaseNumbers("총 20건 3개")).toEqual([])
+    expect(extractCaseNumbers("제3회 대회 20명")).toEqual([])
+    expect(extractCaseNumbers("판례집 20-2, 300쪽")).toEqual([])
   })
 
   it("수량 표기 뒤에 오는 진짜 사건번호는 살린다", () => {

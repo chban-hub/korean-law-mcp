@@ -166,9 +166,11 @@ export async function impactMap(
       citedLaws.forEach(cited => parts.push(`  → ${cited}`))
     }
 
-    // 5. 합산 통계
+    // 5. 합산 통계. 표본이 검색 건수를 못 덮은 버킷이 하나라도 있으면 합계에는
+    // 경계 확인분과 업스트림 추정치가 섞인다 — 섞였다는 사실을 숨기지 않는다.
     const total = prec.count + interp.count + appeal.count + cons.count + ordinance.count
-    parts.push(`\n▶ 총 영향 건수: ${total}건 (판례 ${prec.count} / 헌재 ${cons.count} / 해석 ${interp.count} / 행심 ${appeal.count} / 조례 ${ordinance.count})`)
+    const estimated = rows.some(r => !r.stat.covered)
+    parts.push(`\n▶ 총 영향 건수: ${total}건${estimated ? " (일부는 경계 미확인 검색 건수)" : ""} (판례 ${prec.count} / 헌재 ${cons.count} / 해석 ${interp.count} / 행심 ${appeal.count} / 조례 ${ordinance.count})`)
     parts.push(`인용 법령: ${citedLaws.length}개\n`)
 
     // 6. mermaid 그래프
