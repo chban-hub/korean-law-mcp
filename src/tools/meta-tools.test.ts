@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { discoverTools } from "./meta-tools.js"
-import { TOOL_ALIASES, TOOL_CATEGORIES } from "../lib/tool-profiles.js"
+import { TOOL_ALIASES, TOOL_CATEGORIES, V3_EXPOSED } from "../lib/tool-profiles.js"
+import { MAX_SECTIONS, browsableCategories } from "../lib/tool-discovery.js"
 // import 부수효과로 setAllToolsRef(allTools)가 실행된다 — discover_tools가 도구
 // 설명을 읽으려면 이 주입이 선행돼야 하므로 레지스트리를 직접 import한다.
 import { allTools } from "../tool-registry.js"
@@ -182,6 +183,103 @@ describe("지적 5 — 1-hop 앞세우기가 legal_analysis 계열에도 적용�
     const text = await discoverText(intent)
     expect(text).toContain("legal_analysis")
     expect(text.indexOf("legal_analysis")).toBeLessThan(text.indexOf(twoHop))
+  })
+})
+
+describe("노출 도구는 설명을 재인쇄하지 않는다 (#126-1)", () => {
+  // V3_EXPOSED 도구의 description 은 ListTools 로 이미 에이전트 컨텍스트에 들어가 있다.
+  // discover_tools 가 그걸 또 실으면 순수 중복 — legal_research 640자, legal_analysis 480자.
+  it("legal_research 는 이름만 싣고 task 열거는 싣지 않는다", async () => {
+    const text = await discoverText("과태료 기준")
+    expect(text).toContain("legal_research")
+    expect(text).not.toContain("full_research=")
+  })
+
+  it("legal_analysis 는 이름만 싣고 mode 열거는 싣지 않는다", async () => {
+    const text = await discoverText("조문 영향")
+    expect(text).toContain("legal_analysis")
+    expect(text).not.toContain("mode: verify_citations=")
+  })
+
+  it("미노출 도구는 종전대로 description 을 싣는다", async () => {
+    expect(await discoverText("과태료 기준")).toContain("행정처분·허가·인가의 법적 근거 종합")
+  })
+})
+
+describe("섹션 랭킹과 상한 (#126-2)", () => {
+  // 별칭 > 카테고리명 > description 순. `조례`는 자치법규의 별칭이지만
+  // 삽입 순서만 따르던 종전에는 description 매칭인 법령검색이 상단을 차지했다.
+  it("별칭 매칭 카테고리가 description 매칭보다 먼저 온다", async () => {
+    expect((await discoverSections("조례"))[0]).toBe("자치법규")
+    expect((await discoverSections("별표"))[0]).toBe("별표서식")
+  })
+
+  it("섹션 수가 상한을 넘지 않는다", async () => {
+    for (const intent of ["법령", "판례", "조문", "해석례", "조례"]) {
+      expect((await discoverSections(intent)).length).toBeLessThanOrEqual(MAX_SECTIONS)
+    }
+  })
+
+  it("상한에 걸려 생략된 카테고리 수를 알린다 (무음 절단 금지)", async () => {
+    expect(await discoverText("법령")).toMatch(/\d+개 카테고리 생략/)
+  })
+
+  it("상한에 안 걸리면 생략 고지를 붙이지 않는다", async () => {
+    expect(await discoverText("행정규칙")).not.toMatch(/카테고리 생략/)
+  })
+
+  // 상한값 근거: 필수 잔존 케이스 30건의 최악 순위가 2위(판례생사·cite_check).
+  // 5는 그 2.5배 여유 — 정답을 지키면서 꼬리 노이즈만 자른다.
+  it("대표 intent 10개에서 정답 카테고리가 100% 잔존한다", async () => {
+    const answers: Array<[string, string]> = [
+      ["판례", "판례"], ["법령", "법령검색"], ["조례", "자치법규"], ["행정규칙", "행정규칙"],
+      ["해석례", "해석례"], ["판례생사", "판례생사"], ["검증", "인용검증"], ["별표", "별표서식"],
+      ["시행일", "법령검색"], ["조문", "법령조회"],
+    ]
+    for (const [intent, answer] of answers) {
+      expect(await discoverSections(intent)).toContain(answer)
+    }
+  })
+})
+
+describe("무매칭 응답 축약 (#126 부록)", () => {
+  // 카테고리를 통째로 나열해 봐야 소비자는 그중 무엇이 자기 질의에 가까운지
+  // 모른다 — 상한·포인터화와 같은 원칙으로 줄인다.
+  it("전체 카테고리 목록을 나열하지 않는다", async () => {
+    const text = await discoverText("하자")
+    expect(text).toContain("찾지 못했습니다")
+    expect(text).not.toContain("사용 가능한 카테고리:")
+    expect(text.split("\n").length).toBeLessThanOrEqual(4)
+  })
+
+  it("표면이 가까운 카테고리를 짚어 준다 (오타·유사어 구제)", async () => {
+    expect(await discoverText("세금")).toContain("가까운 카테고리: 조세심판")
+    expect(await discoverText("영문볍령")).toContain("가까운 카테고리: 영문법령")
+    expect(await discoverText("자치볍규")).toContain("가까운 카테고리: 자치법규")
+  })
+
+  it("정말 미등록인 어휘에는 헛제안을 붙이지 않는다", async () => {
+    for (const intent of ["하자", "손해배상", "특허", "근로시간"]) {
+      expect(await discoverText(intent)).not.toContain("가까운 카테고리")
+    }
+  })
+
+  it("넓혀 볼 카테고리 안내는 실재하는 카테고리이고 1-hop 도구를 담는다", () => {
+    const anchors = browsableCategories()
+    expect(anchors.length).toBeGreaterThan(0)
+    for (const category of anchors) {
+      expect(Object.keys(TOOL_CATEGORIES)).toContain(category)
+      expect(TOOL_CATEGORIES[category].some(t => V3_EXPOSED.has(t))).toBe(true)
+    }
+  })
+})
+
+describe("별칭 카테고리 다중 편입 (#126-3)", () => {
+  // 회귀: 단일 승자라 첫 매칭 하나만 살아남고 나머지 별칭 카테고리는 증발했다.
+  it("여러 별칭이 걸리면 모두 상위에 편입된다", async () => {
+    const sections = await discoverSections("대법원 판례 유효성")
+    expect(sections).toContain("판례")      // 별칭 "대법원"
+    expect(sections).toContain("판례생사")  // 별칭 "판례 유효성"
   })
 })
 
