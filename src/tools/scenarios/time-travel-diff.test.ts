@@ -71,9 +71,11 @@ describe("changeExcerpt 변경 지점 중심 발췌 (#97)", () => {
     expect(ex.clipped).toBe(true)
   })
 
-  it("변경이 없으면 발췌도 비어 있다", () => {
+  it("본문이 같으면(제목만 변경) 발췌 대신 그 사실을 알린다", () => {
     const ex = changeExcerpt("동일한 본문", "동일한 본문", 200)
-    expect(ex.clipped).toBe(false)
+    expect(ex.bodyUnchanged).toBe(true)
+    expect(ex.before).toBe("")
+    expect(ex.after).toBe("")
   })
 })
 

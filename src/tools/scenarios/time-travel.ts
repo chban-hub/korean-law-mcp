@@ -222,8 +222,12 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
     for (const m of modified.slice(0, 30)) {
       const ex = changeExcerpt(m.old.body, m.cur.body, perSide)
       body += `\n  △ ${displayJo(m.cur.joNum, m.cur.joBranch)}${m.cur.title ? ` (${m.cur.title})` : ""} ${summarizeChange(m.old, m.cur)}${efNote(m.cur)}`
-      body += `\n      [전] ${ex.before}`
-      body += `\n      [후] ${ex.after}`
+      if (ex.bodyUnchanged) {
+        body += `\n      (본문 동일 — 조문제목만 변경: "${m.old.title}" → "${m.cur.title}")`
+      } else {
+        body += `\n      [전] ${ex.before}`
+        body += `\n      [후] ${ex.after}`
+      }
       if (ex.clipped) body += `\n      ⚠️ 변경 구간이 길어 발췌가 잘렸습니다 — 전문은 get_law_text(mst="${newVer.mst}", jo="${displayJo(m.cur.joNum, m.cur.joBranch)}")`
     }
     if (modified.length > 30) body += `\n  ... 외 ${modified.length - 30}개`

@@ -157,7 +157,13 @@ export function changeExcerpt(
   oldBody: string,
   curBody: string,
   perSide: number
-): { before: string; after: string; clipped: boolean } {
+): { before: string; after: string; clipped: boolean; bodyUnchanged?: boolean } {
+  // 조문제목만 바뀐 경우도 modified에 들어온다. 이때 본문 발췌를 보여주면
+  // 바뀌지 않은 꼬리가 "변경 내용"인 양 읽히므로 본문이 같다는 사실만 알린다.
+  if (oldBody === curBody) {
+    return { before: "", after: "", clipped: false, bodyUnchanged: true }
+  }
+
   const max = Math.min(oldBody.length, curBody.length)
   let prefix = 0
   while (prefix < max && oldBody[prefix] === curBody[prefix]) prefix++
