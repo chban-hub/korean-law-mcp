@@ -6,7 +6,7 @@
  * 줄 단위로 훑으면 제목과 사건번호가 서로 다른 항목으로 흩어져 경계 판정을 걸 수 없다.
  * 항목 블록으로 묶은 뒤에야 "이 항목이 어느 조문 것인가"를 물을 수 있다.
  */
-import { classifyArticleRefs, type ArticleAnchor } from "./article-anchor.js"
+import { classifyArticleRefs, LAW_NAME_SUFFIX_PATTERN, type ArticleAnchor } from "./article-anchor.js"
 
 export interface BucketStat {
   /** 조문 경계를 통과한 건수 — 이 도구가 사실로 주장할 수 있는 유일한 수 */
@@ -124,8 +124,11 @@ export function lawMatchNote(stats: BucketStat[]): string {
 export function extractCitedLaws(articleText: string): string[] {
   if (!articleText) return []
   const cited = new Set<string>()
-  // "「OO법」", "「OO에 관한 법률」" 패턴
-  const bracketRe = /「([^」]{2,40}?(?:법|법률|시행령|시행규칙|규칙|규정))」/g
+  // "「OO법」", "「OO에 관한 법률」", "「OO 조례」" 패턴.
+  // 접미 목록은 article-anchor와 공유한다 — 따로 적어두면 한쪽만 낡는다(#139: 조례 누락).
+  // 접두는 1자부터 — {2,40}을 요구하면 접미 앞에 2자가 있어야 해서 「민법」·「형법」처럼
+  // 가장 많이 인용되는 두 글자 법령명이 통째로 안 잡혔다.
+  const bracketRe = new RegExp(`「([^」]{1,39}?${LAW_NAME_SUFFIX_PATTERN})」`, "g")
   let m: RegExpExecArray | null
   while ((m = bracketRe.exec(articleText)) !== null) {
     cited.add(m[1].trim())

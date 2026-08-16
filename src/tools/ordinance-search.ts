@@ -5,6 +5,14 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { normalizeLawSearchText, expandOrdinanceQuery } from "../lib/search-normalizer.js"
+import { extractArticleNumber } from "../lib/query-extract.js"
+import { filterByArticleRelevance } from "../lib/ordinance-relevance.js"
+
+/** 질의에서 조문 표기를 걷어낸 나머지를 법령명으로 본다 ("도로교통법 제148조의2" → "도로교통법") */
+function lawNameOf(query: string): string {
+  return query.replace(/제?\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제?\s*\d+\s*항)?(?:\s*제?\s*\d+\s*호)?/g, " ")
+    .replace(/\s+/g, " ").trim()
+}
 import { parseSearchXML, extractTag } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
@@ -12,6 +20,10 @@ import { formatToolError } from "../lib/errors.js"
 export const SearchOrdinanceSchema = z.object({
   query: z.string().describe("검색할 자치법규명 (예: '서울', '환경')"),
   display: z.number().min(1).max(100).default(20).describe("페이지당 결과 개수 (기본값: 20, 최대: 100)"),
+  verifyArticleRelevance: z.boolean().optional()
+    .describe("질의에 조문 번호가 있을 때 상위 후보의 본문을 열어 그 조문을 인용하는지 확인 (기본 false — 건당 업스트림 1회·약 1초가 추가된다)"),
+  relevanceLimit: z.number().min(1).max(30).optional()
+    .describe("본문 확인 상한 (기본 10). 상한 밖은 버리지 않고 '미확인'으로 남는다"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 })
 
@@ -79,7 +91,7 @@ export async function searchOrdinance(
     }
 
     const currentPage = parsed.page
-    const ordinances = parsed.items
+    let ordinances = parsed.items
 
     if (totalCount === 0) {
       // 확장 검색도 실패한 경우, 시도한 쿼리들 안내
@@ -96,6 +108,18 @@ export async function searchOrdinance(
         content: [{ type: "text", text: hint.join("\n") }],
         isError: true,
       }
+    }
+
+    // 조문 관련성 확인(옵트인) — 이름으로 못 좁히는 것을 본문으로 좁힌다 (#124).
+    const queryArticle = extractArticleNumber(input.query)
+    let relevance: Awaited<ReturnType<typeof filterByArticleRelevance<typeof ordinances[number]>>> | undefined
+    if (input.verifyArticleRelevance && queryArticle) {
+      relevance = await filterByArticleRelevance(
+        apiClient, ordinances, o => o.자치법규일련번호,
+        { lawName: lawNameOf(input.query), jo: queryArticle, apiKey: input.apiKey, limit: input.relevanceLimit }
+      )
+      // 확인된 것을 앞으로. 미확인은 버리지 않는다 — 확인 못 한 것은 무관이 아니다.
+      ordinances = [...relevance.confirmed, ...relevance.unconfirmed]
     }
 
     let output = `자치법규 검색 결과 (총 ${totalCount}건, ${currentPage}페이지`
@@ -119,8 +143,16 @@ export async function searchOrdinance(
     // 어느 자치법규명에도 없으므로 사실상 무시되고, "도로교통법 제148조의2"에도 158건이
     // 그대로 돌아온다(2026-08-17 실측). 조번호가 사라진 뒤라 하류의 조문 경계 대조로도
     // 걸러낼 수 없으니, 결과를 그 조문 관련으로 읽지 않도록 여기서 밝힌다(#117).
-    if (/제\s*\d+\s*조/.test(input.query)) {
+    // 판정은 조문 추출기와 같은 기준을 쓴다. `제`를 요구하면 #103이 새로 지원한
+    // "44조"·"3조의3" 표기에서만 경고가 사라져, 정작 조문을 물은 질의가 무경고로 나간다(#140).
+    if (relevance) {
+      output += `✅ 조문 관련성 확인: ${relevance.confirmed.length}건 (본문에서 ${queryArticle} 인용 확인, 상위 ${relevance.checked}건 조회)\n`
+      if (relevance.unconfirmed.length > 0) {
+        output += `⚠️ 나머지 ${relevance.unconfirmed.length}건은 미확인입니다${relevance.skipped > 0 ? ` (본문 미조회 ${relevance.skipped}건 포함)` : ""} — 무관하다는 뜻이 아니라 확인하지 않았다는 뜻입니다.\n`
+      }
+    } else if (queryArticle !== undefined) {
       output += `⚠️ 자치법규 검색은 자치법규명만 대조하므로 질의의 조문 번호는 반영되지 않았습니다. 위 결과가 해당 조문과 관련된다는 보장이 없습니다.\n`
+      output += `💡 verifyArticleRelevance=true 로 상위 후보 본문을 열어 ${queryArticle} 인용 여부를 확인할 수 있습니다(건당 약 1초).\n`
     }
 
     // 다음 단계 힌트 — 자치법규 ID로 본문 조회 유도

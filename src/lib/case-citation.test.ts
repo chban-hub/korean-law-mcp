@@ -29,7 +29,9 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
   it("회생·가정보호 등 덜 흔한 사건부호도 놓치지 않는다", () => {
     expect(extractCaseNumbers("서울회생법원 2019회단100123 결정")).toEqual(["2019회단100123"])
     expect(extractCaseNumbers("서울회생법원 2020회합100 결정")).toEqual(["2020회합100"])
-    expect(extractCaseNumbers("2019호1234")).toEqual(["2019호1234"])
+    // 보호사건 부호는 너(가정보호)·버(아동보호)다. 이전 판에서 '호'를 가정보호로
+    // 적었으나 근거 없는 단정이었다 — 실재 부호만 남긴다.
+    expect(extractCaseNumbers("2019너1234")).toEqual(["2019너1234"])
     expect(extractCaseNumbers("1988다카12345")).toEqual(["1988다카12345"])
     expect(extractCaseNumbers("2020즈합50")).toEqual(["2020즈합50"])
     // 3음절 부호·개인회생 — 구 정규식이 뽑던 것을 새 정규식도 뽑아야 한다
@@ -54,6 +56,20 @@ describe("extractCaseNumbers — 사건번호 인용 추출 (#93)", () => {
 
   it("수량 표기 뒤에 오는 진짜 사건번호는 살린다", () => {
     expect(extractCaseNumbers("2024년 2013다61381 판결")).toEqual(["2013다61381"])
+  })
+
+  // #137: 블랙리스트만으로는 산문의 숫자+한글+숫자가 사건번호가 된다. ✗ 단정까지는
+  // 안 가도 "판례 인용 N건"을 지어내고, 5건 상한을 소진해 진짜 인용을 ⊘로 밀어낸다.
+  it("사건부호가 아닌 산문 토큰을 사건번호로 만들지 않는다", () => {
+    expect(extractCaseNumbers("계약금은 1000억원2024 기준")).toEqual([])
+    expect(extractCaseNumbers("납품수량 2000개2025 예정")).toEqual([])
+    expect(extractCaseNumbers("ISO 9001인증2020 취득")).toEqual([])
+    expect(extractCaseNumbers("공사비 300만원2023 집행")).toEqual([])
+  })
+
+  it("쓰레기 토큰이 진짜 인용의 확인 상한을 잡아먹지 않는다", () => {
+    const text = "1000억원2024, 2000개2025, 9001인증2020, 300만원2023, 500건2022 그리고 2013다61381"
+    expect(extractCaseNumbers(text)).toEqual(["2013다61381"])
   })
 
   it("중복은 1회만", () => {

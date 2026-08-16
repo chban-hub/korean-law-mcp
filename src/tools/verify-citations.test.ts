@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
   lawNameCandidates,
-  looseMatchLawName,
   extractLawName,
   resolveLawAnaphora,
   parseCitations,
@@ -124,28 +123,6 @@ describe("parseCitations — 조응 인용의 법령명 승계 (#70)", () => {
   it("선행 법령명 없이 '같은 법'만 있으면 법령명 미상", () => {
     const cites = parseCitations("같은 법 시행규칙 제30조에 따라 청구한다.", 15)
     expect(cites[0].lawName).toBeUndefined()
-  })
-})
-
-describe("looseMatchLawName", () => {
-  it("공백 무시 완전 일치", () => {
-    expect(looseMatchLawName("형법", "형법")).toBe(true)
-  })
-
-  it("공식 법령명이 후보로 시작하면 매칭 (약칭)", () => {
-    expect(looseMatchLawName("개인정보", "개인정보 보호법")).toBe(true)
-  })
-
-  it("법률/법 접미 정규화로 매칭", () => {
-    expect(looseMatchLawName("국가공무원법", "국가공무원법")).toBe(true)
-  })
-
-  it("수식어가 남은 후보는 매칭 실패 (조문검증 저하 방지 대상)", () => {
-    expect(looseMatchLawName("절도죄는 형법", "형법")).toBe(false)
-  })
-
-  it("전혀 다른 법령은 매칭 실패", () => {
-    expect(looseMatchLawName("형법", "민법")).toBe(false)
   })
 })
 

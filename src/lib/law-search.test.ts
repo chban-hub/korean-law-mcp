@@ -65,6 +65,31 @@ describe("resolvedLawMatches — laws[0] 맹신 방지 가드", () => {
   })
 })
 
+// 유일한 살아있는 소비자는 verify-citations.verifyOne(법령 후보 확정)이다.
+// 그 경로가 기대는 동작을 여기서 고정한다 — 예전엔 verify-citations가 재수출한 심볼을
+// 테스트가 붙잡고 있어서, 소비자가 사라져도 재수출이 죽지 않았다 (#135).
+describe("looseMatchLawName — verify_citations 후보 확정이 기대는 동작", () => {
+  it("공백 무시 완전 일치", () => {
+    expect(looseMatchLawName("형법", "형법")).toBe(true)
+  })
+
+  it("공식 법령명이 후보로 시작하면 매칭 (약칭)", () => {
+    expect(looseMatchLawName("개인정보", "개인정보 보호법")).toBe(true)
+  })
+
+  it("법률/법 접미 정규화로 매칭", () => {
+    expect(looseMatchLawName("국가공무원법", "국가공무원법")).toBe(true)
+  })
+
+  it("수식어가 남은 후보는 매칭 실패 (조문검증 저하 방지 대상)", () => {
+    expect(looseMatchLawName("절도죄는 형법", "형법")).toBe(false)
+  })
+
+  it("전혀 다른 법령은 매칭 실패", () => {
+    expect(looseMatchLawName("형법", "민법")).toBe(false)
+  })
+})
+
 describe("looseMatchLawName (lib 승격 후 동작 유지)", () => {
   it("공백 무시·접두 허용", () => {
     expect(looseMatchLawName("자본시장과 금융투자업에 관한 법률", "자본시장과금융투자업에관한법률")).toBe(true)

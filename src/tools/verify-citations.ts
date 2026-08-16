@@ -91,10 +91,6 @@ export function lawNameCandidates(lawName: string): string[] {
   return whole.length >= 2 && !wholeIsSuffixOnly ? [whole] : []
 }
 
-// looseMatchLawName은 lib/law-search로 승격됨 (applicable_law/impact_map 가드와 공용).
-// 기존 import 경로 호환을 위해 재수출.
-export { looseMatchLawName }
-
 // 인용 직전 문맥에서 법령명을 추출.
 // 「법령명」 제8조 는 법제처·판결문·실무 문서의 표준 인용 표기인데, 닫는 낫표가
 // LAW_NAME_REGEX의 $ 앵커를 막아 법령명이 **전혀** 추출되지 않았다(→ "법령명 추출 실패").
