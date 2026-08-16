@@ -71,6 +71,27 @@ describe("lawService.do 단건 조회 미스 — 확인 1회 후 표면화", () 
   }, 30000)
 })
 
+describe("빈 응답 가드 — 파서가 아니라 여기서 잡힌다", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  // 사다리를 다 태우고도 빈 본문이면 그 ""가 파서까지 내려가 "missing root element"류
+  // 예외가 됐다. 원인(업스트림 빈 응답)이 증상(파싱 실패)으로 바뀌어 진단이 어려워진다.
+  const searches: Array<[string, (c: LawApiClient) => Promise<string>]> = [
+    ["searchOrdinance", (c) => c.searchOrdinance({ query: "주차" })],
+    ["searchAdminRule", (c) => c.searchAdminRule({ query: "훈령" })],
+    ["getLawHistory", (c) => c.getLawHistory({ regDt: "20260101" })],
+    ["getArticleHistory", (c) => c.getArticleHistory({ lawId: "001565" })],
+    ["getAnnexes", (c) => c.getAnnexes({ lawName: "도로교통법 시행규칙" })],
+  ]
+
+  for (const [name, call] of searches) {
+    it(`${name}: 빈 응답을 명시적 메시지로 전환한다`, async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => emptyJson()))
+      await expect(call(new LawApiClient({ apiKey: "test" }))).rejects.toThrow(/빈 응답/)
+    }, 30000)
+  }
+})
+
 describe("백오프 상수 — 업스트림 왕복 대비 비율", () => {
   afterEach(() => vi.unstubAllGlobals())
 

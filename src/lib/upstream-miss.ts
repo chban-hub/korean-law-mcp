@@ -16,7 +16,7 @@
  */
 
 import { ExecutionLimitError } from "./execution-limits.js"
-import { readResponseText } from "./response-body.js"
+import { readBodyPrefix } from "./response-body.js"
 import { getRequestSignal } from "./session-state.js"
 
 export type BadBodyKind = "empty" | "html"
@@ -33,7 +33,14 @@ export function detectBadBody(text: string): BadBodyKind | null {
 }
 
 /**
- * 200 응답의 본문을 (예산·취소를 지키며) 훔쳐봐 미스/장애 표시인지 판정한다.
+ * 판정에 필요한 만큼만 훔쳐본다. 빈 본문이냐 HTML이냐는 첫 몇 바이트에서 갈리므로
+ * 본문 전체를 복제해 읽을 이유가 없다 — 1 MB 넘는 법령 전문을 두 번 받아 예산에
+ * 두 번 청구하던 문제(#115와 같은 뿌리)를 여기서 끊는다.
+ */
+const PROBE_BYTES = 1024
+
+/**
+ * 200 응답의 앞부분을 (취소를 지키며) 훔쳐봐 미스/장애 표시인지 판정한다.
  * 본문을 읽지 못하면(clone 실패 등) 정상 응답으로 보고 `null`을 돌려주고,
  * 취소·예산 초과는 호출부가 요청을 중단하도록 그대로 던진다.
  */
@@ -43,14 +50,20 @@ export async function classifyOkBody(
 ): Promise<BadBodyKind | null> {
   const inspection = response.clone()
   try {
-    return detectBadBody(await readResponseText(inspection))
+    const { text, complete } = await readBodyPrefix(inspection, PROBE_BYTES)
+    const bad = detectBadBody(text)
+    // 프로브 구간이 전부 공백인데 본문이 더 남아 있다면 "빈 본문"이라 단정할 수 없다.
+    return bad === "empty" && !complete ? null : bad
   } catch (error) {
     if (error instanceof ExecutionLimitError || getRequestSignal()?.aborted || externalSignal?.aborted) {
-      await Promise.allSettled([inspection.body?.cancel(), response.body?.cancel()])
+      // 요청 자체가 끝난다 — 아무도 원본을 읽지 않으므로 여기서 같이 버려야 소켓이 돈다.
+      void response.body?.cancel().catch(() => {})
       throw error
     }
-    void inspection.body?.cancel().catch(() => {})
     return null
+  } finally {
+    // 훔쳐본 가지는 언제나 버린다. await 금지 — tee 한쪽만 취소하면 settle되지 않는다(#115).
+    void inspection.body?.cancel().catch(() => {})
   }
 }
 
@@ -60,14 +73,21 @@ export const MISS_CONFIRM_DELAY_MS = 200
 /**
  * 단건 조회가 확인 재시도 후에도 빈 본문/안내 페이지만 돌려준 경우.
  * 빈 결과를 정상 응답으로 흘려보내지 않기 위해 명시적으로 던진다.
+ *
+ * 문안 원칙(legal-expert 검토, _workspace/13_legal_wording_review.md): 이 오류는
+ * **업스트림이 자료를 주지 않았다는 관측**일 뿐 자료의 부존재를 증명하지 않는다.
+ * 확인 재시도가 200ms 1회라는 사실까지 밝혀 유보를 검증 가능한 한정 진술로 만든다 —
+ * 수 분짜리 점검은 200ms 뒤에도 똑같이 비어 있으므로 이 재확인의 증거력은 약하다.
+ * "찾을 수 없습니다"로 후퇴시키지 말 것(부존재 함의가 붙는다).
  */
 export class UpstreamRecordMissingError extends Error {
   /** @param maskedUrl 이미 `maskSensitiveUrl()`을 통과한 URL (API 키 유출 방지) */
   constructor(maskedUrl: string, kind: BadBodyKind) {
     super(
-      `법제처 API가 요청한 자료를 반환하지 않았습니다(${kind === "empty" ? "빈 본문" : "안내 페이지"}). ` +
-      `ID/MST가 검색 결과에서 얻은 값인지 확인하세요. 법제처 점검·과부하 중에도 같은 응답이 올 수 있습니다. ` +
-      `- ${maskedUrl}`
+      `법제처 API가 요청한 자료를 반환하지 않았습니다` +
+      `(${kind === "empty" ? "빈 본문" : "안내 페이지"} · ${MISS_CONFIRM_DELAY_MS}ms 간격 1회 재확인 후에도 동일). ` +
+      `자료가 실제로 없는 경우와 법제처 점검·과부하로 본문이 비는 경우는 이 응답만으로 구별되지 않습니다 ` +
+      `— 어느 쪽인지 확정하지 마세요. - ${maskedUrl}`
     )
     this.name = "UpstreamRecordMissingError"
   }

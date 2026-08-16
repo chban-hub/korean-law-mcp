@@ -27,23 +27,24 @@ export async function getLawSystemTree(
     if (args.mst) extraParams.MST = String(args.mst);
     if (args.lawName) extraParams.LM = String(args.lawName);
 
-    // XML로 요청 (JSON에서는 행정규칙 노드가 누락되므로)
-    const xmlText = await apiClient.fetchApi({
+    // 두 응답은 서로의 결과를 쓰지 않는다 — XML은 최상위 행정규칙 블록만(JSON에는 그
+    // 노드가 없고 형제 법령 아래 흩어져 있다), JSON은 상하위법/관련법령 그래프만
+    // 공급한다. lsStmd는 왕복이 계열 최저속(각 ~5.6초)이라 직렬로 두면 그대로 더해져
+    // 히트가 11초를 넘었다. 동시에 띄워 벽시계를 왕복 한 번으로 줄인다.
+    // allSettled인 이유: 한쪽이 먼저 거절될 때 다른 쪽 거절이 미처리로 남지 않게 한다.
+    // 둘 중 하나라도 실패하면 기존과 동일하게 도구 전체를 실패시킨다 — 행정규칙 목록이
+    // 조용히 빠진 체계도를 성공처럼 돌려주지 않는다.
+    const request = (type: "XML" | "JSON") => apiClient.fetchApi({
       endpoint: "lawService.do",
       target: "lsStmd",
-      type: "XML",
+      type,
       extraParams,
       apiKey: args.apiKey,
     });
-
-    // JSON 파싱도 시도 (상하위법/관련법령 구조는 JSON이 편리)
-    const jsonText = await apiClient.fetchApi({
-      endpoint: "lawService.do",
-      target: "lsStmd",
-      type: "JSON",
-      extraParams,
-      apiKey: args.apiKey,
-    });
+    const settled = await Promise.allSettled([request("XML"), request("JSON")]);
+    const failure = settled.find((r) => r.status === "rejected");
+    if (failure) throw failure.reason;
+    const [xmlText, jsonText] = settled.map((r) => (r as PromiseFulfilledResult<string>).value);
 
     let data: any;
     try {
