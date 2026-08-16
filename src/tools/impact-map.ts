@@ -127,7 +127,6 @@ export async function impactMap(
     const interp = parseBucket(interpR, anchor, 5)
     const appeal = parseBucket(appealR, anchor, 3)
     const ordinance = parseBucket(ordinanceR, anchor, 5)
-
     const citedLaws = articleR.isError ? [] : extractCitedLaws(articleR.text)
 
     // 4. 텍스트 트리 출력
@@ -166,8 +165,7 @@ export async function impactMap(
       citedLaws.forEach(cited => parts.push(`  → ${cited}`))
     }
 
-    // 5. 합산 통계. 표본이 검색 건수를 못 덮은 버킷이 하나라도 있으면 합계에는
-    // 경계 확인분과 업스트림 추정치가 섞인다 — 섞였다는 사실을 숨기지 않는다.
+    // 5. 합산 통계. 표본이 검색 건수를 못 덮은 버킷이 있으면 합계에 경계 확인분과 추정치가 섞인다 — 숨기지 않는다.
     const total = prec.count + interp.count + appeal.count + cons.count + ordinance.count
     const estimated = rows.some(r => !r.stat.covered)
     parts.push(`\n▶ 총 영향 건수: ${total}건${estimated ? " (일부는 경계 미확인 검색 건수)" : ""} (판례 ${prec.count} / 헌재 ${cons.count} / 해석 ${interp.count} / 행심 ${appeal.count} / 조례 ${ordinance.count})`)
