@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { impactMap } from "./impact-map.js"
+import { parseBucket } from "../lib/impact-buckets.js"
+import { parseArticleAnchor } from "../lib/article-anchor.js"
 import { lawCache } from "../lib/cache.js"
 import type { LawApiClient } from "../lib/api-client.js"
 
@@ -111,6 +113,27 @@ describe("impactMap — 조번호 경계 앵커 (#90)", () => {
       lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
     })
     expect(r.content[0].text).toMatch(/조문 불일치|경계 불일치/)
+  })
+})
+
+describe("parseBucket — 항목 경계", () => {
+  // 렌더러는 항목마다 빈 줄로 끊고 마지막에 안내문을 붙인다. 안내문에 질의 조번호가
+  // 들어있는데("검색 보정: …민법 제103조") 그게 마지막 항목에 붙으면, 무관 조문
+  // 항목이 되살아나 오탐이 그대로 통과한다.
+  it("항목 뒤 안내문의 조번호가 항목 판정에 스며들지 않는다", () => {
+    const text = [
+      "판례 검색 결과 (총 1건, 1페이지):",
+      "",
+      "[9] 민법 제1032조 관련 사건",
+      "  사건번호: 2024헌바107",
+      "",
+      `검색 보정: body_search="민법 제103조" (전체)`,
+      `💡 다음: get_precedent_text(id="9")`,
+      "",
+    ].join("\n")
+    const stat = parseBucket({ text, isError: false }, parseArticleAnchor("제103조")!, 5)
+    expect(stat.topItems).toEqual([])
+    expect(stat.excluded).toBe(1)
   })
 })
 
