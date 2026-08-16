@@ -3,16 +3,14 @@
  */
 
 import { z } from "zod"
-import { DOMParser } from "@xmldom/xmldom"
 import type { LawApiClient } from "../lib/api-client.js"
 import { lawCache } from "../lib/cache.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError, noResultHint } from "../lib/errors.js"
+import { formatToolError } from "../lib/errors.js"
 import { expandLawQuery, normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js"
+import { formatHit, hasRelatedHit, parseLawsXml, type LawHit } from "./search-hits.js"
 import { buildUpcomingNotes, fetchUpcomingLaws } from "../lib/upcoming-laws.js"
-import { buildAbolishedLawNotes, findAbolishedLaws } from "../lib/abolished-laws.js"
-import { searchAdminRule } from "./admin-rule.js"
-import { searchOrdinance } from "./ordinance-search.js"
+import { searchLawFallbacks } from "./search-fallbacks.js"
 
 export const SearchLawSchema = z.object({
   query: z.string().describe("검색할 법령명 (예: '관세법', 'fta특례법', '화관법')"),
@@ -22,65 +20,18 @@ export const SearchLawSchema = z.object({
 
 export type SearchLawInput = z.infer<typeof SearchLawSchema>
 
-interface LawHit {
-  name: string
-  abbr: string
-  lawId: string
-  mst: string
-  promDate: string
-  effDate: string
-  statusCode: string // 현행연혁코드: "현행" | "연혁" | "" (API 미제공)
-  lawType: string
-}
-
-function parseLawsXml(xmlText: string): LawHit[] {
-  const doc = new DOMParser().parseFromString(xmlText, "text/xml")
-  const out: LawHit[] = []
-  const nodes = doc.getElementsByTagName("law")
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i]
-    out.push({
-      name: n.getElementsByTagName("법령명한글")[0]?.textContent || "알 수 없음",
-      abbr: n.getElementsByTagName("법령약칭명")[0]?.textContent || "",
-      lawId: n.getElementsByTagName("법령ID")[0]?.textContent || "",
-      mst: n.getElementsByTagName("법령일련번호")[0]?.textContent || "",
-      promDate: n.getElementsByTagName("공포일자")[0]?.textContent || "",
-      effDate: n.getElementsByTagName("시행일자")[0]?.textContent || "",
-      statusCode: n.getElementsByTagName("현행연혁코드")[0]?.textContent || "",
-      lawType: n.getElementsByTagName("법령구분명")[0]?.textContent || "",
-    })
-  }
-  return out
-}
-
-// 법제처 API는 특정 쿼리("AI법" 등)에서 검색어를 무시하고 무관한 법령 목록을 반환할 때가 있음.
-// 결과 중 최소 1건은 법령명/약칭이 쿼리와 포함 관계여야 유효한 검색 결과로 인정.
-export function hasRelatedHit(laws: LawHit[], query: string): boolean {
-  const qKey = normalizeAliasKey(query)
-  if (!qKey) return false
-  return laws.some((h) => {
-    const nameKey = normalizeAliasKey(h.name)
-    if (nameKey.includes(qKey) || qKey.includes(nameKey)) return true
-    if (!h.abbr) return false
-    const abbrKey = normalizeAliasKey(h.abbr)
-    return abbrKey.includes(qKey) || qKey.includes(abbrKey)
-  })
-}
-
-// '광진구 복무 조례'처럼 조례 키워드나 지역명 토큰(○○시/군/구)이 있으면 자치법규 쿼리로 판단.
-// '도'는 도로법·양도세 등 오탐이 많아 제외. 토큰 3자 미만('구', '시')도 제외.
-function looksLikeOrdinanceQuery(query: string): boolean {
-  if (query.includes("조례")) return true
-  return query.split(/\s+/).some((t) => t.length >= 3 && /[시군구]$/.test(t))
-}
-
-function formatHit(idx: number, h: LawHit): string {
-  const status = h.statusCode === "연혁" ? " ⚠️[연혁-과거버전]" : h.statusCode === "현행" ? " [현행]" : ""
-  let line = `${idx}. ${h.name}${status}\n   - 법령ID: ${h.lawId}\n   - MST: ${h.mst}\n   - 공포일: ${h.promDate}`
-  if (h.effDate) line += ` / 시행일: ${h.effDate}`
-  line += `\n   - 구분: ${h.lawType}\n\n`
-  return line
-}
+/**
+ * 업스트림 조회 하한 (#89).
+ *
+ * 법제처는 LIKE 검색 + 가나다순으로 응답하므로 "민법"의 정확매칭이 "난민법·난민법
+ * 시행령·난민법 시행규칙" 뒤에 온다. display를 그대로 넘기면 아래 정확/부분 분리에
+ * 도달하기 전에 업스트림이 잘라버려 정확매칭이 통째로 사라진다 — 토큰을 아끼려
+ * display를 낮춘 클라이언트가 조용히 "다른 법령"을 1순위로 받는다.
+ *
+ * 그래서 업스트림에는 항상 하한 이상을 요청하고, 사용자가 지정한 display는 분리를
+ * 마친 결과에 적용한다. 업스트림 호출 횟수는 늘지 않는다.
+ */
+const UPSTREAM_DISPLAY_FLOOR = 50
 
 export async function searchLaw(
   apiClient: LawApiClient,
@@ -99,7 +50,8 @@ export async function searchLaw(
       }
     }
 
-    let xmlText = await apiClient.searchLaw(input.query, input.apiKey, input.display)
+    const upstreamDisplay = Math.max(input.display, UPSTREAM_DISPLAY_FLOOR)
+    let xmlText = await apiClient.searchLaw(input.query, input.apiKey, upstreamDisplay)
     let laws = parseLawsXml(xmlText)
     let usedQuery = input.query
 
@@ -108,7 +60,7 @@ export async function searchLaw(
       const { expanded } = expandLawQuery(input.query)
       for (const expandedQuery of expanded) {
         if (expandedQuery === input.query) continue
-        const candidateXml = await apiClient.searchLaw(expandedQuery, input.apiKey, input.display)
+        const candidateXml = await apiClient.searchLaw(expandedQuery, input.apiKey, upstreamDisplay)
         const candidates = parseLawsXml(candidateXml)
         // 확장쿼리와 무관한 목록(법제처가 쿼리 무시)은 버리고 다음 확장쿼리 시도
         if (candidates.length > 0 && hasRelatedHit(candidates, expandedQuery)) {
@@ -121,57 +73,7 @@ export async function searchLaw(
     }
 
     if (laws.length === 0) {
-      // 공포됐지만 미시행인 신규 법령은 현행(target=law) 검색에 안 잡힘 → 시행예정 보조검색
-      const upcomingOnly = await fetchUpcomingLaws(apiClient, input.query, input.apiKey)
-      if (upcomingOnly.length > 0) {
-        const text = `현행 법령 0건 — 단, 공포 후 시행 대기 중인 법령이 있습니다:\n\n` +
-          buildUpcomingNotes([], upcomingOnly) +
-          `⚠️ 현재 시점에는 아직 효력이 없는 법령입니다. 현행 기준 답변에 인용하지 마세요.\n`
-        return { content: [{ type: "text", text: truncateResponse(text) }] }
-      }
-
-      // 폐지된 법령은 현행 검색에 안 잡힘 → eflaw 연혁에서 폐지 이력 확인 (사법시험법 등)
-      const abolishedLaws = await findAbolishedLaws(apiClient, input.query, input.apiKey)
-      if (abolishedLaws.length > 0) {
-        const text = buildAbolishedLawNotes(input.query, abolishedLaws)
-        return { content: [{ type: "text", text: truncateResponse(text) }] }
-      }
-
-      // Fallback: 외국환거래규정·은행업감독규정 등 "규정/고시"는 행정규칙(고시)임.
-      // 일반 법령에 없으면 search_admin_rule 자동 시도.
-      const adminFallback = await searchAdminRule(apiClient, {
-        query: input.query,
-        display: input.display,
-        apiKey: input.apiKey,
-      }).catch(() => null)
-
-      if (adminFallback && !adminFallback.isError) {
-        const text = adminFallback.content[0]?.text || ""
-        const prefix = `[FALLBACK] 법령 '${input.query}' 0건 → 행정규칙으로 자동 폴백.\n` +
-                       `💡 '규정/고시/훈령/예규/지침'은 행정규칙이며 search_admin_rule이 본 도구입니다.\n\n`
-        return {
-          content: [{ type: "text", text: truncateResponse(prefix + text) }],
-        }
-      }
-      // Fallback: 조례·규칙(지자체)은 자치법규라 국가법령 검색에 안 잡힘.
-      // 쿼리가 자치법규 형태면 search_ordinance 자동 시도.
-      if (looksLikeOrdinanceQuery(input.query)) {
-        const ordinFallback = await searchOrdinance(apiClient, {
-          query: input.query,
-          display: Math.min(input.display, 100),
-          apiKey: input.apiKey,
-        }).catch(() => null)
-
-        if (ordinFallback && !ordinFallback.isError) {
-          const text = ordinFallback.content[0]?.text || ""
-          const prefix = `[FALLBACK] 법령 '${input.query}' 0건 → 자치법규로 자동 폴백.\n` +
-                         `💡 조례·규칙(지자체)은 자치법규이며 search_ordinance(execute_tool 경유)가 본 도구입니다.\n\n`
-          return {
-            content: [{ type: "text", text: truncateResponse(prefix + text) }],
-          }
-        }
-      }
-      return noResultHint(input.query, "법령")
+      return await searchLawFallbacks(apiClient, input)
     }
 
     // 정확매칭 분리: 법제처 API는 LIKE 검색 + 가나다순 정렬이라
@@ -199,23 +101,31 @@ export async function searchLaw(
       else partial.push(h)
     }
 
+    // display는 여기서 — 정확/부분 분리를 마친 "결과"에 적용한다 (#89).
+    const exactShown = Math.min(exact.length, input.display)
+    const partialShown = Math.min(partial.length, Math.max(0, input.display - exactShown))
+
     let resultText = `검색 결과 (총 ${laws.length}건`
     if (usedQuery !== input.query) {
       resultText += `, 확장쿼리: "${usedQuery}"`
     }
+    if (laws.length > exactShown + partialShown) {
+      resultText += `, display=${input.display} 적용`
+    }
     resultText += `):\n\n`
 
     let counter = 0
-    if (exact.length > 0) {
-      resultText += `📍 정확매칭 (${exact.length}건):\n`
-      for (const h of exact) {
+    if (exactShown > 0) {
+      resultText += exact.length > exactShown
+        ? `📍 정확매칭 (${exact.length}건 중 ${exactShown}건 표시):\n`
+        : `📍 정확매칭 (${exact.length}건):\n`
+      for (let i = 0; i < exactShown; i++) {
         counter++
-        resultText += formatHit(counter, h)
+        resultText += formatHit(counter, exact[i])
       }
     }
 
     if (partial.length > 0) {
-      const partialShown = Math.min(partial.length, Math.max(0, input.display - exact.length))
       resultText += `📂 부분매칭 (${partial.length}건 중 ${partialShown}건 표시):\n`
       for (let i = 0; i < partialShown; i++) {
         counter++
