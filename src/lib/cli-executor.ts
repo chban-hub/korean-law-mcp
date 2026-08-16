@@ -81,6 +81,13 @@ export async function executeNaturalQuery(
   if (route.dateRange) {
     route.params.fromDate = route.dateRange.from
     route.params.toDate = route.dateRange.to
+    // 받지 못하는 도구면 Zod가 조용히 버린다 — 필터가 사라졌다는 사실은 알려야 한다
+    if (!acceptsDateRange(route.tool)) {
+      console.log(fmt.yellow(
+        `⚠️  ${route.tool}는 기간 필터를 받지 않습니다 — ` +
+        `"${route.dateRange.from}~${route.dateRange.to}" 조건은 적용되지 않았습니다.`
+      ))
+    }
   }
 
   // 1단계: 메인 도구 실행
@@ -182,6 +189,13 @@ export async function executeNaturalQueryJson(
 // ────────────────────────────────────────
 // Pipeline Helpers
 // ────────────────────────────────────────
+
+/** 도구 스키마가 기간 필터(fromDate)를 받는지 */
+function acceptsDateRange(toolName: string): boolean {
+  const tool = allTools.find(t => t.name === toolName)
+  const shape = tool?.schema instanceof z.ZodObject ? tool.schema.shape : undefined
+  return !!shape && "fromDate" in shape
+}
 
 /**
  * 파이프라인 ID 추출 (검색 도구별 설정 또는 기본 MST 패턴)
