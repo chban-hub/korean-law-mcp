@@ -119,6 +119,7 @@ function isContractionOf(short: string, long: string): boolean {
  * 정책: 확정적으로 다를 때만 different. 미등록 약칭·표기 변형은 unknown으로 남겨
  * 호출자가 유지하게 한다 — false drop은 #116의 해결이 아니라 새 결함이다.
  */
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function classifyLawName(candidate: string, target: string): LawNameVerdict {
   const c = lawKey(candidate)
   const t = lawKey(target)

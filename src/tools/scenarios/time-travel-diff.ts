@@ -7,6 +7,7 @@
 
 import { toArray } from "../../lib/xml-parser.js"
 import { CIRCLED_DIGITS, cleanHtml } from "../../lib/article-parser.js"
+import { formatDateDot } from "../../lib/schemas.js"
 
 export interface ArticleSnapshot {
   joNum: string
@@ -32,6 +33,7 @@ export interface LawSnapshot {
  * 태그만 여기서 **공백**으로 지운다: cleanHtml 은 `''` 로 지워
  * `제1조<br/>목적` 을 붙여버리고, 그러면 없던 변경이 diff 에 잡힌다.
  */
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function normalizeText(s: string): string {
   return cleanHtml((s || "").replace(/<[^>]+>/g, " "))
     .replace(/\s+/g, " ")
@@ -76,9 +78,13 @@ export function displayJo(joNum: string, joBranch: string): string {
   return branch > 0 ? `제${joNum}조의${branch}` : `제${joNum}조`
 }
 
-/** YYYYMMDD → YYYY.MM.DD (빈 값이면 빈 문자열) */
+/**
+ * YYYYMMDD → YYYY.MM.DD. 서식 자체는 formatDateDot 한 벌만 쓴다(#144).
+ * 빈 입력 계약만 다르다 — 여기 호출자는 `dot(x) || x` 로 원문을 폴백에 쓰므로
+ * 형식이 아니면 **빈 문자열**이어야 한다. formatDateDot 의 "N/A" 는 그 폴백을 죽인다.
+ */
 export function dot(ymd: string): string {
-  return /^\d{8}$/.test(ymd) ? `${ymd.slice(0, 4)}.${ymd.slice(4, 6)}.${ymd.slice(6, 8)}` : ""
+  return /^\d{8}$/.test(ymd) ? formatDateDot(ymd) : ""
 }
 
 export interface ArticleDiff {
@@ -146,6 +152,7 @@ const CLAUSE_START = new RegExp(`[${CIRCLED_DIGITS}]|(?:^|\\s)\\d{1,2}\\.\\s|(?:
  */
 const CLAUSE_SNAP_WINDOW = 60
 
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function snapToClauseStart(body: string, start: number): number {
   if (start <= 0) return 0
   const from = Math.max(0, start - CLAUSE_SNAP_WINDOW)

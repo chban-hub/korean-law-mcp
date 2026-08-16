@@ -12,7 +12,7 @@ import { ErrorCodes, formatToolError, notFoundResponse } from "../lib/errors.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
 import { fetchLawAnnexUnits, findMissingUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
 import { parseLawNameAndHint } from "../lib/annex-notation.js"
-import { collectAnnexList, collectAdminAnnexList, parseAnnexEnvelope, ANNEX_PAGE_SIZE, MAX_ANNEX_PAGES, type AnnexTruncationReason } from "./annex-list.js"
+import { collectAnnexList, collectAdminAnnexList, ANNEX_PAGE_SIZE, MAX_ANNEX_PAGES, type AnnexTruncationReason } from "./annex-list.js"
 import {
   buildSelectorCandidates, extractBundledSection, extractParentLawName, extractSelectorNumbers,
   filterByAnnexQuery, filterByArticle, filterByRelatedLawName, findMatchingAnnex, isBranchNumber,

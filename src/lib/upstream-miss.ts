@@ -27,6 +27,7 @@ export type BadBodyKind = "empty" | "html"
  * 경우를 감지. 정상 응답은 XML(`<`) 또는 JSON(`{`/`[`)으로 시작한다.
  * 술어 자체는 `body-shape.ts` 하나에서만 정의한다 — 여기서는 의미만 붙인다.
  */
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function detectBadBody(text: string): BadBodyKind | null {
   if (isBlankBody(text)) return "empty"
   if (isHtmlPage(text)) return "html"

@@ -9,7 +9,7 @@
  * 의미검색(aiSearch)은 주제어를 조문으로 매핑하므로 "음주운전"에서 도로교통법을 얻는다.
  */
 import { findLaws, type LawInfo } from "../lib/law-search.js"
-import { extractLawName } from "../lib/query-extract.js"
+import { lawNameFromQuery } from "../lib/query-extract.js"
 import { searchAiLawStructured } from "./life-law.js"
 import type { LawApiClient } from "../lib/api-client.js"
 
@@ -62,7 +62,7 @@ export async function resolveChainBaseLaw(
   }
 
   // 1) 질의에 법령명이 들어 있으면 그것으로. 의문·구어 수식을 걷어낸 형태다
-  const lawName = extractLawName(query)
+  const lawName = lawNameFromQuery(query)
   if (lawName && lawName !== query.trim()) {
     const byName = await attempt(lawName)
     if (byName.length) return { laws: byName, searchedWith: lawName, attempts }

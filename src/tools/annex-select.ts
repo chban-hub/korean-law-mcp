@@ -6,6 +6,7 @@
  */
 
 import { ANNEX_KEYWORDS, ANNEX_NOTATION_RE, fromAnnexCode, parseAnnexNumber, toAnnexCode } from "../lib/annex-notation.js"
+import { escapeRegex } from "../lib/escape-regex.js"
 
 /** 법제처 별표/서식 API 응답 개별 항목 */
 export interface AnnexItem {
@@ -190,9 +191,6 @@ function titleMatchesAnnexNumber(title: string, annexNumber: string): boolean {
   return false
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
 
 /**
  * 묶음 별표 여부 판별: "[별표1~5]" 같은 범위 표기가 있는지.
@@ -285,6 +283,7 @@ export function filterByRelatedLawName(annexList: AnnexItem[], queryName: string
  * 번호 힌트("별표28")는 selector 쪽에서 이미 쓰이므로 여기서는 제외하고,
  * 조사·군더더기("기준", "관련")까지 붙은 자연어를 그대로 토큰으로 쓴다.
  */
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function annexQueryKeywords(query?: string): string[] {
   if (!query) return []
   // 표기 문법은 annex-notation 단일 원본이 쥔다 — 여기에 사본을 두면 어휘가 또 갈린다
@@ -343,7 +342,7 @@ export function normalizeArticleLabel(raw: string): string | undefined {
  * 별표명이 키워드를 모두 담고 있는지. 전부 만족(AND)을 요구해야
  * "운전면허 취소"가 "운전면허" 하나만 걸린 수십 건으로 번지지 않는다.
  */
-export function matchesAnnexKeywords(annex: AnnexItem, keywords: string[]): boolean {
+function matchesAnnexKeywords(annex: AnnexItem, keywords: string[]): boolean {
   if (keywords.length === 0) return true
   const title = String(annex.별표명 || "").replace(/<[^>]+>/g, "")
   return keywords.every((k) => title.includes(k))

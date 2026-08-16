@@ -1,37 +1,37 @@
 import { describe, it, expect } from "vitest"
 import {
   lawNameCandidates,
-  extractLawName,
+  lawNameFromCitationContext,
   resolveLawAnaphora,
   parseCitations,
   verifyCitations,
 } from "./verify-citations.js"
 import type { LawApiClient } from "../lib/api-client.js"
 
-describe("extractLawName — 인용 직전 문맥에서 법령명 추출", () => {
+describe("lawNameFromCitationContext — 인용 직전 문맥에서 법령명 추출", () => {
   // 회귀: 「법령명」 제N조 는 법제처·판결문·실무 문서의 표준 표기인데, 닫는 낫표가
   // LAW_NAME_REGEX의 $ 앵커를 막아 법령명이 전혀 추출되지 않았다. 그 결과 조문 실존
   // 검증에 진입하지 못해 없는 조문·없는 항조차 ✗로 잡히지 않았다(환각 탐지 미가동).
   it("낫표로 감싼 표준 표기에서 법령명을 추출한다", () => {
-    expect(extractLawName("「식품 등의 표시·광고에 관한 법률」 ")).toBe("식품 등의 표시·광고에 관한 법률")
-    expect(extractLawName("이 사건에는 「형법」")).toBe("형법")
-    expect(extractLawName("『민법』")).toBe("민법")
+    expect(lawNameFromCitationContext("「식품 등의 표시·광고에 관한 법률」 ")).toBe("식품 등의 표시·광고에 관한 법률")
+    expect(lawNameFromCitationContext("이 사건에는 「형법」")).toBe("형법")
+    expect(lawNameFromCitationContext("『민법』")).toBe("민법")
   })
 
   it("낫표 없는 평문은 종전대로 추출 (#55 동작 유지)", () => {
-    expect(extractLawName("절도죄는 형법")).toBe("절도죄는 형법")
-    expect(extractLawName("전자상거래 등에서의 소비자보호에 관한 법률")).toBe(
+    expect(lawNameFromCitationContext("절도죄는 형법")).toBe("절도죄는 형법")
+    expect(lawNameFromCitationContext("전자상거래 등에서의 소비자보호에 관한 법률")).toBe(
       "전자상거래 등에서의 소비자보호에 관한 법률"
     )
   })
 
   it("접속사·부사 수식어는 제거", () => {
-    expect(extractLawName("또한 상법")).toBe("상법")
+    expect(lawNameFromCitationContext("또한 상법")).toBe("상법")
   })
 
   it("법령명이 없으면 undefined", () => {
-    expect(extractLawName("계약서에 따라")).toBeUndefined()
-    expect(extractLawName("")).toBeUndefined()
+    expect(lawNameFromCitationContext("계약서에 따라")).toBeUndefined()
+    expect(lawNameFromCitationContext("")).toBeUndefined()
   })
 })
 

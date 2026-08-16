@@ -96,7 +96,7 @@ export function lawNameCandidates(lawName: string): string[] {
 // LAW_NAME_REGEX의 $ 앵커를 막아 법령명이 **전혀** 추출되지 않았다(→ "법령명 추출 실패").
 // 이 경우 조문 실존 검증에 진입하지 못해 없는 조문·없는 항도 ✗로 잡히지 않는다.
 // = 환각 탐지가 조용히 미가동. 따라서 닫는 인용기호를 먼저 벗긴다.
-export function extractLawName(lookbackRaw: string): string | undefined {
+export function lawNameFromCitationContext(lookbackRaw: string): string | undefined {
   const lookback = lookbackRaw.replace(/[\s」』】〕>]+$/, "")
   const m = lookback.match(LAW_NAME_REGEX)
   if (!m) return undefined
@@ -176,7 +176,7 @@ export function parseCitations(text: string, maxCitations: number): ParsedCitati
       lawName = resolveLawAnaphora(anaphora[1].trim(), antecedent)
       antecedentEnd = m.index
     } else {
-      lawName = extractLawName(lookback)
+      lawName = lawNameFromCitationContext(lookback)
       if (lawName) {
         antecedent = lawName
         antecedentEnd = m.index

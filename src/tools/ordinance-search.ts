@@ -5,13 +5,12 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { normalizeLawSearchText, expandOrdinanceQuery } from "../lib/search-normalizer.js"
-import { extractArticleNumber } from "../lib/query-extract.js"
+import { extractArticleNumber, stripArticleTail } from "../lib/query-extract.js"
 import { filterByArticleRelevance } from "../lib/ordinance-relevance.js"
 
 /** 질의에서 조문 표기를 걷어낸 나머지를 법령명으로 본다 ("도로교통법 제148조의2" → "도로교통법") */
 function lawNameOf(query: string): string {
-  return query.replace(/제?\s*\d+\s*조(?:\s*의\s*\d+)?(?:\s*제?\s*\d+\s*항)?(?:\s*제?\s*\d+\s*호)?/g, " ")
-    .replace(/\s+/g, " ").trim()
+  return stripArticleTail(query)
 }
 import { parseSearchXML, extractTag } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"

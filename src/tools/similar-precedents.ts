@@ -8,6 +8,7 @@ import type { LawApiClient } from "../lib/api-client.js"
 import { searchPrecedents } from "./precedents.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
+import { escapeRegex } from "../lib/escape-regex.js"
 
 export const FindSimilarPrecedentsSchema = z.object({
   query: z.string().describe("검색 키워드 또는 판례 내용"),
@@ -98,9 +99,6 @@ function extractQueryKeywords(query: string): string[] {
  * 키워드 유사도 기반 순위 매기기
  */
 /** 정규식 메타문자 이스케이프 */
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
 
 function rankByKeywordSimilarity(searchResultText: string, keywords: string[], maxResults: number): string {
   const lines = searchResultText.split('\n')

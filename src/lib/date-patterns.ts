@@ -46,6 +46,15 @@ function monthEnd(year: number, month: number): Date {
 }
 
 
+/**
+ * 상대 시점 어휘 — 이 어휘의 집(#144). `date-parser` 분할이 날짜 어휘의 집을 여기 만들었는데
+ * 걷어내기·시나리오 판정이 각자 다시 적고 있었다. 두 벌이 되면 한쪽에만 낱말이 늘어난다.
+ *
+ * 판정용으로 좁혀 쓰는 자리는 자기 정규식을 그대로 둔다 — 넓히면 라우팅이 바뀐다(동작 변경).
+ */
+export const RELATIVE_PAST_WORDS = "작년|재작년|예전|과거|종전"
+export const RELATIVE_NOW_WORDS = "지금|현재|현행|오늘|올해"
+
 export interface TimePattern {
   regex: RegExp
   resolve: (m: RegExpMatchArray) => DateRange
@@ -150,6 +159,8 @@ export const TIME_PATTERNS: TimePattern[] = [
     },
   },
   // "작년" / "올해" / "재작년"
+  // 여기만 `금년`을 아는 이유: 이 규칙은 어휘를 **연 범위로 해석**하는 유일한 자리다.
+  // RELATIVE_* 는 "걷어낼 말"의 목록이라 해석 대상이 아닌 낱말을 넣을 이유가 없다.
   {
     regex: /(재작년|작년|올해|금년)/,
     resolve: (m) => {

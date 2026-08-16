@@ -6,6 +6,7 @@
  */
 
 import { parseLawNameAndHint } from "./annex-notation.js"
+import { RELATIVE_NOW_WORDS, RELATIVE_PAST_WORDS } from "./date-patterns.js"
 
 /**
  * 조문 표기 정규식.
@@ -34,6 +35,11 @@ export function extractArticleNumbers(query: string): string[] {
 }
 
 /** 첫 번째 조문번호 (없으면 undefined) */
+/** 조문 표기(+항/호)를 걷어낸 나머지 — 법령명만 남기려는 호출자를 위한 공개 창구 */
+export function stripArticleTail(text: string): string {
+  return text.replace(ARTICLE_TAIL_RE, " ").replace(/\s+/g, " ").trim()
+}
+
 export function extractArticleNumber(query: string): string | undefined {
   return extractArticleNumbers(query)[0]
 }
@@ -56,8 +62,8 @@ export function extractAnnexParams(
   // "관세법 제38조 별표 2" 처럼 조문이 함께 오면 어느 조의 별표인지가 정보다 (#130).
   // get_annexes 가 jo 를 받기 전까지는 Zod 가 조용히 버리므로 전달해도 무해하다
   const jo = extractArticleNumber(query)
-  // 번호 없는 "별표"·"서식" 낱말과 조문 표기·동사형 수식어는 extractLawName 이 걷어낸다
-  const rest = extractLawName(normalizedLawName)
+  // 번호 없는 "별표"·"서식" 낱말과 조문 표기·동사형 수식어는 lawNameFromQuery 이 걷어낸다
+  const rest = lawNameFromQuery(normalizedLawName)
   const tokens = rest.split(/\s+/).filter(Boolean)
   let lastLawToken = -1
   tokens.forEach((t, i) => { if (LAW_NAME_TAIL.test(t)) lastLawToken = i })
@@ -107,7 +113,7 @@ export function searchExtract(strip: RegExp) {
  * "등록면허세법"처럼 법령명 자체에 키워드가 포함된 경우 파괴하지 않기 위해
  * 단어 경계(\b에 해당하는 한글 패턴)를 고려하여 제거.
  */
-export function extractLawName(query: string): string {
+export function lawNameFromQuery(query: string): string {
   return query
     // 조문번호(+항/호) — 확정적 구문이라 먼저 제거
     .replace(ARTICLE_TAIL_RE, " ")
@@ -145,14 +151,16 @@ export function extractTimeTravel(query: string): Record<string, unknown> {
   const params: Record<string, unknown> = {}
   if (dates[0]) params.fromDate = toYmd(dates[0])
   if (dates[1]) params.toDate = toYmd(dates[1])
+  // 판정은 좁은 집합을 그대로 둔다 — RELATIVE_NOW_WORDS 로 넓히면 "올해 개정"이
+  // toDate=오늘로 바뀌어 라우팅 결과가 달라진다(동작 변경이라 리팩터 범위 밖, #144)
   else if (/현행|지금|현재|오늘/.test(query)) {
     const now = new Date()
     params.toDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
   }
-  const lawName = extractLawName(
+  const lawName = lawNameFromQuery(
     query
       .replace(/\d{4}\s*[.\-년]?\s*\d{0,2}\s*[.\-월]?\s*\d{0,2}\s*일?/g, " ")
-      .replace(/작년|재작년|예전|과거|종전|지금|현재|현행|오늘|올해/g, " ")
+      .replace(new RegExp(`${RELATIVE_PAST_WORDS}|${RELATIVE_NOW_WORDS}`, "g"), " ")
       .replace(/vs\.?|↔|~|이?랑|하고|대비|부터|까지|에서|와|과/gi, " ")
       .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전|두/g, " ")
   )

@@ -9,10 +9,11 @@
  * 부분 결과는 유효한 답이므로 isError 가 아니다 — 다만 무엇이 비었는지, 그것만 따로
  * 받으려면 어느 도구를 쓰는지 반드시 밝힌다(침묵 탈락 금지).
  *
- * 소유권 주의: 상수·검증을 여기 둔 것은 execution-limits/http-config 를 다른 작업이
- * 만지고 있기 때문이다. 정수 검증은 execution-limits.parseIntegerLimit 과 같은 모양이라
- * 통합 시 한쪽으로 합칠 수 있다(seam).
+ * 정수 검증은 execution-limits.parseIntegerLimit 한 벌을 쓴다(#144) — 경계값 검사가
+ * 두 벌이면 한쪽만 `parseInt("20x") → 20` 관용을 되찾는다. 상수는 이 도메인의 것이라 여기 둔다.
  */
+
+import { parseIntegerLimit } from "../lib/execution-limits.js"
 
 /**
  * 기본 45초.
@@ -25,17 +26,15 @@ export const DEFAULT_CHAIN_DEADLINE_MS = 45_000
 const MIN_DEADLINE_MS = 5_000
 const MAX_DEADLINE_MS = 300_000
 
-/** 경계값은 통째로 정수 검사한다 — parseInt 의 "20x → 20" 관용을 받지 않는다 */
+/** 빈 문자열은 "미설정"으로 본다 — env 에서 지우지 않고 비워 두는 배포가 흔하다 */
 export function resolveChainDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.MCP_CHAIN_DEADLINE_MS
-  if (raw === undefined || raw === "") return DEFAULT_CHAIN_DEADLINE_MS
-  const invalid = () => new Error(
-    `MCP_CHAIN_DEADLINE_MS must be an integer between ${MIN_DEADLINE_MS} and ${MAX_DEADLINE_MS}.`
+  return parseIntegerLimit(
+    "MCP_CHAIN_DEADLINE_MS",
+    env.MCP_CHAIN_DEADLINE_MS || undefined,
+    DEFAULT_CHAIN_DEADLINE_MS,
+    MIN_DEADLINE_MS,
+    MAX_DEADLINE_MS,
   )
-  if (!/^(?:0|[1-9]\d*)$/.test(raw)) throw invalid()
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value < MIN_DEADLINE_MS || value > MAX_DEADLINE_MS) throw invalid()
-  return value
 }
 
 export interface ChainDeadline {

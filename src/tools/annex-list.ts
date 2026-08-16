@@ -57,7 +57,7 @@ const count = (v: unknown): number => {
   return Number.isFinite(n) && n > 0 ? n : 0
 }
 
-export function parseAnnexEnvelope(jsonText: string): AnnexEnvelope {
+function parseAnnexEnvelope(jsonText: string): AnnexEnvelope {
   try {
     const json = JSON.parse(jsonText)
     const adminResult = json?.admRulBylSearch

@@ -11,6 +11,8 @@
  * "관세 환급을 못 받았어" 가 관세 구획에 먹히던 문제(BUG-R4)의 수정.
  */
 
+import { RELATIVE_NOW_WORDS, RELATIVE_PAST_WORDS } from "./date-patterns.js"
+
 /** 지원 시나리오 (tools/scenarios/types.ts 의 ScenarioType 원본) */
 export type ScenarioName =
   | "penalty" | "customs" | "manual" | "delegation" | "impact"
@@ -54,8 +56,10 @@ const ACTION_PLAN_GUIDANCE = [
 
 /** 두 시점이 명시된 형태 — "2024 vs 2026", "2024년과 2025년", "2020년부터 2023년까지" */
 const TIME_TRAVEL_TWO_POINTS = /(\d{4})\s*[.\-년]?\s*(?:vs\.?|↔|~|와|과|부터|에서)\s*(?:\d{4}|현행|지금|현재)/i
-/** 상대 시점 두 개 — "작년이랑 지금" */
-const TIME_TRAVEL_RELATIVE = /(?:작년|재작년|예전|과거|종전)\s*(?:이?랑|와|과|하고|대비)\s*(?:지금|현재|현행|오늘|올해)/
+/** 상대 시점 두 개 — "작년이랑 지금". 어휘는 date-patterns 한 벌만 쓴다(#144) */
+const TIME_TRAVEL_RELATIVE = new RegExp(
+  `(?:${RELATIVE_PAST_WORDS})\\s*(?:이?랑|와|과|하고|대비)\\s*(?:${RELATIVE_NOW_WORDS})`
+)
 const TIME_TRAVEL_EXPLICIT = /시점\s*비교|버전\s*비교|두\s*시점|time\s*travel/i
 /** 연·월 + 연결어미 — 두 번째 시점이 불분명해 도구 선택 근거로는 약하다(라벨 전용) */
 const TIME_TRAVEL_LOOSE = /\d{4}\s*[.\-년]\s*\d{1,2}.*(?:vs|와|과|↔|~|부터|에서)/i
@@ -182,6 +186,7 @@ export const ROUTABLE_SCENARIO_RULES: ScenarioRule[] =
  * 시나리오를 실을 수 있는 체인 도구 이름 (중복 제거).
  * hostChain 은 문자열이라 오타가 나도 컴파일된다 — 실재 도구인지는 테스트가 지킨다.
  */
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export const SCENARIO_HOST_CHAINS: string[] =
   [...new Set(SCENARIO_RULES.map(r => r.hostChain))]
 

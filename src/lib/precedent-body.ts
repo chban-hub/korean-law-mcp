@@ -6,6 +6,7 @@
  * 판시사항 한두 줄이면 교정되므로, 전문을 붙이는 대신 그 필드만 짧게 발췌한다.
  */
 import { cleanHtml } from "./article-parser.js"
+import { escapeRegex } from "./escape-regex.js"
 
 /** 변경·폐기 treatment 신호 패턴 (대법원 전원합의체 판례변경 상투 문구) */
 const CHANGE_PATTERNS: Array<{ re: RegExp; label: string }> = [
@@ -14,10 +15,6 @@ const CHANGE_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /더\s*이상\s*유지(?:될\s*수\s*없|하기\s*어렵)/, label: "선례 유지 불가 판시" },
   { re: /배치되는\s*범위\s*에?서?\s*(?:이를\s*)?(?:모두\s*)?변경/, label: "저촉 범위 변경" },
 ]
-
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
 
 /**
  * 법제처 JSON 필드는 문자열·배열·`{"#text":…}` 중 무엇으로도 온다(CLAUDE.md 규칙 6).
@@ -90,7 +87,7 @@ export function scanTreatment(body: string, targetCaseNo: string, window = 250):
   const aliases = new Set<string>()
   while ((m = aliasDefRe.exec(clean)) !== null) aliases.add(m[1].trim())
   for (const alias of aliases) {
-    const aliasRe = new RegExp(escapeRe(alias), "g")
+    const aliasRe = new RegExp(escapeRegex(alias), "g")
     while ((m = aliasRe.exec(clean)) !== null) refIndices.push(m.index)
   }
 

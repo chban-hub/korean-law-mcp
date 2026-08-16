@@ -40,7 +40,7 @@ import { parsePrecedentXML } from "./xml-parser.js"
  * 같은 지식이 compact-query-planner에도 따로 살면서 므(가사)·후/허(특허)·재(재심)를
  * 빠뜨려 해당 사건번호가 사건번호로 인식되지 않았다. 여기서만 관리한다.
  */
-export const CASE_CODES = [
+const CASE_CODES = [
   // 민사
   "가소", "가단", "가합", "가", "나", "다카", "다", "머", "자", "차전", "차",
   "카단", "카합", "카기", "카명", "카확", "카", "그", "마", "라", "바", "사", "아", "타",
@@ -102,6 +102,7 @@ export function extractCaseNumbers(text: string): string[] {
  * 부호가 실재 사건부호일 때로 한정한다 — 휴리스틱 추출물에 ✗를 붙이면 인용 없는 문서에
  * 환각 배너가 붙는다.
  */
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function isImpossibleCaseNumber(caseNo: string, currentYear: number): boolean {
   const m = /^(\d{4})([가-힣]{1,3})\d+$/.exec(caseNo)
   if (!m) return false

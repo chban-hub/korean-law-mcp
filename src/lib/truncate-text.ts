@@ -12,7 +12,7 @@
  */
 
 /** 경계 후퇴 상한(자). 이 안에 경계가 없으면 하드컷을 유지한다. */
-export const MAX_BOUNDARY_BACKTRACK = 400
+const MAX_BOUNDARY_BACKTRACK = 400
 
 /** s 안에서 "종결부호 + 공백(또는 끝)"의 마지막 위치 → 종결부호 바로 뒤 인덱스 */
 function lastSentenceEnd(s: string): number {

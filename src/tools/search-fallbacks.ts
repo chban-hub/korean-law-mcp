@@ -26,6 +26,7 @@ const asText = (text: string): ToolResult => ({
 // '도'는 도로법·양도세 등 오탐이 많아 제외. 토큰 3자 미만('구', '시')도 제외.
 // 접미사만 보면 '재청구'·'선거구'도 지역이 된다 — 그 판정은 isRegionToken 단일 원본(#104)이
 // 한다. 여기에 블랙리스트를 베껴 두면 어휘가 늘 때 한쪽만 알게 된다.
+/** 테스트 도달용 공개 — 프로덕션 소비자는 이 파일 안뿐이다 (#143) */
 export function looksLikeOrdinanceQuery(query: string): boolean {
   if (query.includes("조례")) return true
   return query.split(/\s+/).some((t) => t.length >= 3 && /[시군구]$/.test(t) && isRegionToken(t))

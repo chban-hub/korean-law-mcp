@@ -12,7 +12,7 @@ import {
   extractArticleNumber,
   extractArticleNumbers,
   extractAnnexParams,
-  extractLawName,
+  lawNameFromQuery,
   extractTimeTravel,
   hasProcedureIntent,
   searchExtract,
@@ -60,7 +60,7 @@ const routePatterns: Pattern[] = [
     patterns: [
       // 조문번호로 끝나는 형태.
       // 앞에 `(.+?)`를 두지 않는다 — 캡처를 쓰지도 않으면서 $ 앵커와 만나 입력 길이의
-      // 제곱으로 backtrack 한다. 법령명은 extractLawName 이 따로 뽑는다.
+      // 제곱으로 backtrack 한다. 법령명은 lawNameFromQuery 이 따로 뽑는다.
       /제\s*\d{1,4}\s*조(?:\s*의\s*\d{1,3})?(?:\s*제?\s*\d{1,3}\s*항)?(?:\s*제?\s*\d{1,3}\s*호)?\s*$/,
       // `제` 생략 표기는 법령명 뒤에서만 인정한다 — "도교법 44조", "형법 1조 2항" (#103).
       // 무조건 허용하면 "예산 3조"·"국가 예산이 656조"의 조(兆)가 조문번호로 읽힌다
@@ -82,7 +82,7 @@ const routePatterns: Pattern[] = [
     ],
     extract: (query) => {
       const joList = extractArticleNumbers(query)
-      const lawName = extractLawName(query)
+      const lawName = lawNameFromQuery(query)
       return { _searchQuery: lawName, jo: joList[0], _joList: joList, _needsMst: true }
     },
     reason: "법령명 + 조문번호 → 해당 조문 직접 조회",
@@ -139,7 +139,7 @@ const routePatterns: Pattern[] = [
     ],
     tool: "chain_amendment_track",
     extract: (query) => {
-      const lawName = extractLawName(query)
+      const lawName = lawNameFromQuery(query)
       // 법령명이 비어있으면 원본 쿼리를 그대로 사용 (chain이 자체 검색)
       return { query: lawName || query }
     },
@@ -154,7 +154,7 @@ const routePatterns: Pattern[] = [
       /3단\s*비교|위임\s*조문|인용\s*조문|법\s*체계|시행령\s*비교/,
     ],
     tool: "chain_law_system",
-    extract: (query) => ({ query: extractLawName(query) || query }),
+    extract: (query) => ({ query: lawNameFromQuery(query) || query }),
     reason: "법체계/3단비교 키워드 → 법체계 체인",
     priority: 10,
   },
@@ -489,7 +489,7 @@ const routePatterns: Pattern[] = [
     ],
     tool: "get_law_tree",
     extract: (query) => {
-      const lawName = extractLawName(query)
+      const lawName = lawNameFromQuery(query)
       if (!lawName) {
         return { _fallback: true, query }
       }
@@ -583,7 +583,7 @@ const routePatterns: Pattern[] = [
       const date = `${dm[1]}${dm[2].padStart(2, "0")}${(dm[3] || "1").padStart(2, "0")}`
       const jo = extractArticleNumber(query)
       // 키워드 strip은 단어 경계 필수 — "근로기준법"의 "기준"을 떼면 법령명 파괴
-      const lawName = extractLawName(
+      const lawName = lawNameFromQuery(
         query.replace(/(\d{4})\s*[년\.\-\/]\s*\d{1,2}\s*[월\.\-\/]?\s*\d{0,2}\s*일?/g, " ")
           // 탐지 정규식(위)에 어휘를 넣으면 여기에도 넣어야 한다 —
           // 빠지면 "무렵에 시행되던 도로교통법"이 통째로 법령명이 된다
@@ -644,7 +644,7 @@ const routePatterns: Pattern[] = [
     tool: "chain_amendment_track",
     extract: (query, match) => {
       const year = match?.[1]
-      const lawName = extractLawName(query.replace(/20\d{2}\s*년?/, " "))
+      const lawName = lawNameFromQuery(query.replace(/20\d{2}\s*년?/, " "))
       // fromDate 는 넘기지 않는다 — chain_amendment_track 은 시나리오가 붙을 때만 읽으므로
       // 여기서 넘겨봐야 조용히 버려진다(#120 과 같은 무음 폐기)
       return {
@@ -668,7 +668,7 @@ const routePatterns: Pattern[] = [
       /(?:20\d{2})\s*년\s*이후\s*개정/,
     ],
     tool: "chain_amendment_track",
-    extract: (query) => ({ query: extractLawName(query) || query }),
+    extract: (query) => ({ query: lawNameFromQuery(query) || query }),
     reason: "시간 필터 + 개정 키워드 → 개정추적 체인",
     priority: 9,
   },
