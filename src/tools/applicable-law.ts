@@ -17,7 +17,7 @@
  */
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
-import { truncateResponse } from "../lib/schemas.js"
+import { truncateResponse, formatDateDot } from "../lib/schemas.js"
 import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { findLaws, resolvedLawMatches } from "../lib/law-search.js"
 import { fetchHistoricalVersionsFull, fetchEffectiveSlices, type HistoricalVersion } from "../lib/historical-utils.js"
@@ -49,10 +49,12 @@ export function normalizeDate(input: string): string | null {
   return `${y}${String(mo).padStart(2, "0")}${String(d).padStart(2, "0")}`
 }
 
-function fmtYmd(ymd: string): string {
-  if (!/^\d{8}$/.test(ymd)) return ymd
-  return `${ymd.slice(0, 4)}.${parseInt(ymd.slice(4, 6), 10)}.${parseInt(ymd.slice(6, 8), 10)}.`
-}
+/**
+ * 날짜 표기는 formatDateDot 단일 원본을 쓴다 (YYYY.MM.DD).
+ * 이 도구만 "2024.1.5."(무패딩·후행점)를 내보내 같은 날짜가 도구마다 달리 보였다 —
+ * 사용자가 응답을 그대로 재인용하는 출력이라 표기가 흔들리면 안 된다.
+ */
+const fmtYmd = formatDateDot
 
 /** eflaw JSON에서 조문 본문 추출 (항·호 평탄화). joCode 지정 시 조문번호·가지번호 일치 검증 */
 function extractJoText(jsonText: string, joCode?: string): string {
