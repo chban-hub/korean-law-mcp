@@ -265,6 +265,11 @@ export class LawApiClient {
     lawName: string
     knd?: "1" | "2" | "3" | "4" | "5"
     apiKey?: string
+    /**
+     * 1-based 페이지. display 를 100 초과로 올려도 업스트림이 100건에서 자르므로
+     * (2026-08-17 실측: display=300 → numOfRows=100) 전 건은 page 로만 이어 받는다.
+     */
+    page?: number
   }): Promise<string> {
     // 법령 종류 판별
     const lawType = this.detectLawType(params.lawName)
@@ -287,6 +292,11 @@ export class LawApiClient {
     // 일반 법령만 knd 필터 적용
     if (lawType === 'law' && params.knd) {
       apiParams.set("knd", params.knd)
+    }
+
+    // 1페이지는 파라미터를 붙이지 않는다 — 기존 요청과 바이트 동일하게 유지
+    if (params.page && params.page > 1) {
+      apiParams.set("page", String(params.page))
     }
 
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`

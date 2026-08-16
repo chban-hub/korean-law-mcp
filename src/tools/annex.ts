@@ -12,6 +12,7 @@ import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { getLawSiteBaseUrl } from "../lib/law-url-config.js"
 import { fetchLawAnnexUnits, findMissingUnits, pickAnnexUnit } from "../lib/annex-canonical.js"
 import { parseLawNameAndHint } from "../lib/annex-notation.js"
+import { collectAnnexList, parseAnnexEnvelope, ANNEX_PAGE_SIZE, MAX_ANNEX_PAGES } from "./annex-list.js"
 import {
   buildSelectorCandidates, extractBundledSection, extractParentLawName, extractSelectorNumbers,
   filterByAnnexQuery, filterByRelatedLawName, findMatchingAnnex, isBundledAnnex,
@@ -44,51 +45,35 @@ export async function getAnnexes(
 
     let annexList: AnnexItem[] = []
     let lawType: string = "law"
-
-    // 법제처 API는 결과 1건일 때 배열 대신 단일 객체를 반환하므로 정규화
-    const toArray = (v: unknown): AnnexItem[] =>
-      v == null ? [] : Array.isArray(v) ? v : [v]
-
-    const parseAnnexResponse = (jsonText: string): { list: AnnexItem[], type: string } => {
-      try {
-        const json = JSON.parse(jsonText)
-        const adminResult = json?.admRulBylSearch
-        const licResult = json?.licBylSearch
-        // 법제처 행정규칙 별표 응답의 배열 키는 admrulbyl (admbyl 아님). 구버전 호환 위해 admbyl도 폴백.
-        if (adminResult?.admrulbyl ?? adminResult?.admbyl)
-          return { list: toArray(adminResult.admrulbyl ?? adminResult.admbyl), type: "admin" }
-        if (licResult?.ordinbyl) return { list: toArray(licResult.ordinbyl), type: "ordinance" }
-        if (licResult?.licbyl) return { list: toArray(licResult.licbyl), type: "law" }
-        return { list: [], type: "law" }
-      } catch {
-        // JSON 파싱 실패 (HTML 에러 페이지 등) → 빈 배열 반환하여 fallback 진행
-        return { list: [], type: "law" }
-      }
-    }
+    // 100건 창에 갇힌 목록을 완전한 목록으로 보여주면 "그 별표는 없다"는 오답이 된다 (#148)
+    let listTruncated = false
 
     // 1차: 원래 법령명 + knd 필터
-    const result1 = parseAnnexResponse(await apiClient.getAnnexes({
+    const result1 = await collectAnnexList(apiClient, {
       lawName: normalizedLawName, knd: input.knd, apiKey: input.apiKey
-    }))
+    })
     annexList = result1.list
     lawType = result1.type
+    listTruncated = result1.truncated
 
     // 2차: 결과 없으면 knd 제거 (법제처가 "별표"를 "서식"으로 분류하는 경우)
     if (annexList.length === 0 && input.knd) {
-      const result2 = parseAnnexResponse(await apiClient.getAnnexes({
+      const result2 = await collectAnnexList(apiClient, {
         lawName: normalizedLawName, apiKey: input.apiKey
-      }))
+      })
       annexList = result2.list
       lawType = result2.type
+      listTruncated = result2.truncated
     }
 
     // 3차: 모법명으로 재검색 ("여권법 시행규칙" → "여권법")
     if (annexList.length === 0) {
       const parentName = extractParentLawName(normalizedLawName)
       if (parentName) {
-        const result3 = parseAnnexResponse(await apiClient.getAnnexes({
+        const result3 = await collectAnnexList(apiClient, {
           lawName: parentName, apiKey: input.apiKey
-        }))
+        })
+        listTruncated = result3.truncated
         // 원래 법령명 매칭 필터
         const filtered = result3.list.filter((a: AnnexItem) => {
           const name = String(a.관련법령명 || a.관련자치법규명 || a.관련행정규칙명 || "").replace(/<[^>]+>/g, "")
@@ -116,10 +101,11 @@ export async function getAnnexes(
           },
           apiKey: input.apiKey,
         })
-        const result4 = parseAnnexResponse(adminText)
+        const result4 = parseAnnexEnvelope(adminText)
         if (result4.list.length > 0) {
           annexList = result4.list
           lawType = "admin"
+          listTruncated = result4.totalCnt > result4.list.length
         }
       } catch {
         // admin fallback 실패 → 무시하고 진행
@@ -190,7 +176,7 @@ export async function getAnnexes(
     if (scoped.matched && scoped.keywords.length > 0 && onlySeq) {
       return await extractAnnexContent(apiClient, scoped.list, onlySeq, normalizedLawName, lawType, input)
     }
-    return formatAnnexList(scoped.list, lawType, input, normalizedLawName, scoped, mergeIssue)
+    return formatAnnexList(scoped.list, lawType, input, normalizedLawName, scoped, mergeIssue, listTruncated)
   } catch (error) {
     return formatToolError(error, "get_annexes")
   }
@@ -347,7 +333,8 @@ function formatAnnexList(
   input: GetAnnexesInput,
   normalizedLawName: string,
   scope?: { keywords: string[], matched: boolean },
-  mergeIssue?: string
+  mergeIssue?: string,
+  truncated?: boolean
 ): { content: Array<{ type: string, text: string }> } {
   const kndLabel = input.knd === "1" ? "별표"
                  : input.knd === "2" ? "서식"
@@ -367,6 +354,13 @@ function formatAnnexList(
     resultText = `법령명: ${normalizedLawName}\n` +
       `⚠️ query="${scope.keywords.join(" ")}"와 일치하는 별표명이 없어 전체 목록을 표시합니다.\n` +
       `${kndLabel} 목록 (총 ${annexList.length}건):\n\n`
+  }
+
+  // 수집 상한도 맨 앞에 — 부분 목록을 전체로 읽으면 "그 별표는 없다"는 오답이 된다 (#148)
+  if (truncated) {
+    resultText = `⚠️ 별표가 많아 ${MAX_ANNEX_PAGES * ANNEX_PAGE_SIZE}건까지만 수집했습니다 — 뒤쪽 별표는 이 목록에 없습니다.\n` +
+      `   찾는 별표가 없으면 lawName에 별표번호를 함께 넣어(예: "${normalizedLawName} 별표4") 직접 호출하세요.\n\n` +
+      resultText
   }
 
   // 병합 미수행은 목록 맨 앞에 — 20건 표시 상한이나 절단에 밀려 사라지면 안 된다 (#127)
