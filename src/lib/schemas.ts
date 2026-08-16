@@ -3,6 +3,7 @@
  */
 
 import { z } from "zod"
+import { cutAtSafeBoundary, extractSummary } from "./truncate-text.js"
 
 /**
  * 날짜 스키마 (YYYYMMDD 형식)
@@ -45,7 +46,9 @@ export const paginationSchema = z.object({
 })
 
 /**
- * 응답 크기 제한 (50KB)
+ * 응답 크기 제한 — 5만 "자"(UTF-16 length) 기준이며 바이트가 아니다.
+ * 한글은 UTF-8에서 3바이트라 전송 바이트는 이 값의 2~3배가 될 수 있다.
+ * 토큰 예산 근사로는 바이트보다 자 수가 낫기 때문에 자 기준을 유지한다(#92).
  */
 export const MAX_RESPONSE_SIZE = 50000
 
@@ -89,52 +92,16 @@ export function truncateResponse(text: string, maxSizeOrOpts: number | TruncateO
 
   // summary 모드: 핵심 내용(첫 줄 + 섹션 제목들 + 마지막 줄) 추출
   if (summary) {
-    return _extractSummary(text, maxSize)
+    const extracted = extractSummary(text, maxSize)
+    return extracted.length <= maxSize ? extracted : extracted.slice(0, maxSize)
   }
 
-  // 기본 동작: 단순 잘라내기
-  const truncated = text.slice(0, maxSize)
-  return truncated + `\n\n⚠️ 응답이 너무 길어 ${maxSize.toLocaleString()}자로 잘렸습니다.`
-}
-
-/**
- * 핵심 내용 요약 추출 (summary 모드 내부 함수)
- * 첫 줄 + 모든 섹션 헤더(▶ ...) + 각 섹션의 처음 2줄 + 말미 안내
- */
-function _extractSummary(text: string, maxSize: number): string {
-  const lines = text.split("\n")
-  const collected: string[] = []
-  let budget = maxSize - 100 // 말미 안내 여유
-
-  // 첫 줄(제목) 항상 포함
-  if (lines.length > 0) {
-    collected.push(lines[0])
-    budget -= lines[0].length + 1
-  }
-
-  let i = 1
-  while (i < lines.length && budget > 0) {
-    const line = lines[i]
-    // 섹션 헤더이거나 빈 줄이 아닌 경우
-    if (/^▶|^#{1,4}\s|^=====|^-----/.test(line)) {
-      collected.push("")
-      collected.push(line)
-      budget -= line.length + 2
-      // 헤더 다음 2줄까지 포함
-      let j = 1
-      for (; j <= 2 && i + j < lines.length && budget > 0; j++) {
-        const nextLine = lines[i + j]
-        if (/^▶|^#{1,4}\s/.test(nextLine)) break // 다음 섹션이면 중단
-        collected.push(nextLine)
-        budget -= nextLine.length + 1
-      }
-      i += j // j 루프로 소비한 만큼 i를 추가 증가
-    }
-    i++
-  }
-
-  const tail = `\n\n📋 요약 모드: 원문 ${text.length.toLocaleString()}자 중 핵심만 추출 (${collected.join("\n").length.toLocaleString()}자)`
-  return collected.join("\n") + tail
+  // 안내문은 슬라이스 "뒤에" 붙으므로 그 길이를 미리 빼야 한다.
+  // 빼지 않으면 결과가 maxSize+안내문 길이(5만 자 요청에 50,030자)가 된다(#92).
+  const notice = `\n\n⚠️ 응답이 너무 길어 ${maxSize.toLocaleString()}자로 잘렸습니다.`
+  const budget = maxSize - notice.length
+  if (budget <= 0) return text.slice(0, maxSize)
+  return cutAtSafeBoundary(text, budget) + notice
 }
 
 /**
@@ -175,18 +142,17 @@ export function truncateSections(
 
   const truncatedSections = sections.map((sec) => {
     if (sec.length <= perSection) return sec
-    const truncated = sec.slice(0, perSection)
-    // 마지막 완전한 줄에서 자르기
-    const lastNewline = truncated.lastIndexOf("\n")
-    const clean = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated
+    const clean = cutAtSafeBoundary(sec, perSection)
     return clean + `\n   ⚠️ (이 섹션 ${sec.length.toLocaleString()}자 → ${perSection.toLocaleString()}자로 축약)`
   })
 
   let result = preamble + truncatedSections.join("\n\n")
 
-  // 전체 길이 재확인
+  // 전체 길이 재확인 — 안내문 길이를 뺀 예산으로 잘라야 totalMax를 넘지 않는다(#92)
   if (result.length > totalMax) {
-    result = result.slice(0, totalMax) + `\n\n⚠️ 전체 응답이 ${totalMax.toLocaleString()}자로 잘렸습니다.`
+    const notice = `\n\n⚠️ 전체 응답이 ${totalMax.toLocaleString()}자로 잘렸습니다.`
+    const budget = totalMax - notice.length
+    result = budget > 0 ? cutAtSafeBoundary(result, budget) + notice : result.slice(0, totalMax)
   }
 
   return result

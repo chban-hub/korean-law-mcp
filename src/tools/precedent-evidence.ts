@@ -10,7 +10,7 @@ import type {
 export const DEFAULT_PRECEDENT_DETAIL_LIMIT = 2
 export const MAX_PRECEDENT_DETAIL_LIMIT = 5
 
-// 상세조회를 여러 건 이어붙이면 합산이 50KB를 넘어 뒷 판례가 통째로 잘린다.
+// 상세조회를 여러 건 이어붙이면 합산이 5만 자를 넘어 뒷 판례가 통째로 잘린다.
 // 호출부의 단일 truncateResponse 이전에 건당 본문에 예산을 배분해 모든 판례가
 // 균형 있게 살아남도록 한다. 헤더·제목·구분자 몫으로 약간 여유를 둔다.
 const EVIDENCE_BUDGET = MAX_RESPONSE_SIZE - 2000
