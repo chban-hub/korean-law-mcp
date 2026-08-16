@@ -12,6 +12,7 @@ import { z } from "zod"
 import { TOOL_CATEGORIES, V3_EXPOSED, describeCallPath } from "../lib/tool-profiles.js"
 import { selectSections, suggestCategories, browsableCategories } from "../lib/tool-discovery.js"
 import { formatToolError } from "../lib/errors.js"
+import { truncateResponse } from "../lib/schemas.js"
 import type { LawApiClient } from "../lib/api-client.js"
 import type { McpTool, ToolResponse } from "../lib/types.js"
 
@@ -75,7 +76,7 @@ export async function discoverTools(
     : ""
 
   return {
-    content: [{ type: "text", text: `"${input.intent}" 관련 도구:\n\n${body}${cut}\n\n${describeCallPath(listed)}` }]
+    content: [{ type: "text", text: truncateResponse(`"${input.intent}" 관련 도구:\n\n${body}${cut}\n\n${describeCallPath(listed)}`) }]
   }
 }
 

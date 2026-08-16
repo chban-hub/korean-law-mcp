@@ -18,17 +18,18 @@
 import { ExecutionLimitError } from "./execution-limits.js"
 import { readBodyPrefix } from "./response-body.js"
 import { getRequestSignal } from "./session-state.js"
+import { isBlankBody, isHtmlPage } from "./body-shape.js"
 
 export type BadBodyKind = "empty" | "html"
 
 /**
  * 법제처 API가 200으로 빈 본문/HTML(점검·과부하 페이지, 권한 안내 페이지)을 반환한
  * 경우를 감지. 정상 응답은 XML(`<`) 또는 JSON(`{`/`[`)으로 시작한다.
+ * 술어 자체는 `body-shape.ts` 하나에서만 정의한다 — 여기서는 의미만 붙인다.
  */
 export function detectBadBody(text: string): BadBodyKind | null {
-  const t = text.trim()
-  if (!t) return "empty"
-  if (/^<!doctype html/i.test(t) || /^<html[\s>]/i.test(t)) return "html"
+  if (isBlankBody(text)) return "empty"
+  if (isHtmlPage(text)) return "html"
   return null
 }
 
@@ -81,14 +82,24 @@ export const MISS_CONFIRM_DELAY_MS = 200
  * "찾을 수 없습니다"로 후퇴시키지 말 것(부존재 함의가 붙는다).
  */
 export class UpstreamRecordMissingError extends Error {
+  /**
+   * 어떤 모양으로 비었는지. 표면 문안이 원인 후보를 좁히는 근거다 — 이 모듈은
+   * 안내 페이지(권한 미신청 등)를 빈 본문과 구별해 알고 있는데, 표면에서 두 원인으로
+   * 눌러 버리면 "잠시 후 재시도"만 안내하게 되고 그 경우는 영원히 낫지 않는다(#146).
+   */
+  readonly kind: BadBodyKind
+
   /** @param maskedUrl 이미 `maskSensitiveUrl()`을 통과한 URL (API 키 유출 방지) */
   constructor(maskedUrl: string, kind: BadBodyKind) {
     super(
       `법제처 API가 요청한 자료를 반환하지 않았습니다` +
       `(${kind === "empty" ? "빈 본문" : "안내 페이지"} · ${MISS_CONFIRM_DELAY_MS}ms 간격 1회 재확인 후에도 동일). ` +
-      `자료가 실제로 없는 경우와 법제처 점검·과부하로 본문이 비는 경우는 이 응답만으로 구별되지 않습니다 ` +
+      `${kind === "empty"
+        ? "자료가 실제로 없는 경우와 법제처 점검·과부하로 본문이 비는 경우는 이 응답만으로 구별되지 않습니다"
+        : "자료 부존재, 법제처 점검·과부하, 이 인증키(OC)의 해당 API 미신청이 모두 같은 모양으로 옵니다"} ` +
       `— 어느 쪽인지 확정하지 마세요. - ${maskedUrl}`
     )
     this.name = "UpstreamRecordMissingError"
+    this.kind = kind
   }
 }

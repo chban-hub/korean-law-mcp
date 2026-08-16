@@ -5,6 +5,7 @@
 import { normalizeLawSearchText, resolveLawAlias } from "./search-normalizer.js"
 import { fetchWithRetry } from "./fetch-with-retry.js"
 import { readResponseText } from "./response-body.js"
+import { isBlankBody, isHtmlPage } from "./body-shape.js"
 
 // 법제처 DRF는 정상 파라미터에도 연속 호출 버스트에 간헐 404를 낸다
 // (2026-07-19 행위시법 골드셋 R1에서 19콜 중 10콜 관측, 수초 내 자연 회복 —
@@ -63,9 +64,9 @@ export class LawApiClient {
     return t === "JSON" ? "JSON" : "XML"
   }
 
-  /** 응답 본문이 HTML 에러 페이지인지 확인 */
+  /** 응답 본문이 HTML 에러 페이지인지 확인 (술어는 body-shape.ts 단일 원본) */
   private checkHtmlError(text: string, context: string): void {
-    if (text.includes("<!DOCTYPE html") || text.includes("<html")) {
+    if (isHtmlPage(text)) {
       const hint = this.getResponseType() === "XML"
         ? " XML 엔드포인트 장애 시 LAW_RESPONSE_TYPE=JSON 환경변수로 우회할 수 있습니다."
         : ""
@@ -79,7 +80,7 @@ export class LawApiClient {
    * (fetchWithRetry가 빈/HTML 응답을 재시도하지만, 재시도 소진 후에도 빈 응답이면 여기서 처리)
    */
   private checkEmptyResponse(text: string, context: string): void {
-    if (!text || !text.trim()) {
+    if (isBlankBody(text)) {
       throw new Error(`${context} - 법제처 API가 빈 응답을 반환했습니다. 일시적 장애일 수 있으니 잠시 후 다시 시도하세요.`)
     }
   }

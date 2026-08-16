@@ -18,6 +18,12 @@ export const ErrorCodes = {
    * 없다고 자문하는 거짓 부정이 된다 (_workspace/13_legal_wording_review.md 축①).
    */
   UPSTREAM_NO_DATA: "UPSTREAM_NO_DATA",
+  /**
+   * 별표를 찾기는 했으나 파일에 본문이 인라인돼 있지 않아 텍스트를 얻지 못했다.
+   * 대괄호 라벨은 기계 독자에 대한 계약이므로 ad-hoc 문자열로 두지 않는다 —
+   * 상수 밖에서 만든 라벨은 어느 집합에 속하는지 소비자가 알 수 없다(#138).
+   */
+  ANNEX_BODY_UNAVAILABLE: "ANNEX_BODY_UNAVAILABLE",
   INVALID_PARAM: "INVALID_PARAMETER",
   API_ERROR: "EXTERNAL_API_ERROR",
   RATE_LIMITED: "RATE_LIMITED",
@@ -124,8 +130,15 @@ export function formatToolError(error: unknown, context?: string): ToolResponse 
     suggestions = [
       "⚠️ 이 응답은 자료의 부존재를 증명하지 않습니다. 사용자에게 '조회 실패'로 보고하고, '그런 법령·판례는 없다'고 단정하지 마세요.",
       "⚠️ 자료를 받지 못했습니다. 내용을 추측하거나 지어내지 마세요.",
-      "원인은 둘 중 하나이며 이 응답만으로는 구별되지 않습니다 — (a) 해당 ID/MST의 자료가 실제로 없음, (b) 법제처 점검·과부하로 본문이 빈 채 옴.",
-      "잠시 후 재시도해 보고, 그래도 같으면 ID/MST를 search_* 결과에서 재확인하세요 (임의 생성 금지).",
+      // 안내 페이지(kind==="html")는 재시도로 낫지 않는 원인을 하나 더 갖는다 — 그 키로
+      // 해당 API가 신청·승인되지 않은 경우다. 모듈은 3값을 아는데 표면에서 2값으로
+      // 누르면 "잠시 후 재시도"만 안내하게 되고, 그 경우는 영원히 낫지 않는다.
+      error.kind === "html"
+        ? "원인은 셋 중 하나이며 이 응답만으로는 구별되지 않습니다 — (a) 해당 ID/MST의 자료가 실제로 없음, (b) 법제처 점검·과부하, (c) 이 인증키(OC)로 해당 API가 신청·승인되지 않음."
+        : "원인은 둘 중 하나이며 이 응답만으로는 구별되지 않습니다 — (a) 해당 ID/MST의 자료가 실제로 없음, (b) 법제처 점검·과부하로 본문이 빈 채 옴.",
+      error.kind === "html"
+        ? "잠시 후 재시도해도 같으면 open.law.go.kr에서 이 OC 키의 API 신청·승인 상태를 확인하세요 — (c)는 재시도로 낫지 않습니다. ID/MST는 search_* 결과에서 재확인하세요 (임의 생성 금지)."
+        : "잠시 후 재시도해 보고, 그래도 같으면 ID/MST를 search_* 결과에서 재확인하세요 (임의 생성 금지).",
     ]
   } else if (error instanceof Error) {
     // Zod validation 에러 감지

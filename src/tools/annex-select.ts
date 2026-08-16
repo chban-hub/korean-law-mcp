@@ -5,7 +5,7 @@
  * 표기 문법("별표4" · "별표 제4호" · "별표 1의2")은 lib/annex-notation 이 단일 원본이다.
  */
 
-import { parseAnnexNumber, toAnnexCode } from "../lib/annex-notation.js"
+import { ANNEX_KEYWORDS, ANNEX_NOTATION_RE, fromAnnexCode, parseAnnexNumber, toAnnexCode } from "../lib/annex-notation.js"
 
 /** 법제처 별표/서식 API 응답 개별 항목 */
 export interface AnnexItem {
@@ -126,6 +126,19 @@ export function buildSelectorCandidates(selector: string): Set<string> {
 
 export function extractSelectorNumbers(selector: string): string[] {
   const rawDigits = selector.match(/\d{1,6}/)?.[0]
+
+  // 6자리는 코드(AAAABB)로 먼저 읽는다. 자연어 파서에 그냥 넘기면 `001712`가
+  // `1712`가 되어 제목 `[별지 제17호의12]`를 놓친다 — 응답이 알려 준 코드를
+  // 사용자가 되돌려주는 왕복 경로가 여기서 끊겼다(N7).
+  if (rawDigits && rawDigits.length === 6 && rawDigits === selector.trim()) {
+    const decoded = fromAnnexCode(rawDigits)
+    if (decoded) {
+      return decoded.sub > 0
+        ? [`${decoded.main}의${decoded.sub}`]
+        : Array.from(new Set([String(decoded.main)]))
+    }
+  }
+
   const parsed = parseAnnexNumber(selector)
   if (!rawDigits || !parsed) {
     return []
@@ -147,11 +160,13 @@ export function extractSelectorNumbers(selector: string): string[] {
 
 function titleMatchesAnnexNumber(title: string, annexNumber: string): boolean {
   const escapedNumber = escapeRegex(annexNumber)
+  const kw = ANNEX_KEYWORDS.join("|")
+  // 어휘는 annex-notation 단일 원본에서 온다 — 여기 `별표|서식`만 적어 두면
+  // 이 파일이 대표 사례로 드는 `[별지 제4호서식]` 제목이 제 번호에 안 걸린다.
+  // 꼬리의 `서식`까지 받는 이유도 그 표기다(번호가 낱말 사이에 낀다).
   const patterns = [
-    new RegExp(`\\[\\s*별표\\s*${escapedNumber}\\s*\\]`),
-    new RegExp(`별표\\s*제?\\s*${escapedNumber}\\s*(?:호)?`),
-    new RegExp(`\\[\\s*서식\\s*${escapedNumber}\\s*\\]`),
-    new RegExp(`서식\\s*제?\\s*${escapedNumber}\\s*(?:호)?`)
+    new RegExp(`\\[\\s*(?:${kw})\\s*(?:제)?\\s*${escapedNumber}\\s*(?:호)?\\s*(?:서식)?\\s*\\]`),
+    new RegExp(`(?:${kw})\\s*제?\\s*${escapedNumber}\\s*(?:호)?`),
   ]
 
   if (patterns.some((pattern) => pattern.test(title))) {
@@ -179,21 +194,57 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-/** 묶음 별표 여부 판별: "[별표1~5]" 같은 범위 표기가 있는지 */
+/**
+ * 묶음 별표 여부 판별: "[별표1~5]" 같은 범위 표기가 있는지.
+ *
+ * `별표` 전용으로 둔다 — 2026-08-17 licbyl 실호출(출입국관리법 시행규칙 100건 /
+ * 여권법 시행규칙 12건)에서 **범위 표기 제목 0건**이었고, 그 표본의 licbyl 제목은
+ * 애초에 `별표`·`별지` 접두어를 달고 오지 않았다(묶음 판정은 자치법규·행정규칙 제목에서
+ * 발화한다). 즉 `별지` 묶음의 실재를 확인하지 못했으므로 근거 없이 어휘를 넓히지 않는다.
+ * 반례가 관측되면 아래 `extractBundledSection` 처럼 ANNEX_KEYWORDS 기반으로 올릴 것.
+ */
 export function isBundledAnnex(annexTitle: string): boolean {
   return /별표\s*\d+\s*[~\-]\s*\d+/.test(annexTitle)
 }
 
-/** 묶음 별표 마크다운에서 특정 별표 섹션만 추출 */
-export function extractBundledSection(markdown: string, targetNum: string): string | null {
-  const num = parseInt(targetNum, 10)
-  if (isNaN(num)) return null
+/** 묶음 문서 안의 섹션 표제(`## [별표 3]`)를 읽는 정규식 — 어휘는 단일 원본에서 */
+const BUNDLED_HEADING_SRC =
+  `##\\s*\\[\\s*(?:${ANNEX_KEYWORDS.join("|")})\\s*(?:제)?\\s*`
 
+/**
+ * 묶음 별표 마크다운에서 특정 섹션만 추출.
+ *
+ * 번호부는 `parseAnnexNumber` 로 읽는다 — `parseInt("17의12")` 는 **17** 이라
+ * 가지번호를 물었는데 옆 번호(별표 17) 섹션을 조용히 돌려줬다. 묶음 문서는 그 옆
+ * 번호를 실제로 담고 있으므로 오답이 정답처럼 보인다(N7 짝 연산의 마지막 자리).
+ */
+export function extractBundledSection(markdown: string, targetNum: string): string | null {
+  const parsed = parseAnnexNumber(targetNum)
+  if (!parsed) return null
+
+  const label = parsed.sub != null
+    ? `${parsed.main}\\s*의\\s*${parsed.sub}`
+    : String(parsed.main)
   const pattern = new RegExp(
-    `(##\\s*\\[별표\\s*${num}\\][\\s\\S]*?)(?=##\\s*\\[별표\\s*\\d|$)`
+    `(${BUNDLED_HEADING_SRC}${label}\\s*(?:호)?\\s*(?:서식)?\\s*\\][\\s\\S]*?)(?=${BUNDLED_HEADING_SRC}\\d|$)`
   )
-  const match = markdown.match(pattern)
-  return match ? match[1].trim() : null
+  return markdown.match(pattern)?.[1].trim() ?? null
+}
+
+/** 묶음 문서가 담고 있는 섹션 표제 목록 — 못 찾았을 때 무엇이 있는지 알려 준다 */
+export function listBundledSections(markdown: string): string[] {
+  const re = new RegExp(`${BUNDLED_HEADING_SRC}([^\\]]{1,20})\\]`, "g")
+  const found: string[] = []
+  for (const m of markdown.matchAll(re)) {
+    const label = m[1].trim()
+    if (label && !found.includes(label)) found.push(label)
+  }
+  return found
+}
+
+/** 요청한 번호가 가지번호(의N)인가 — `extractSelectorNumbers` 가 낸 정규 표기 기준 */
+export function isBranchNumber(selectorNumber: string): boolean {
+  return parseAnnexNumber(selectorNumber)?.sub != null
 }
 
 /**
@@ -236,11 +287,56 @@ export function filterByRelatedLawName(annexList: AnnexItem[], queryName: string
  */
 export function annexQueryKeywords(query?: string): string[] {
   if (!query) return []
+  // 표기 문법은 annex-notation 단일 원본이 쥔다 — 여기에 사본을 두면 어휘가 또 갈린다
   return query
-    .replace(/\[?\s*(별표|서식|별지)\s*(?:제)?\s*\d{1,6}\s*(?:호)?\s*(?:의\s*\d{1,2})?\s*\]?/g, " ")
+    .replace(ANNEX_NOTATION_RE, " ")
     .split(/[\s,·ㆍ]+/)
     .map((t) => t.trim())
     .filter((t) => t.length >= 2)
+}
+
+// ─── 조문 맥락 (#133) ─────────────────────────────────
+
+/**
+ * 별표 제목의 위임 조문 표기. 법제처 별표명은 `수수료(제39조 관련)`처럼 근거 조문을
+ * 괄호에 달고 오므로, 조문 동반 질의("관세법 제38조 별표 2")의 조문 슬롯을 여기서 맞춘다.
+ */
+const DELEGATION_RE = /제\s*(\d+)\s*조(?:\s*의\s*(\d+))?\s*(?:관련|에?\s*따른)/g
+
+/** 별표 제목이 근거로 밝힌 조문들 ("제38조" 정규 표기) */
+export function annexDelegatingArticles(annex: AnnexItem): string[] {
+  const title = String(annex.별표명 || "").replace(/<[^>]+>/g, "")
+  const found: string[] = []
+  for (const m of title.matchAll(DELEGATION_RE)) {
+    const jo = m[2] ? `제${m[1]}조의${m[2]}` : `제${m[1]}조`
+    if (!found.includes(jo)) found.push(jo)
+  }
+  return found
+}
+
+/**
+ * 조문으로 목록을 좁힌다. `filterByAnnexQuery`와 같은 계약이다 — 한 건도 못 맞히면
+ * 원본을 돌려주고 `matched=false`로 알린다. 조용히 전체를 주면 "그 조문이 위임한
+ * 별표"로 오인되고, 조용히 0건을 주면 "그런 별표는 없다"는 오답이 된다.
+ */
+export function filterByArticle(
+  annexList: AnnexItem[],
+  jo?: string
+): { list: AnnexItem[], article?: string, matched: boolean } {
+  const article = jo ? normalizeArticleLabel(jo) : undefined
+  if (!article) return { list: annexList, matched: true }
+
+  const hits = annexList.filter((a) => annexDelegatingArticles(a).includes(article))
+  return hits.length > 0
+    ? { list: hits, article, matched: true }
+    : { list: annexList, article, matched: false }
+}
+
+/** "38" · "제38조" · "38조의2" → "제38조" / "제38조의2" */
+export function normalizeArticleLabel(raw: string): string | undefined {
+  const m = raw.match(/(\d+)\s*(?:조)?(?:\s*의\s*(\d+))?/)
+  if (!m) return undefined
+  return m[2] ? `제${m[1]}조의${m[2]}` : `제${m[1]}조`
 }
 
 /**
