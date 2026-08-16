@@ -163,9 +163,13 @@ export async function executeNaturalQueryJson(
       const firstOutput = result.content[0]?.text || ""
       const pipeId = extractPipelineId(route.tool, firstOutput)
       if (pipeId) {
-        const pipeParams = { ...route.pipeline[0].params, ...pipeId }
-        const pResult = await executeTool(apiClient, route.pipeline[0].tool, pipeParams)
-        pipelineResult = pResult.content.map(c => c.text).join("\n")
+        // 단계마다 실행한다 — 첫 단계만 쓰면 "민법 제309조·제310조"의 두 번째 조문이 사라진다
+        const outputs: string[] = []
+        for (const step of route.pipeline) {
+          const pResult = await executeTool(apiClient, step.tool, { ...step.params, ...pipeId })
+          outputs.push(pResult.content.map(c => c.text).join("\n"))
+        }
+        pipelineResult = outputs.join("\n\n")
       }
     }
 

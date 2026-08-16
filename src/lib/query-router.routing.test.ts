@@ -206,6 +206,36 @@ describe("#104 '조례' 명시 없는 자치법규 질의", () => {
   })
 })
 
+describe("경계 — 넓힌 규칙이 일상 표현을 삼키지 않는다", () => {
+  it("금액 단위 '조'를 조문번호로 읽지 않는다", () => {
+    for (const q of ["예산 3조", "국가 예산이 656조", "부채가 1000조"]) {
+      expect([q, reached(q)]).toEqual([q, expect.not.arrayContaining(["get_law_text"])])
+    }
+  })
+
+  it("'전문가/전문의/전문성'이 전문(full) 요구로 읽히지 않는다", () => {
+    for (const q of ["노동 전문가 판례", "전문성 인정 판례", "의료법 전문의 판결"]) {
+      expect([q, allParams(q)]).toEqual([q, expect.not.stringContaining("\"full\":true")])
+    }
+  })
+
+  it("'전문가' 검색어가 '가'로 잘리지 않는다", () => {
+    expect(allParams("노동 전문가 판례")).toContain("전문가")
+  })
+
+  it("행정구역 접미사를 가진 일반 명사는 자치법규로 오인하지 않는다", () => {
+    for (const q of ["위험도 평가 기준 규정", "만족도 조사 위원회 구성", "선거구 획정 위원회", "재청구 절차 규정"]) {
+      expect([q, reached(q)]).toEqual([q, expect.not.arrayContaining(["search_ordinance"])])
+    }
+  })
+
+  it("평범한 날짜가 사건번호로 읽혀 인용검증에 끌려가지 않는다", () => {
+    for (const q of ["이거 맞나요? 2024년 03월 시행 규정", "2024년 03월 신고 기한 맞나요"]) {
+      expect([q, reached(q)]).toEqual([q, expect.not.arrayContaining(["verify_citations"])])
+    }
+  })
+})
+
 describe("#107 도로교통법 약칭", () => {
   it("'도교법'이 도로교통법으로 정규화된다", () => {
     expect(resolveLawAlias("도교법").canonical).toBe("도로교통법")
