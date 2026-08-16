@@ -15,7 +15,8 @@ import { parseLawNameAndHint } from "../lib/annex-notation.js"
 import { collectAnnexList, collectAdminAnnexList, parseAnnexEnvelope, ANNEX_PAGE_SIZE, MAX_ANNEX_PAGES, type AnnexTruncationReason } from "./annex-list.js"
 import {
   buildSelectorCandidates, extractBundledSection, extractParentLawName, extractSelectorNumbers,
-  filterByAnnexQuery, filterByArticle, filterByRelatedLawName, findMatchingAnnex, isBundledAnnex,
+  filterByAnnexQuery, filterByArticle, filterByRelatedLawName, findMatchingAnnex, isBranchNumber,
+  isBundledAnnex, listBundledSections,
   type AnnexItem,
 } from "./annex-select.js"
 
@@ -307,7 +308,23 @@ async function extractAnnexContent(
   const selectorNumbers = extractSelectorNumbers(annexSelector)
   if (selectorNumbers.length > 0 && isBundledAnnex(annexTitle)) {
     const extracted = extractBundledSection(markdown, selectorNumbers[0])
-    if (extracted) markdown = extracted
+    if (extracted) {
+      markdown = extracted
+    } else if (isBranchNumber(selectorNumbers[0])) {
+      // 가지번호를 못 찾았는데 묶음 전체를 주면, 그 안에 실재하는 옆 번호(별표 17)를
+      // 요청한 별표 17의12로 읽는다 — 근처에 그럴듯한 오답이 있는 상황이라
+      // 조용한 폴백이 곧 오답이 된다. 명시 실패로 돌린다.
+      const sections = listBundledSections(markdown)
+      return notFoundResponse(
+        `${normalizedLawName} - ${annexTitle}: 묶음 문서에서 별표 ${selectorNumbers[0]} 섹션을 찾지 못했습니다.`,
+        [
+          sections.length > 0
+            ? `이 문서가 담은 섹션: ${sections.join(", ")}`
+            : "이 문서에서 섹션 표제를 찾지 못했습니다.",
+          "get_annexes를 번호 없이 호출해 별표 목록을 먼저 확인하세요.",
+        ],
+      )
+    }
   }
 
   const canonicalNote = canonicalIssue

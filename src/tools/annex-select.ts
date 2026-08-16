@@ -194,21 +194,57 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-/** 묶음 별표 여부 판별: "[별표1~5]" 같은 범위 표기가 있는지 */
+/**
+ * 묶음 별표 여부 판별: "[별표1~5]" 같은 범위 표기가 있는지.
+ *
+ * `별표` 전용으로 둔다 — 2026-08-17 licbyl 실호출(출입국관리법 시행규칙 100건 /
+ * 여권법 시행규칙 12건)에서 **범위 표기 제목 0건**이었고, 그 표본의 licbyl 제목은
+ * 애초에 `별표`·`별지` 접두어를 달고 오지 않았다(묶음 판정은 자치법규·행정규칙 제목에서
+ * 발화한다). 즉 `별지` 묶음의 실재를 확인하지 못했으므로 근거 없이 어휘를 넓히지 않는다.
+ * 반례가 관측되면 아래 `extractBundledSection` 처럼 ANNEX_KEYWORDS 기반으로 올릴 것.
+ */
 export function isBundledAnnex(annexTitle: string): boolean {
   return /별표\s*\d+\s*[~\-]\s*\d+/.test(annexTitle)
 }
 
-/** 묶음 별표 마크다운에서 특정 별표 섹션만 추출 */
-export function extractBundledSection(markdown: string, targetNum: string): string | null {
-  const num = parseInt(targetNum, 10)
-  if (isNaN(num)) return null
+/** 묶음 문서 안의 섹션 표제(`## [별표 3]`)를 읽는 정규식 — 어휘는 단일 원본에서 */
+const BUNDLED_HEADING_SRC =
+  `##\\s*\\[\\s*(?:${ANNEX_KEYWORDS.join("|")})\\s*(?:제)?\\s*`
 
+/**
+ * 묶음 별표 마크다운에서 특정 섹션만 추출.
+ *
+ * 번호부는 `parseAnnexNumber` 로 읽는다 — `parseInt("17의12")` 는 **17** 이라
+ * 가지번호를 물었는데 옆 번호(별표 17) 섹션을 조용히 돌려줬다. 묶음 문서는 그 옆
+ * 번호를 실제로 담고 있으므로 오답이 정답처럼 보인다(N7 짝 연산의 마지막 자리).
+ */
+export function extractBundledSection(markdown: string, targetNum: string): string | null {
+  const parsed = parseAnnexNumber(targetNum)
+  if (!parsed) return null
+
+  const label = parsed.sub != null
+    ? `${parsed.main}\\s*의\\s*${parsed.sub}`
+    : String(parsed.main)
   const pattern = new RegExp(
-    `(##\\s*\\[별표\\s*${num}\\][\\s\\S]*?)(?=##\\s*\\[별표\\s*\\d|$)`
+    `(${BUNDLED_HEADING_SRC}${label}\\s*(?:호)?\\s*(?:서식)?\\s*\\][\\s\\S]*?)(?=${BUNDLED_HEADING_SRC}\\d|$)`
   )
-  const match = markdown.match(pattern)
-  return match ? match[1].trim() : null
+  return markdown.match(pattern)?.[1].trim() ?? null
+}
+
+/** 묶음 문서가 담고 있는 섹션 표제 목록 — 못 찾았을 때 무엇이 있는지 알려 준다 */
+export function listBundledSections(markdown: string): string[] {
+  const re = new RegExp(`${BUNDLED_HEADING_SRC}([^\\]]{1,20})\\]`, "g")
+  const found: string[] = []
+  for (const m of markdown.matchAll(re)) {
+    const label = m[1].trim()
+    if (label && !found.includes(label)) found.push(label)
+  }
+  return found
+}
+
+/** 요청한 번호가 가지번호(의N)인가 — `extractSelectorNumbers` 가 낸 정규 표기 기준 */
+export function isBranchNumber(selectorNumber: string): boolean {
+  return parseAnnexNumber(selectorNumber)?.sub != null
 }
 
 /**
