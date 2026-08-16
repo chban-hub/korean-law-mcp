@@ -16,6 +16,8 @@ import { wantsFullText } from "./query-extract.js"
 export interface RouteResult {
   /** 실행할 도구 이름 */
   tool: string
+  /** 매칭된 패턴 이름 (디버깅 — 어느 규칙이 이겼는지) */
+  matchedPattern?: string
   /** 도구에 전달할 파라미터 */
   params: Record<string, unknown>
   /** 라우팅 근거 설명 */
@@ -84,6 +86,7 @@ function _matchRoute(q: string): RouteResult {
       if (params._fallback) {
         return {
           tool: "chain_full_research",
+          matchedPattern: pattern.name,
           params: { query: q },
           reason: `${pattern.reason} (법령명 미지정 → 종합 리서치로 전환)`,
         }
@@ -95,6 +98,7 @@ function _matchRoute(q: string): RouteResult {
         delete params._reroute
         return {
           tool: rerouteTool,
+          matchedPattern: pattern.name,
           params,
           reason: `${pattern.reason} → ${rerouteTool}로 재라우팅`,
         }
@@ -110,6 +114,7 @@ function _matchRoute(q: string): RouteResult {
         const detailParams = wantsFullText(q) ? { full: true } : {}
         return {
           tool: pattern.tool,
+          matchedPattern: pattern.name,
           params,
           reason: pattern.reason,
           pipeline: [{ tool: chain.detailTool, params: detailParams }],
@@ -117,7 +122,7 @@ function _matchRoute(q: string): RouteResult {
         }
       }
 
-      return { tool: pattern.tool, params, reason: pattern.reason }
+      return { tool: pattern.tool, matchedPattern: pattern.name, params, reason: pattern.reason }
     }
   }
 
@@ -146,6 +151,7 @@ function _mstPipeline(q: string, pattern: Pattern, params: Record<string, unknow
 
   return {
     tool: "search_law",
+    matchedPattern: pattern.name,
     params: { query: searchQuery },
     reason: `${pattern.reason} (법령 검색 → 조문 조회 자동 연결)`,
     pipeline: steps,
@@ -159,7 +165,7 @@ export function explainRoute(query: string): string {
   const result = routeQuery(query)
   let explanation = `질의: "${query}"\n`
   explanation += `도구: ${result.tool}\n`
-  explanation += `근거: ${result.reason}\n`
+  explanation += `근거: ${result.reason}${result.matchedPattern ? ` [${result.matchedPattern}]` : ""}\n`
   explanation += `파라미터: ${JSON.stringify(result.params, null, 2)}\n`
 
   if (result.dateRange) {

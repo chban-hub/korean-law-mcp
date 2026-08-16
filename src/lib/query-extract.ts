@@ -103,6 +103,35 @@ export function extractLawName(query: string): string {
 }
 
 /**
+ * "관세법 2024 vs 2026" 처럼 두 시점을 명시한 질의에서 날짜 파라미터와 법령명을 뽑는다.
+ * 시나리오 판정(scenario-rules)과 별개 — 판정은 "무엇인가", 여기는 "값이 얼마인가".
+ */
+export function extractTimeTravel(query: string): Record<string, unknown> {
+  const toYmd = (s: string): string | undefined => {
+    const m = s.match(/(\d{4})[.\-]?(\d{1,2})?[.\-]?(\d{1,2})?/)
+    if (!m) return undefined
+    return `${m[1]}${(m[2] || "01").padStart(2, "0")}${(m[3] || "01").padStart(2, "0")}`
+  }
+  const dates = query.match(/\d{4}[.\-]?\d{0,2}[.\-]?\d{0,2}/g) || []
+  const params: Record<string, unknown> = {}
+  if (dates[0]) params.fromDate = toYmd(dates[0])
+  if (dates[1]) params.toDate = toYmd(dates[1])
+  else if (/현행|지금|현재|오늘/.test(query)) {
+    const now = new Date()
+    params.toDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
+  }
+  const lawName = extractLawName(
+    query
+      .replace(/\d{4}\s*[.\-년]?\s*\d{0,2}\s*[.\-월]?\s*\d{0,2}\s*일?/g, " ")
+      .replace(/작년|재작년|예전|과거|종전|지금|현재|현행|오늘|올해/g, " ")
+      .replace(/vs\.?|↔|~|이?랑|하고|대비|부터|까지|에서|와|과/gi, " ")
+      .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전/g, " ")
+  )
+  params.query = lawName || query
+  return params
+}
+
+/**
  * 절차/비용 의도가 처분/허가 의도보다 강한지 판단.
  * "신고 방법", "허가 절차 수수료" 같은 복합 쿼리에서
  * 절차 키워드가 있으면 procedure를 우선.

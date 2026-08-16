@@ -13,6 +13,7 @@ import {
   extractArticleNumbers,
   extractAnnexNo,
   extractLawName,
+  extractTimeTravel,
   hasFollowOnIntent,
   hasProcedureIntent,
   isRegionToken,
@@ -685,35 +686,6 @@ const routePatterns: Pattern[] = [
 // 시나리오 패턴 — scenario-rules.ts 에서 파생 (#101)
 // ────────────────────────────────────────
 
-/**
- * "관세법 2024 vs 2026" 처럼 두 시점을 명시한 질의는 시나리오 판정과 별개로
- * 날짜 파라미터까지 뽑아야 한다.
- */
-function extractTimeTravel(query: string): Record<string, unknown> {
-  const toYmd = (s: string): string | undefined => {
-    const m = s.match(/(\d{4})[\.\-]?(\d{1,2})?[\.\-]?(\d{1,2})?/)
-    if (!m) return undefined
-    return `${m[1]}${(m[2] || "01").padStart(2, "0")}${(m[3] || "01").padStart(2, "0")}`
-  }
-  const dates = query.match(/\d{4}[\.\-]?\d{0,2}[\.\-]?\d{0,2}/g) || []
-  const params: Record<string, unknown> = {}
-  if (dates[0]) params.fromDate = toYmd(dates[0])
-  if (dates[1]) params.toDate = toYmd(dates[1])
-  else if (/현행|지금|현재|오늘/.test(query)) {
-    const now = new Date()
-    params.toDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
-  }
-  const lawName = extractLawName(
-    query
-      .replace(/\d{4}\s*[\.\-년]?\s*\d{0,2}\s*[\.\-월]?\s*\d{0,2}\s*일?/g, " ")
-      .replace(/작년|재작년|예전|과거|종전|지금|현재|현행|오늘|올해/g, " ")
-      .replace(/vs\.?|↔|~|이?랑|하고|대비|부터|까지|에서|와|과/gi, " ")
-      .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전/g, " ")
-  )
-  params.query = lawName || query
-  return params
-}
-
 const SCENARIO_EXTRACTS: Record<string, (query: string) => Record<string, unknown>> = {
   time_travel: extractTimeTravel,
 }
@@ -730,7 +702,11 @@ const scenarioPatterns: Pattern[] = ROUTABLE_SCENARIO_RULES.map((rule) => ({
 
 /**
  * 우선순위 정렬된 전체 패턴 (모듈 로드 시 1회).
- * 시나리오 패턴을 앞에 둬 동순위 경합에서 먼저 보게 한다 — 분리 전 배열 순서와 같다.
+ * 동순위는 배열 순서로 갈린다. 시나리오 패턴을 앞에 둬 pri 9(delegation·impact)의
+ * 분리 전 순서를 지켰다. 단 pri 3 은 순서가 뒤집혔다 —
+ * 분리 전 `nts_interpretation` → `time_travel` 이었으나 지금은 `time_travel` 이 먼저다.
+ * 영향 범위: 두 시점 표기와 국세청 세목이 한 쿼리에 같이 오는 경우
+ * ("국세청 양도세 2024 vs 2026")가 이제 개정추적으로 간다.
  */
 export const sortedRoutePatterns: Pattern[] =
   [...scenarioPatterns, ...routePatterns].sort((a, b) => a.priority - b.priority)

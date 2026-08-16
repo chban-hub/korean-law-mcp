@@ -7,6 +7,9 @@
 import { describe, it, expect } from "vitest"
 import { routeQuery } from "./query-router.js"
 import { detectScenario } from "../tools/scenarios/index.js"
+import { extractActionKeyword } from "../tools/scenarios/action-plan.js"
+import { SCENARIO_HOST_CHAINS } from "./scenario-rules.js"
+import { allTools } from "../tool-registry.js"
 import { resolveLawAlias } from "./search-normalizer.js"
 
 /** 메인 도구 + 파이프라인 도구 전체 (매트릭스 원칙 6: 최종 도달 목적지로 판정) */
@@ -130,6 +133,33 @@ describe("#101 시나리오 감지 단일 원본 — CLI/MCP 일치", () => {
   it("'처벌'이 penalty 시나리오에 도달한다", () => {
     expect(detectScenario("음주운전 처벌 기준 알려줘", "chain_action_basis")).toBe("penalty")
     expect(reached("음주운전 처벌 기준 알려줘")).toContain("chain_action_basis")
+  })
+})
+
+describe("#101 규칙 테이블 자체의 정합", () => {
+  it("모든 hostChain 이 실재하는 도구다", () => {
+    // hostChain 은 문자열이라 오타가 나도 컴파일된다 — 그 규칙은 양쪽 표면에서 영구히 죽는다
+    const names = new Set(allTools.map(t => t.name))
+    for (const host of SCENARIO_HOST_CHAINS) {
+      expect([host, names.has(host)]).toEqual([host, true])
+    }
+  })
+
+  it("붙인 시나리오는 해당 체인의 스키마가 받는 값이다", () => {
+    for (const q of [
+      "전세금 못 받았어", "관세 통관 절차 확인", "음주운전 처벌 기준 알려줘",
+      "관세법 2024 vs 2026", "관세법 위임입법 미이행 현황",
+    ]) {
+      const r = routeQuery(q)
+      const tool = allTools.find(t => t.name === r.tool)
+      if (!tool) continue
+      expect([q, tool.schema.safeParse(r.params).success]).toEqual([q, true])
+    }
+  })
+
+  it("감지 어휘를 넓힌 만큼 action_plan 검색어에서도 부정 표현이 걷힌다", () => {
+    // 감지기(scenario-rules)와 추출기(action-plan)가 짝 — 한쪽만 넓히면 "관세 환급을 못"이 남는다
+    expect(extractActionKeyword("관세 환급을 못 받았어").keyword).not.toMatch(/못\s*$/)
   })
 })
 

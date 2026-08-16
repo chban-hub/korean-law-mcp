@@ -71,6 +71,33 @@ const TIME_TRAVEL_EXPLICIT = /시점\s*비교|버전\s*비교|두\s*시점|time\
 /** 연·월 + 연결어미 — 두 번째 시점이 불분명해 도구 선택 근거로는 약하다(라벨 전용) */
 const TIME_TRAVEL_LOOSE = /\d{4}\s*[.\-년]\s*\d{1,2}.*(?:vs|와|과|↔|~|부터|에서)/i
 
+// 아래 네 구획은 routeTriggers 가 patterns 의 "좁힘"이다.
+// 어휘를 두 번 적으면 그 자리에서 갈라지므로(이 파일이 없애려던 바로 그 실패) 원본 문자열에서 조립한다.
+
+const DELEGATION_TOKENS = /위임\s*입법|미이행|미제정|위임\s*현황|하위\s*법령\s*제정/
+
+/** 영향도 핵심어. 라벨은 여기에 넓은 `파급`을, 라우팅은 `파급 효과`만 더한다 */
+const IMPACT_CORE = "영향\\s*도|영향\\s*분석|연쇄\\s*개정"
+const IMPACT_LABEL = new RegExp(`${IMPACT_CORE}|파급|하위\\s*법령\\s*영향`)
+const IMPACT_ROUTE = new RegExp(`${IMPACT_CORE}|파급\\s*효과`)
+
+/** 관세 구획 핵심어 — 단독으로는 도구를 고르지 않는다(절차·쟁송 라우팅을 가로챈다) */
+const CUSTOMS_AREA = "관세|수입|수출|통관"
+const CUSTOMS_LABEL = new RegExp(`${CUSTOMS_AREA}|FTA|원산지|HS\\s*코드|품목\\s*분류|관세사`, "i")
+const CUSTOMS_ROUTE = [
+  new RegExp(`(?:${CUSTOMS_AREA}).*(?:법|절차|기준|체크|확인|검토)`),
+  /FTA.*(?:적용|원산지|세율|협정)/,
+  /HS\s*코드|품목\s*분류/i,
+]
+
+/** 처분·벌칙 행위어. '처벌'은 대표 예시("음주운전 처벌 기준") 어휘인데 양쪽 모두 빠져 있었다(BUG-R6) */
+const PENALTY_ACTION = "과태료|벌칙|벌금|처벌|과징금|영업\\s*정지|행정\\s*처분"
+const PENALTY_LABEL = new RegExp(`${PENALTY_ACTION}|처분\\s*기준|감경|이행\\s*강제금`)
+const PENALTY_ROUTE = [
+  new RegExp(`(?:${PENALTY_ACTION}).*(?:기준|금액|감경|얼마)`),
+  /(?:위반|적발).*(?:처분|벌금|과태료|처벌)/,
+]
+
 /** 선언 순서 = 같은 precedence·같은 host 안에서의 판정 순서 (위임 → 영향) */
 const DECLARED_RULES: ScenarioRule[] = [
   {
@@ -91,16 +118,16 @@ const DECLARED_RULES: ScenarioRule[] = [
     scenario: "delegation",
     hostChain: "chain_law_system",
     precedence: 9,
-    patterns: [/위임\s*입법|미이행|미제정|위임\s*현황|하위\s*법령\s*제정/],
-    routeTriggers: [/위임\s*입법|미이행|미제정|위임\s*현황|하위\s*법령\s*제정/],
+    patterns: [DELEGATION_TOKENS],
+    routeTriggers: [DELEGATION_TOKENS],
   },
   {
     scenario: "impact",
     hostChain: "chain_law_system",
     // delegation 과 같은 순번 — 같은 host 안에서는 선언 순서(위임 → 영향)가 유지된다
     precedence: 9,
-    patterns: [/영향\s*도|영향\s*분석|연쇄\s*개정|파급|하위\s*법령\s*영향/],
-    routeTriggers: [/영향\s*도|영향\s*분석|연쇄\s*개정|파급\s*효과/],
+    patterns: [IMPACT_LABEL],
+    routeTriggers: [IMPACT_ROUTE],
   },
   {
     scenario: "timeline",
@@ -113,24 +140,16 @@ const DECLARED_RULES: ScenarioRule[] = [
     scenario: "customs",
     hostChain: "chain_full_research",
     precedence: 13,
-    patterns: [/관세|수출|수입|통관|FTA|원산지|HS\s*코드|품목\s*분류|관세사/i],
+    patterns: [CUSTOMS_LABEL],
     // 판정 어휘를 그대로 쓰면 "관세 불복 소송"까지 종합리서치로 끌어간다 — 구획어 + 실무 의도로 좁힌다
-    routeTriggers: [
-      /(?:관세|수입|수출|통관).*(?:법|절차|기준|체크|확인|검토)/,
-      /FTA.*(?:적용|원산지|세율|협정)/,
-      /HS\s*코드|품목\s*분류/i,
-    ],
+    routeTriggers: CUSTOMS_ROUTE,
   },
   {
     scenario: "penalty",
     hostChain: "chain_action_basis",
     precedence: 13,
-    // '처벌'은 프로젝트 대표 예시("음주운전 처벌 기준")의 어휘인데 양쪽 모두 빠져 있었다(BUG-R6)
-    patterns: [/과태료|벌칙|벌금|처벌|처분\s*기준|영업\s*정지|감경|행정\s*처분|과징금|이행\s*강제금/],
-    routeTriggers: [
-      /(?:과태료|벌칙|벌금|처벌|과징금|영업\s*정지|행정\s*처분).*(?:기준|금액|감경|얼마)/,
-      /(?:위반|적발).*(?:처분|벌금|과태료|처벌)/,
-    ],
+    patterns: [PENALTY_LABEL],
+    routeTriggers: PENALTY_ROUTE,
   },
   {
     scenario: "action_plan",
@@ -157,12 +176,19 @@ const DECLARED_RULES: ScenarioRule[] = [
 ]
 
 /** precedence 순 (동순위는 선언 순서 유지 — Array.sort 는 안정 정렬) */
-export const SCENARIO_RULES: ScenarioRule[] =
+const SCENARIO_RULES: ScenarioRule[] =
   [...DECLARED_RULES].sort((a, b) => a.precedence - b.precedence)
 
 /** 라우터가 도구 선택에 쓸 수 있는 규칙만 (precedence 순) */
 export const ROUTABLE_SCENARIO_RULES: ScenarioRule[] =
   SCENARIO_RULES.filter(r => r.routeTriggers !== null)
+
+/**
+ * 시나리오를 실을 수 있는 체인 도구 이름 (중복 제거).
+ * hostChain 은 문자열이라 오타가 나도 컴파일된다 — 실재 도구인지는 테스트가 지킨다.
+ */
+export const SCENARIO_HOST_CHAINS: string[] =
+  [...new Set(SCENARIO_RULES.map(r => r.hostChain))]
 
 /**
  * 쿼리 + 호스트 체인 → 시나리오. CLI·MCP 공통 진입점.
