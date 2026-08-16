@@ -151,9 +151,9 @@ export function extractTimeTravel(query: string): Record<string, unknown> {
   const params: Record<string, unknown> = {}
   if (dates[0]) params.fromDate = toYmd(dates[0])
   if (dates[1]) params.toDate = toYmd(dates[1])
-  // 판정은 좁은 집합을 그대로 둔다 — RELATIVE_NOW_WORDS 로 넓히면 "올해 개정"이
-  // toDate=오늘로 바뀌어 라우팅 결과가 달라진다(동작 변경이라 리팩터 범위 밖, #144)
-  else if (/현행|지금|현재|오늘/.test(query)) {
+  // "지금" 쪽 어휘는 date-patterns 한 벌에서 온다 — 여기만 좁으면 같은 질문이
+  // "vs 현행"은 되고 "vs 올해"는 안 되는, 표현에 따라 갈리는 라우팅이 된다(#144 후속)
+  else if (new RegExp(RELATIVE_NOW_WORDS).test(query)) {
     const now = new Date()
     params.toDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
   }
