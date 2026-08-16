@@ -169,3 +169,37 @@ describe("intent 정규화 (#111)", () => {
     expect(await discoverSections("\t행정규칙\n")).toEqual(await discoverSections("행정규칙"))
   })
 })
+
+describe("지적 5 — 1-hop 앞세우기가 legal_analysis 계열에도 적용된다", () => {
+  // #110 정책("별칭이 직접 겨냥하는 의도 카테고리는 1-hop 진입점을 앞세운다")이
+  // legal_research 3곳에만 적용되고 legal_analysis 의 네 mode 카테고리에는 빠졌다.
+  it.each([
+    ["판례 유효성", "cite_check"],
+    ["조문 영향", "impact_map"],
+    ["당시 법령", "applicable_law"],
+    ["환각 검증", "verify_citations"],
+  ])("%s 는 legal_analysis 를 %s 보다 먼저 안내한다", async (intent, twoHop) => {
+    const text = await discoverText(intent)
+    expect(text).toContain("legal_analysis")
+    expect(text.indexOf("legal_analysis")).toBeLessThan(text.indexOf(twoHop))
+  })
+})
+
+describe("지적 5 — 말미 안내가 결과에 맞는다", () => {
+  it("노출 도구만 돌려줬으면 execute_tool 로 유도하지 않는다", async () => {
+    const text = await discoverText("조문 영향")
+    expect(text).toContain("legal_analysis")
+    expect(text).not.toMatch(/^execute_tool로 실행하세요\.$/m)
+  })
+
+  it("미노출 도구만 돌려줬으면 execute_tool 을 안내한다", async () => {
+    const text = await discoverText("조세심판원")
+    expect(text).toContain("execute_tool")
+  })
+
+  it("섞여 있으면 둘 다 말한다", async () => {
+    const text = await discoverText("판례 유효성")
+    expect(text).toContain("legal_analysis")
+    expect(text).toContain("execute_tool")
+  })
+})

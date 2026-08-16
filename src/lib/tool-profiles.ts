@@ -1,9 +1,45 @@
 /**
- * 도구 카테고리 + 별칭 — discover_tools 자연어 매칭용.
+ * 도구 노출 정책 + 카테고리/별칭 — discover_tools 자연어 매칭용.
  *
- * (lite/full 프로필은 v3.5.1에서 제거됨: V3_EXPOSED 도입 후 실질 미사용.
- *  tool-registry.ts가 V3_EXPOSED 16개로 고정 노출 → 프로필 분기 의미 상실)
+ * "어떤 도구를 직접 노출하는가"(V3_EXPOSED)와 "어떤 의도가 어떤 도구로 가는가"를
+ * 한 곳에 둔다. 갈라 놓으면 카테고리는 1-hop 진입점을 앞세우는데 안내 문구는
+ * 2-hop 을 말하는 어긋남이 생긴다.
+ *
+ * (lite/full 프로필은 v3.5.1에서 제거됨: V3_EXPOSED 도입 후 실질 미사용.)
  */
+
+/**
+ * ListTools 로 직접 노출하는 도구 — 나머지는 execute_tool 경유(2-hop).
+ *
+ * tool-registry 가 노출 필터로 쓰고, discover_tools 가 말미 안내를 가르는 데 쓴다.
+ * 두 곳이 각자 목록을 들면 "1-hop 도구를 돌려주면서 execute_tool 로 실행하라"고
+ * 안내하는 어긋남이 생긴다 — 그래서 여기 한 곳에 둔다.
+ *
+ * ⚠️ get_annexes 제거 금지: 헬스장 환불 케이스(trace ld-1775959823220, 79s)에서
+ *    별표 3의2를 가져오려 discover_tools × 2 + execute_tool 헛발질로 ~15초 손실.
+ */
+export const V3_EXPOSED = new Set([
+  "legal_research",   // v4.4.0: chain_* 8개 통합 (task 파라미터)
+  "legal_analysis",   // v4.4.0: verify_citations/cite_check/applicable_law/impact_map 통합 (mode 파라미터)
+  "search_law", "get_law_text",
+  "get_annexes",
+  "search_decisions", "get_decision_text",
+  "ordinance_radar",  // v4.7.0: 조례 정비 레이더 (조례 담당 공무원 킬러기능)
+  "discover_tools", "execute_tool",
+])
+
+/**
+ * discover_tools 말미 안내 — 돌려준 도구가 무엇인지에 따라 갈린다.
+ *
+ * 결과와 무관하게 "execute_tool로 실행하세요"만 말하면, 1-hop 진입점을 앞세운
+ * 카테고리 구성과 안내가 서로 어긋나 노출 도구에까지 굳이 2-hop 을 태운다.
+ */
+export function describeCallPath(listed: Set<string>): string {
+  const exposed = [...listed].filter(name => V3_EXPOSED.has(name))
+  if (exposed.length === 0) return "execute_tool로 실행하세요."
+  const direct = `${exposed.join(", ")}는 그대로 호출하세요.`
+  return exposed.length === listed.size ? direct : `${direct} 나머지는 execute_tool 경유입니다.`
+}
 
 /**
  * 카테고리/도구명 별칭 — discover_tools가 사용자 자연어 입력을 매칭하기 위한 힌트.
@@ -87,11 +123,13 @@ export const TOOL_CATEGORIES: Record<string, string[]> = {
   "문서분석": ["legal_research", "analyze_document", "chain_document_review"],
   "처분기준": ["legal_research", "chain_action_basis"],
   "절차매뉴얼": ["legal_research", "chain_procedure_detail"],
+  // legal_analysis 의 네 mode 에 대응하는 카테고리도 같은 정책을 따른다 —
+  // 별칭이 곧 mode 의도라 1-hop 진입점이 답이고, 원본 도구는 하위호환 병기다.
   "정밀분석": ["legal_analysis"],
-  "인용검증": ["verify_citations"],
-  "판례생사": ["cite_check"],
-  "행위시법": ["applicable_law"],
-  "영향그래프": ["impact_map"],
+  "인용검증": ["legal_analysis", "verify_citations"],
+  "판례생사": ["legal_analysis", "cite_check"],
+  "행위시법": ["legal_analysis", "applicable_law"],
+  "영향그래프": ["legal_analysis", "impact_map"],
   "유틸리티": ["parse_jo_code", "get_law_abbreviations"],
 }
 

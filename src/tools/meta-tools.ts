@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod"
-import { TOOL_CATEGORIES, TOOL_ALIASES } from "../lib/tool-profiles.js"
+import { TOOL_CATEGORIES, TOOL_ALIASES, describeCallPath } from "../lib/tool-profiles.js"
 import { formatToolError } from "../lib/errors.js"
 import type { LawApiClient } from "../lib/api-client.js"
 import type { McpTool, ToolResponse } from "../lib/types.js"
@@ -148,7 +148,7 @@ export async function discoverTools(
   }).filter(section => section !== "").join("\n\n")
 
   return {
-    content: [{ type: "text", text: `"${input.intent}" 관련 도구:\n\n${sections}\n\nexecute_tool로 실행하세요.` }]
+    content: [{ type: "text", text: `"${input.intent}" 관련 도구:\n\n${sections}\n\n${describeCallPath(seen)}` }]
   }
 }
 

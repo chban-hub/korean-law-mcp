@@ -13,6 +13,7 @@ import { RequestExecutionBudget, readExecutionLimits, type ExecutionLimits } fro
 import { truncateResponse } from "./lib/schemas.js"
 import { getRequestSignal, requestContext, runWithRequestContext, throwIfRequestCancelled } from "./lib/session-state.js"
 import { discoverTools, DiscoverToolsSchema, executeTool, ExecuteToolSchema, setAllToolsRef } from "./tools/meta-tools.js"
+import { V3_EXPOSED } from "./lib/tool-profiles.js"
 import { searchDecisions, SearchDecisionsSchema, getDecisionText, GetDecisionTextSchema } from "./tools/unified-decisions.js"
 
 // Tool imports
@@ -772,19 +773,9 @@ function toMcpInputSchema(schema: unknown) {
  * (verify_citations/cite_check/applicable_law/impact_map) → legal_analysis(mode).
  * 원본 12개는 allTools에 유지 — CallTool 직접 호출/execute_tool 하위호환.
  *
- * ⚠️ get_annexes 제거 금지:
- *   헬스장 환불 케이스(trace ld-1775959823220, 79s)에서 별표 3의2를 가져오기 위해
- *   discover_tools × 2 + execute_tool 헛발질로 ~15초 손실. 직노출로 해결.
+ * 목록 자체는 lib/tool-profiles 의 V3_EXPOSED — discover_tools 의 말미 안내가
+ * 같은 목록을 봐야 "1-hop 도구를 주면서 2-hop 을 안내"하는 어긋남이 안 생긴다.
  */
-const V3_EXPOSED = new Set([
-  "legal_research",   // v4.4.0: chain_* 8개 통합 (task 파라미터)
-  "legal_analysis",   // v4.4.0: verify_citations/cite_check/applicable_law/impact_map 통합 (mode 파라미터)
-  "search_law", "get_law_text",
-  "get_annexes",
-  "search_decisions", "get_decision_text",
-  "ordinance_radar",  // v4.7.0: 조례 정비 레이더 (조례 담당 공무원 킬러기능)
-  "discover_tools", "execute_tool",
-])
 
 /**
  * 마켓플레이스(playmcp 등) 광고용 메타데이터.
