@@ -90,10 +90,12 @@ export function truncateResponse(text: string, maxSizeOrOpts: number | TruncateO
 
   if (text.length <= maxSize) return text
 
-  // summary 모드: 핵심 내용(첫 줄 + 섹션 제목들 + 마지막 줄) 추출
+  // summary 모드: 핵심 내용(첫 줄 + 섹션 제목들 + 마지막 줄) 추출.
+  // 초과분도 경계에서 자른다 — 하드컷하면 `📋 요약 모드` 꼬리가 한가운데서 끊긴다.
+  // 같은 커밋이 하드컷을 없애려고 cutAtSafeBoundary를 만들어 놓고 이 경로만 빠뜨렸다(#145).
   if (summary) {
     const extracted = extractSummary(text, maxSize)
-    return extracted.length <= maxSize ? extracted : extracted.slice(0, maxSize)
+    return extracted.length <= maxSize ? extracted : cutAtSafeBoundary(extracted, maxSize)
   }
 
   // 안내문은 슬라이스 "뒤에" 붙으므로 그 길이를 미리 빼야 한다.
@@ -142,8 +144,13 @@ export function truncateSections(
 
   const truncatedSections = sections.map((sec) => {
     if (sec.length <= perSection) return sec
-    const clean = cutAtSafeBoundary(sec, perSection)
-    return clean + `\n   ⚠️ (이 섹션 ${sec.length.toLocaleString()}자 → ${perSection.toLocaleString()}자로 축약)`
+    // 안내문이 잘라낸 "뒤에" 붙으므로 그 길이를 예산에서 먼저 뺀다 — #92가 최상위에서
+    // 고친 것과 같은 유형이 섹션 단위에 남아 있었다(#145). 안 빼면 섹션마다
+    // perSection을 안내문 길이만큼 넘는다.
+    const notice = `\n   ⚠️ (이 섹션 ${sec.length.toLocaleString()}자 → ${perSection.toLocaleString()}자로 축약)`
+    const budget = perSection - notice.length
+    if (budget <= 0) return cutAtSafeBoundary(sec, perSection)
+    return cutAtSafeBoundary(sec, budget) + notice
   })
 
   let result = preamble + truncatedSections.join("\n\n")
