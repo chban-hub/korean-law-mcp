@@ -42,6 +42,17 @@ import {
 import { fetchPrecedentEvidence, validatePrecedentSearchResult } from "./precedent-evidence.js"
 import { getRequestSignal, throwIfRequestCancelled } from "../lib/session-state.js"
 
+/**
+ * 체인 query 길이 상한 (#121).
+ *
+ * 체인 query 는 "법령명 + 키워드"라 짧다. 평가 세트(R/B 케이스 76건)의 최장 정상 질의가
+ * 145자(인용 검증용 붙여넣기)이므로 그 13배가 넘는 여유를 뒀다.
+ * 상한이 없으면 무제한 사용자 텍스트가 routeQuery 의 O(n²) 패턴에 그대로 들어가
+ * 이벤트 루프를 장기 점유한다(8.5k자 476ms, HTTP body 한도 100kb 안에서도 통과).
+ */
+const MAX_CHAIN_QUERY = 2000
+const chainQuery = (desc: string) => z.string().max(MAX_CHAIN_QUERY).describe(desc)
+
 // ========================================
 // Types
 // ========================================
@@ -302,7 +313,7 @@ function wrapError(error: unknown, toolName?: string): ToolResponse {
 // ========================================
 
 export const chainLawSystemSchema = z.object({
-  query: z.string().describe("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
+  query: chainQuery("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
   articles: z.array(z.string()).optional().describe("조회할 조문 번호 (예: ['제38조', '제39조'])"),
   scenario: z.enum(["delegation", "impact"]).optional()
     .describe("확장 시나리오. delegation=위임입법 미이행 감시, impact=개정 영향도 분석. 미지정 시 쿼리에서 자동 감지."),
@@ -364,7 +375,7 @@ export async function chainLawSystem(
 // ========================================
 
 export const chainActionBasisSchema = z.object({
-  query: z.string().describe("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
+  query: chainQuery("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
   scenario: z.enum(["penalty"]).optional()
     .describe("확장 시나리오. penalty=처분·벌칙 기준 종합 (별표 처분기준표 + 감경 판례 + 개정이력). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -434,7 +445,7 @@ export async function chainActionBasis(
 // ========================================
 
 export const chainDisputePrepSchema = z.object({
-  query: z.string().describe("분쟁 키워드 (예: '건축허가 취소 행정심판', '징계처분 감경')"),
+  query: chainQuery("분쟁 키워드 (예: '건축허가 취소 행정심판', '징계처분 감경')"),
   domain: z.enum(["tax", "labor", "privacy", "competition", "general"]).optional()
     .describe("전문 분야 (tax=조세심판, labor=노동위, privacy=개인정보위, competition=공정위). 미지정 시 쿼리에서 자동 감지"),
   apiKey: z.string().optional(),
@@ -521,7 +532,7 @@ export async function chainDisputePrep(
 // ========================================
 
 export const chainAmendmentTrackSchema = z.object({
-  query: z.string().describe("법령명 (예: '관세법', '지방세특례제한법')"),
+  query: chainQuery("법령명 (예: '관세법', '지방세특례제한법')"),
   mst: z.string().optional().describe("법령일련번호 (알고 있으면)"),
   lawId: z.string().optional().describe("법령ID (알고 있으면)"),
   scenario: z.enum(["timeline", "time_travel"]).optional()
@@ -588,7 +599,7 @@ export async function chainAmendmentTrack(
 // ========================================
 
 export const chainOrdinanceCompareSchema = z.object({
-  query: z.string().describe("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
+  query: chainQuery("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
   parentLaw: z.string().optional().describe("상위 법령명 (예: '지방자치법'). 미지정 시 자동 검색."),
   scenario: z.enum(["compliance"]).optional()
     .describe("확장 시나리오. compliance=조례 상위법 적합성 검증 (헌재·행심 위법 판결 + 상위법 근거 분석). 미지정 시 쿼리에서 자동 감지."),
@@ -658,7 +669,7 @@ export async function chainOrdinanceCompare(
 // ========================================
 
 export const chainFullResearchSchema = z.object({
-  query: z.string().describe("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
+  query: chainQuery("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
   scenario: z.enum(["customs", "action_plan"]).optional()
     .describe("확장 시나리오. customs=관세·통관 종합 | action_plan=이럴 땐 이렇게, 5단계 안내(v4.0, 진단→권리→기관/기한→서류→함정). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -741,7 +752,7 @@ export async function chainFullResearch(
 // ========================================
 
 export const chainProcedureDetailSchema = z.object({
-  query: z.string().describe("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
+  query: chainQuery("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
   scenario: z.enum(["manual"]).optional()
     .describe("확장 시나리오. manual=공무원 처리 매뉴얼 (행정규칙 + 자치법규 특칙 + 해석례 추가). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),

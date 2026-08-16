@@ -9,7 +9,7 @@
 
 import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
 import { parseDateRange, stripDateExpressions, type DateRange } from "./date-parser.js"
-import { sortedRoutePatterns, type Pattern } from "./route-patterns.js"
+import { sortedRoutePatterns, yieldsToOther, type Pattern } from "./route-patterns.js"
 import { detectScenarioName } from "./scenario-rules.js"
 import { wantsFullText } from "./query-extract.js"
 
@@ -28,6 +28,10 @@ export interface RouteResult {
   autoChain?: boolean
   /** 자연어에서 추출된 날짜 범위 (검색 도구에 자동 적용) */
   dateRange?: DateRange
+  /** 의도는 읽었으나 목적지 도구가 받지 않는 파라미터 — 무음 폐기 대신 표면화(#120) */
+  unsupportedParams?: string[]
+  /** 해석이 갈리는 질의에 대한 확인 요청 문구 (#122) */
+  clarify?: string
 }
 
 /**
@@ -66,6 +70,11 @@ export function routeQuery(query: string): RouteResult {
     if (scenario) result.params.scenario = scenario
   }
 
+  // 빈 검색어는 업스트림에 보내지 않는다 — 트리거 어휘가 곧 질의 전부인 경우의 마지막 방어(#119)
+  if (typeof result.params.query === "string" && !result.params.query.trim()) {
+    result.params.query = q
+  }
+
   return result
 }
 
@@ -75,6 +84,9 @@ function _matchRoute(q: string): RouteResult {
     for (const regex of pattern.patterns) {
       const match = q.match(regex)
       if (!match) continue
+
+      // 후행 의도가 있으면 양보 — 가드 어휘는 수신 패턴에서 파생된다(#123)
+      if (yieldsToOther(pattern, q)) break
 
       const params = pattern.extract(q, match)
 
@@ -104,25 +116,39 @@ function _matchRoute(q: string): RouteResult {
         }
       }
 
+      // _clarify 플래그: 해석이 갈리는 질의 — 진행하되 확인 문구를 함께 돌려준다(#122)
+      const clarify = typeof params._clarify === "string" ? params._clarify : undefined
+      delete params._clarify
+
       // _needsMst 플래그: 법령 검색이 먼저 필요한 경우 파이프라인 구성
       if (params._needsMst) return _mstPipeline(q, pattern, params)
 
       // 검색 도구에 상세조회 체인이 설정되어 있으면 자동 파이프라인 추가
       const chain = SEARCH_DETAIL_CHAINS[pattern.tool]
       if (chain) {
-        // "판결 전문 보여줘" 처럼 축약 해제를 요구하면 상세조회에 전달(#103)
-        const detailParams = wantsFullText(q) ? { full: true } : {}
+        // "판결 전문 보여줘" 처럼 축약 해제를 요구하면 상세조회에 전달(#103).
+        // 받지 못하는 도구면 Zod 가 조용히 버리므로 미적용 사실을 남긴다(#120)
+        const wantsFull = wantsFullText(q)
+        const supported = wantsFull && chain.supportsFull === true
         return {
           tool: pattern.tool,
           matchedPattern: pattern.name,
           params,
           reason: pattern.reason,
-          pipeline: [{ tool: chain.detailTool, params: detailParams }],
+          pipeline: [{ tool: chain.detailTool, params: supported ? { full: true } : {} }],
           autoChain: true,
+          ...(wantsFull && !supported ? { unsupportedParams: ["full"] } : {}),
+          ...(clarify ? { clarify } : {}),
         }
       }
 
-      return { tool: pattern.tool, matchedPattern: pattern.name, params, reason: pattern.reason }
+      return {
+        tool: pattern.tool,
+        matchedPattern: pattern.name,
+        params,
+        reason: pattern.reason,
+        ...(clarify ? { clarify } : {}),
+      }
     }
   }
 

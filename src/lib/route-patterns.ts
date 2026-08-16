@@ -14,8 +14,8 @@ import {
   extractAnnexNo,
   extractLawName,
   extractTimeTravel,
-  hasFollowOnIntent,
   hasProcedureIntent,
+  searchQueryFromMatch,
   isRegionToken,
 } from "./query-extract.js"
 import { ROUTABLE_SCENARIO_RULES } from "./scenario-rules.js"
@@ -33,6 +33,12 @@ export interface Pattern {
   reason: string
   /** 우선순위 (낮을수록 우선) */
   priority: number
+  /**
+   * 이 패턴이 양보해야 하는 수신 패턴 이름들 (#123).
+   * 가드 어휘를 여기 베껴 적지 않는다 — 지목한 패턴의 정규식을 그대로 평가한다.
+   * 수신 패턴에 어휘가 늘면 가드도 같이 늘어난다.
+   */
+  yieldsTo?: string[]
 }
 
 const routePatterns: Pattern[] = [
@@ -52,21 +58,14 @@ const routePatterns: Pattern[] = [
       /제\d+조(?:의\d+)?\s*(.+)/,
     ],
     tool: "get_law_text",
+    // 조문번호 뒤에 다른 의도(검증·비교·판례·이력·시점)가 붙어 있으면 양보한다 —
+    // 우선순위 1이 삼키면 그 의도는 라우팅에서 통째로 사라진다(#99).
+    // 가드 어휘를 따로 적지 않고 수신 패턴의 정규식을 그대로 평가한다(#123)
+    yieldsTo: [
+      "impact_map", "applicable_law", "verify_citations",
+      "law_system", "law_comparison", "amendment", "precedent",
+    ],
     extract: (query) => {
-      // impact_map 키워드가 있으면 양보 (영향그래프/인용한 판례 등)
-      if (/(?:파급|영향\s*그래프|impact|인용한\s*(?:모든|판례|판결|어디))/i.test(query)) {
-        return { _skip: true }
-      }
-      // applicable_law 양보: 기준일 + 시점 키워드 (예: "2023.5.10 당시 도로교통법 제44조")
-      if (/행위시법/.test(query) ||
-          (/\d{4}\s*[년.\-/]\s*\d{1,2}/.test(query) && /당시|시점|기준|에\s*적용/.test(query))) {
-        return { _skip: true }
-      }
-      // 조문번호 뒤에 다른 의도(검증·비교·판례·이력)가 붙어 있으면 양보 —
-      // 우선순위 1이 이를 삼키면 그 의도는 라우팅에서 통째로 사라진다(#99)
-      if (hasFollowOnIntent(query)) {
-        return { _skip: true }
-      }
       const joList = extractArticleNumbers(query)
       const lawName = extractLawName(query)
       return { _searchQuery: lawName, jo: joList[0], _joList: joList, _needsMst: true }
@@ -115,7 +114,8 @@ const routePatterns: Pattern[] = [
   {
     name: "amendment",
     patterns: [
-      /개정|신구대조|변경\s*이력|연혁/,
+      // "언제 바뀌었어?", "뭐가 달라졌어" 도 개정 이력 질의다(#122)
+      /개정|신구대조|변경\s*이력|연혁|바뀌었|바뀐|달라졌|달라진/,
     ],
     tool: "chain_amendment_track",
     extract: (query) => {
@@ -169,12 +169,9 @@ const routePatterns: Pattern[] = [
       /판례|판결|대법원\s*판/,
     ],
     tool: "search_precedents",
-    extract: (query) => ({
-      // `전문`은 단독으로 지우면 안 된다 — 전문가·전문의·전문성이 "가"·"의"·"성"으로 잘린다
-      query: query
-        .replace(/판례|판결|대법원|보여줘/g, "")
-        .replace(/(?:^|\s)전문(?=\s|$)/g, " ")
-        .replace(/\s+/g, " ").trim(),
+    // `전문`은 단독으로 지우면 안 된다 — 전문가·전문의·전문성이 "가"·"의"·"성"으로 잘린다
+    extract: (query, match) => ({
+      query: searchQueryFromMatch(query, match, /대법원|보여줘|(?:^|\s)전문(?=\s|$)/g),
     }),
     reason: "판례 키워드 → 판례 검색",
     priority: 10,
@@ -187,9 +184,7 @@ const routePatterns: Pattern[] = [
       /해석례?|유권\s*해석|질의\s*회신/,
     ],
     tool: "search_interpretations",
-    extract: (query) => ({
-      query: query.replace(/해석례?|유권해석|질의회신/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match) }),
     reason: "해석례 키워드 → 해석례 검색",
     priority: 10,
   },
@@ -201,9 +196,7 @@ const routePatterns: Pattern[] = [
       /헌재|헌법재판|위헌/,
     ],
     tool: "search_constitutional_decisions",
-    extract: (query) => ({
-      query: query.replace(/헌재|헌법재판소?|결정례?/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /결정례?/g) }),
     reason: "헌재 키워드 → 헌재 결정례 검색",
     priority: 10,
   },
@@ -215,9 +208,7 @@ const routePatterns: Pattern[] = [
       /행정심판|행심/,
     ],
     tool: "search_admin_appeals",
-    extract: (query) => ({
-      query: query.replace(/행정심판례?|행심/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /례/g) }),
     reason: "행정심판 키워드 → 행정심판례 검색",
     priority: 10,
   },
@@ -229,9 +220,7 @@ const routePatterns: Pattern[] = [
       /조세\s*심판|세금\s*심판/,
     ],
     tool: "search_tax_tribunal_decisions",
-    extract: (query) => ({
-      query: query.replace(/조세심판원?|세금심판|결정례?/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /원?\s*결정례?/g) }),
     reason: "조세심판 키워드 → 조세심판 결정례 검색",
     priority: 10,
   },
@@ -243,9 +232,7 @@ const routePatterns: Pattern[] = [
       /영문|영어|English/i,
     ],
     tool: "search_english_law",
-    extract: (query) => ({
-      query: query.replace(/영문|영어|English|법령/gi, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /법령/g) }),
     reason: "영문 키워드 → 영문법령 검색",
     priority: 10,
   },
@@ -257,9 +244,7 @@ const routePatterns: Pattern[] = [
       /법률?\s*용어|법령\s*용어|용어\s*정의|용어\s*뜻|뭐야$|뜻이?$/,
     ],
     tool: "search_legal_terms",
-    extract: (query) => ({
-      query: query.replace(/법률?용어|법령용어|용어정의|뜻이?|뭐야|의$/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match) }),
     reason: "용어 키워드 → 법령용어 검색",
     priority: 10,
   },
@@ -342,9 +327,7 @@ const routePatterns: Pattern[] = [
       /관세\s*해석|관세청\s*(해석|질의|회신)|FTA\s*해석/,
     ],
     tool: "search_customs_interpretations",
-    extract: (query) => ({
-      query: query.replace(/관세청?|해석례?|질의|회신/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match) }),
     reason: "관세 해석 키워드 → 관세 해석례 검색",
     priority: 9,
   },
@@ -381,9 +364,7 @@ const routePatterns: Pattern[] = [
       /공정위|공정거래\s*위원회?|시장지배|불공정\s*거래|담합/,
     ],
     tool: "search_ftc_decisions",
-    extract: (query) => ({
-      query: query.replace(/공정거래위원회?|공정위|결정문?/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /결정문?/g) }),
     reason: "공정위 키워드 → 공정위 결정문 검색",
     priority: 10,
   },
@@ -395,9 +376,7 @@ const routePatterns: Pattern[] = [
       /개인정보\s*위|개인정보\s*보호\s*위원회?|개인정보\s*침해/,
     ],
     tool: "search_pipc_decisions",
-    extract: (query) => ({
-      query: query.replace(/개인정보보호위원회?|개인정보위|결정문?/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /결정문?/g) }),
     reason: "개인정보위 키워드 → 개인정보위 결정문 검색",
     priority: 10,
   },
@@ -409,9 +388,7 @@ const routePatterns: Pattern[] = [
       /노동\s*위원회?|부당\s*해고|부당\s*노동|노동위/,
     ],
     tool: "search_nlrc_decisions",
-    extract: (query) => ({
-      query: query.replace(/중앙노동위원회?|노동위|결정문?/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match, /결정문?/g) }),
     reason: "노동위 키워드 → 노동위 결정문 검색",
     priority: 10,
   },
@@ -435,9 +412,7 @@ const routePatterns: Pattern[] = [
       /생활\s*법령|AI\s*검색/,
     ],
     tool: "search_ai_law",
-    extract: (query) => ({
-      query: query.replace(/생활법령|AI검색/g, "").replace(/\s+/g, " ").trim() || query,
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match) }),
     reason: "AI/생활법령 키워드 → AI 의미검색",
     priority: 2,
   },
@@ -449,9 +424,7 @@ const routePatterns: Pattern[] = [
       /법률?\s*용어로|일상\s*용어|쉬운\s*말|법적\s*표현/,
     ],
     tool: "get_daily_to_legal",
-    extract: (query) => ({
-      query: query.replace(/법률?용어로?|일상용어|쉬운말|법적표현/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match) }),
     reason: "일상→법률 용어 변환 키워드 → 용어 매핑",
     priority: 9,
   },
@@ -496,9 +469,7 @@ const routePatterns: Pattern[] = [
       /통합\s*검색/,
     ],
     tool: "search_all",
-    extract: (query) => ({
-      query: query.replace(/통합검색/g, "").replace(/\s+/g, " ").trim(),
-    }),
+    extract: (query, match) => ({ query: searchQueryFromMatch(query, match) }),
     reason: "통합검색 키워드 → 통합검색",
     priority: 10,
   },
@@ -519,9 +490,10 @@ const routePatterns: Pattern[] = [
   // "민법 103조 영향", "민법 제103조 파급효과", "이 조문 인용한 판례 전부"
   {
     name: "impact_map",
+    // 접두 `(.+?)` 제거 — extract 가 법령명을 ^ 앵커 정규식으로 따로 뽑으므로 캡처가 필요 없다(#121)
     patterns: [
-      /(.+?)\s*제?(\d+)조(?:의(\d+))?\s*(?:파급|영향\s*그래프|impact|인용한\s*(?:모든|판례|판결))/i,
-      /(.+?)\s*제?(\d+)조(?:의(\d+))?\s*인용\s*(?:판례|모두|전부|어디)/,
+      /제?\s*\d+\s*조(?:\s*의\s*\d+)?\s*(?:파급|영향\s*그래프|impact|인용한\s*(?:모든|판례|판결))/i,
+      /제?\s*\d+\s*조(?:\s*의\s*\d+)?\s*인용\s*(?:판례|모두|전부|어디)/,
       /조문\s*(?:파급|임팩트|영향\s*그래프)/,
     ],
     tool: "impact_map",
@@ -541,7 +513,9 @@ const routePatterns: Pattern[] = [
   {
     name: "cite_check",
     patterns: [
-      /\d{2,4}\s*[가-힣]{1,5}\s*\d{1,7}.*?(?:유효|살아|변경|폐기|뒤집|생사|추적|아직|citator)/i,
+      /\d{2,4}\s*[가-힣]{1,5}\s*\d{1,7}[\s\S]{0,40}?(?:유효|살아|변경|폐기|뒤집|생사|추적|아직|citator)/i,
+      // "이 판례 아직 유효해? 2013다61381" — 키워드가 앞에 오는 어순도 같은 질의다(#122)
+      /(?:유효|살아|변경|폐기|뒤집|생사|추적|아직|citator)[\s\S]{0,40}?\d{2,4}\s*(?!년|월|일)[가-힣]{1,5}\s*\d{1,7}/i,
       /판례\s*(?:생사|유효성|변경\s*여부|폐기\s*여부|인용\s*추적)/,
       /(?:변경|폐기)된?\s*판례(?:인지|냐|인가요?|\s*확인)/,
     ],
@@ -560,7 +534,7 @@ const routePatterns: Pattern[] = [
   {
     name: "applicable_law",
     patterns: [
-      /(\d{4})\s*[년\.\-\/]\s*(\d{1,2})\s*[월\.\-\/]?\s*(\d{1,2})?\s*일?\s*(?:당시|시점|기준|에\s*적용)/,
+      /(\d{4})\s*[년\.\-\/]\s*(\d{1,2})\s*[월\.\-\/]?\s*(\d{1,2})?\s*일?\s*(?:당시|시점|기준|무렵|에\s*적용)/,
       /(?:행위\s*시|사건\s*당시|계약\s*당시|위반\s*당시)\s*(?:의\s*)?(?:법|적용)/,
       /행위시법|적용\s*법령\s*판단|당시\s*시행/,
     ],
@@ -607,14 +581,41 @@ const routePatterns: Pattern[] = [
   // ── 29-2. 법령 비교 ──
   {
     name: "law_comparison",
+    // extract 가 캡처를 쓰지 않으므로 `(.+?)` 접두를 두지 않는다 — $ 없이도 시작 위치마다
+    // 지연 확장이 반복돼 입력 길이의 제곱으로 커진다(#121). ^ 앵커 + lookahead 로 1회 주사.
     patterns: [
-      /(.+?)\s*(?:와|과|vs\.?)\s*(.+?)\s*(?:차이|비교|다른\s*점)/,
-      /(.+?)\s*(?:vs|VS)\s*(.+)/,
+      /^(?=[^]*[가-힣A-Za-z](?:와|과)\s)(?=[^]*(?:차이|비교|다른\s*점))/,
+      /\bvs\.?\b/i,
     ],
     tool: "chain_law_system",
     extract: (query) => ({ query }),
     reason: "법령 비교 키워드 → 법체계 체인 (두 법령 모두 구조 확인)",
     priority: 8,
+  },
+
+  // ── 29-2-1. 시점 1개만 주어진 질의 (single_time_point, #122) ──
+  // "민법 2024" — 그 시점 본문을 원하는지(applicable_law) 그 이후 개정 이력을 원하는지
+  // 문장만으로는 갈린다. 더 보수적인 개정추적으로 보내되 확인 문구를 함께 돌려준다.
+  {
+    name: "single_time_point",
+    patterns: [
+      /^\s*[가-힣]+(?:법|령|규칙|규정|조례|법률)\s+(20\d{2})\s*년?\s*$/,
+    ],
+    tool: "chain_amendment_track",
+    extract: (query, match) => {
+      const year = match?.[1]
+      const lawName = extractLawName(query.replace(/20\d{2}\s*년?/, " "))
+      return {
+        query: lawName || query,
+        ...(year ? { fromDate: `${year}0101` } : {}),
+        _clarify: year
+          ? `"${lawName} ${year}" 을 ${year}년 이후 개정 이력으로 해석했습니다. ` +
+            `${year}년 당시 시행되던 본문이 필요하면 날짜를 함께 적어 주세요 (예: "${year}.1.1 당시 ${lawName}").`
+          : undefined,
+      }
+    },
+    reason: "법령명 + 시점 1개 → 개정추적 (해석 확인 요청 동반)",
+    priority: 11,
   },
 
   // ── 29-3. 시간 필터 (최근 N년 개정) ──
@@ -721,3 +722,29 @@ const scenarioPatterns: Pattern[] = ROUTABLE_SCENARIO_RULES.map((rule) => ({
  */
 export const sortedRoutePatterns: Pattern[] =
   [...scenarioPatterns, ...routePatterns].sort((a, b) => a.priority - b.priority)
+
+// ────────────────────────────────────────
+// yieldsTo 해석 (#123)
+// ────────────────────────────────────────
+
+/** yieldsTo 대상은 이름 붙은 라우팅 패턴만 — 시나리오 파생 패턴은 이름이 겹칠 수 있다 */
+const patternsByName = new Map<string, Pattern>(routePatterns.map(p => [p.name, p]))
+
+// 오타 난 이름은 가드를 통째로 무력화한다(선점이 조용히 부활). 로드 시점에 터뜨린다.
+for (const p of routePatterns) {
+  for (const target of p.yieldsTo ?? []) {
+    if (!patternsByName.has(target)) {
+      throw new Error(`route-patterns: "${p.name}".yieldsTo 가 없는 패턴 "${target}" 을 가리킨다`)
+    }
+  }
+}
+
+/**
+ * 지목한 수신 패턴이 이 쿼리를 잡는가.
+ * 수신 패턴의 정규식을 그대로 평가하므로 가드가 따로 낡지 않는다 — 어휘 원본은 수신 패턴 하나다.
+ */
+export function yieldsToOther(pattern: Pattern, query: string): boolean {
+  return (pattern.yieldsTo ?? []).some(name =>
+    patternsByName.get(name)!.patterns.some(re => re.test(query))
+  )
+}

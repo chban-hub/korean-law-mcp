@@ -165,9 +165,13 @@ const DECLARED_RULES: ScenarioRule[] = [
   {
     scenario: "compliance",
     hostChain: "chain_ordinance_compare",
-    precedence: 16,
+    // chain_ordinance_compare 의 유일한 규칙이라 host 안 경쟁이 없다.
+    // 값은 라우터 우선순위로만 쓰이며 ordinance(5)보다 앞서야 한다 —
+    // "서울시 조례가 상위법에 저촉되나"가 단순 조례 검색에 먹히던 문제(#122)
+    precedence: 4,
     patterns: [/적합성|상위법\s*위반|위법|초과|저촉|법제\s*심사/],
-    routeTriggers: null,
+    // 판정 어휘(위법·초과 등)는 너무 넓어 그대로 쓰면 모든 질의를 조례비교로 끌어간다
+    routeTriggers: [/(?:조례|자치법규)[^]{0,20}?(?:상위법|저촉|적합성|법제\s*심사)/],
   },
 ]
 

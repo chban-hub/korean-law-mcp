@@ -53,28 +53,24 @@ export function wantsFullText(query: string): boolean {
     /전체\s*본문|풀\s*텍스트|축약\s*(?:없이|해제)/.test(query)
 }
 
-// ────────────────────────────────────────
-// 후행 의도 어휘 — specific_article 양보 판단용 (#99)
-// ────────────────────────────────────────
-
-/** 인용 검증 의도 ("검증", "맞는지 봐줘") */
-export const INTENT_VERIFY = /검증|맞는지|맞나요?|사실인지|실존|인용\s*(?:확인|체크)/
-
-/** 비교 의도 — 단독 "비교"는 너무 넓어 3단비교·신구대조·vs·차이만 잡는다 */
-export const INTENT_COMPARE = /3단\s*비교|신구\s*?대조|\bvs\.?\b|차이|다른\s*점/i
-
-/** 판례 의도 */
-export const INTENT_PRECEDENT = /판례|판결|인용한/
-
-/** 개정 이력 의도 */
-export const INTENT_HISTORY = /개정|연혁|이력/
-
-/** 조문번호 뒤에 붙은 "다른 의도"가 있는가 — 있으면 조문 단독 조회로 축소하지 않는다 */
-export function hasFollowOnIntent(query: string): boolean {
-  return INTENT_VERIFY.test(query) ||
-    INTENT_COMPARE.test(query) ||
-    INTENT_PRECEDENT.test(query) ||
-    INTENT_HISTORY.test(query)
+/**
+ * 검색 도구에 넘길 검색어 — 매칭에 쓴 정규식이 잡아낸 트리거(match[0])만 걷어낸다.
+ *
+ * 트리거 제거용 정규식을 따로 쓰면 매칭 정규식과 어긋난다(#119):
+ * `유권\s*해석` 로 매칭해 놓고 `유권해석`(공백 없음)으로 지우면 "유권"이 남고,
+ * `용어\s*뜻` 로 매칭해 놓고 `뜻이?|의$` 로 지우면 "선의"가 "선"으로 잘린다.
+ *
+ * 트리거가 곧 질의 전부여서 남는 게 없으면 원문을 돌려준다 — 빈 검색어는 업스트림에 보내지 않는다.
+ */
+export function searchQueryFromMatch(
+  query: string,
+  match: RegExpMatchArray | null,
+  extraStrip?: RegExp
+): string {
+  let out = match?.[0] ? query.replace(match[0], " ") : query
+  if (extraStrip) out = out.replace(extraStrip, " ")
+  out = out.replace(/\s+/g, " ").trim()
+  return out || query.trim()
 }
 
 /**

@@ -77,6 +77,19 @@ export async function executeNaturalQuery(
     printRouteInfo(route.tool, route.reason)
   }
 
+  // 해석이 갈리는 질의는 먼저 확인을 요청한다 (#122)
+  if (route.clarify) {
+    console.log(fmt.yellow(`❓ ${route.clarify}`))
+  }
+
+  // 목적지가 받지 않는 파라미터는 조용히 버려진다 — 미적용 사실을 알린다 (#120)
+  if (route.unsupportedParams?.length) {
+    const target = route.pipeline?.[0]?.tool ?? route.tool
+    console.log(fmt.yellow(
+      `⚠️  ${target}는 ${route.unsupportedParams.join(", ")} 옵션을 지원하지 않습니다 — 축약된 결과가 표시됩니다.`
+    ))
+  }
+
   // 날짜 범위가 있으면 검색 파라미터에 주입
   if (route.dateRange) {
     route.params.fromDate = route.dateRange.from
