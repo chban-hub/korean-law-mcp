@@ -1,3 +1,4 @@
+import { COURT_CASE_PATTERN } from "../lib/case-citation.js"
 import type { AiLawArticleSignal } from "./life-law.js"
 
 export type CompactQuerySource =
@@ -63,8 +64,9 @@ const LOW_INFORMATION_ARTICLE_TITLES = new Set([
 ])
 
 const MIN_AI_ARTICLE_SCORE = 90
-const CASE_CODE_PATTERN = "(?:고합|고단|고정|고약|구합|구단|구|누|두|헌가|헌나|헌다|헌라|헌마|헌바|헌사|카합|카단|카기|회합|회단|[가나다라마바사아자차카타파하]|고|노|도|모|보|로|초)"
-const COURT_CASE_RE = new RegExp(`(?:19|20)\\d{2}\\s*${CASE_CODE_PATTERN}\\s*\\d{1,8}`, "u")
+// 사건부호 지식은 lib/case-citation이 단일 원본이다 (#125) — 여기서 따로 세면
+// 가사(므)·특허(후·허)·재심(재)처럼 빠뜨린 부호가 조용히 미인식으로 남는다.
+const COURT_CASE_RE = new RegExp(COURT_CASE_PATTERN, "u")
 const LEGAL_CORE_KEYWORDS = new Set([
   "근로", "종속", "지휘", "감독", "출퇴근", "전속", "도급", "위장", "프리랜서",
   "임금", "퇴직금", "해고", "부당", "계약", "고용", "근로자", "사용자",

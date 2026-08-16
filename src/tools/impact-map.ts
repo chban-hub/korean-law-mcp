@@ -11,7 +11,7 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { findLaws, resolvedLawMatches } from "../lib/law-search.js"
 import { parseArticleAnchor } from "../lib/article-anchor.js"
-import { parseBucket, bucketLine, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
+import { parseBucket, bucketLine, lawMatchNote, extractCitedLaws, buildMermaid, type BucketStat } from "../lib/impact-buckets.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { renderPrecedentSearchResult } from "./precedents.js"
@@ -77,14 +77,14 @@ export async function impactMap(
   try {
     // 0. 조문 번호 정규화 — get_law_text와 같은 계약(자연어 표기·JO 코드 모두 수용).
     // 해석 못 한 입력을 그대로 검색어에 끼워 넣으면 전 항목 0건이 조용히 사실로 보고된다(#98).
-    const anchor = parseArticleAnchor(input.jo)
-    if (!anchor) {
+    const parsedJo = parseArticleAnchor(input.jo)
+    if (!parsedJo) {
       return errorResponse(
         `[INVALID_ARGUMENT] 조문 번호 '${input.jo}'을(를) 해석할 수 없습니다.\n` +
         `지원 형식: '제103조', '제10조의2', 또는 6자리 JO 코드 '010300'.`
       )
     }
-    const joDisplay = anchor.display
+    const joDisplay = parsedJo.display
 
     // 1. 법령 식별
     const laws = await findLaws(apiClient, input.lawName, input.apiKey, 1)
@@ -103,6 +103,8 @@ export async function impactMap(
       )
     }
 
+    // 법령 축은 정식 법령명이 정해진 뒤에야 걸 수 있다 — 사용자 입력이 아니라 확정된 이름으로 대조한다.
+    const anchor = { ...parsedJo, lawName: law.lawName }
     const searchQuery = `${law.lawName} ${joDisplay}`
 
     // 2. 병렬 탐색. display는 5개 경로 모두 10 — 표본이 검색 건수를 덮어야 경계 통과분을
@@ -144,7 +146,8 @@ export async function impactMap(
       { label: "📑 법령해석례", stat: interp },
       { label: "📋 행정심판례", stat: appeal },
     ]
-    if (input.includeOrdinances) rows.push({ label: "🏛️ 자치법규", stat: ordinance, last: true })
+    // 자치법규 검색은 자치법규명만 훑어 조번호를 반영하지 못한다(#117)
+    if (input.includeOrdinances) rows.push({ label: "🏛️ 자치법규(법령 단위·조번호 미반영)", stat: ordinance, last: true })
 
     parts.push(`▶ 영향 그래프 (이 조문이 인용된 곳)`)
     for (const { label, stat, last } of rows) {
@@ -156,8 +159,7 @@ export async function impactMap(
     if (excludedTotal > 0) {
       parts.push(`⚠️ 법제처 키워드 검색은 조번호를 부분 일치로 물어옵니다(${joDisplay} 질의에 유사 조번호 혼입). 다른 조문 항목 ${excludedTotal}건을 제외했습니다.`)
     }
-    // 경계 판정은 조번호만 본다 — "형법 제1조" 질의에 「군형법 제1조…」가 남을 수 있다.
-    parts.push(`ℹ️ 경계 확인은 조번호만 대조합니다(법령명 대조 아님). 항목의 법령명이 ${law.lawName}인지 확인하세요.`)
+    parts.push(lawMatchNote(rows.map(r => r.stat)))
 
     if (citedLaws.length > 0) {
       parts.push(`\n▶ 이 조문이 인용한 다른 법령 (정방향)`)
@@ -173,12 +175,8 @@ export async function impactMap(
     // 6. mermaid 그래프
     if (input.includeMermaid) {
       const mermaid = buildMermaid(`${law.lawName} ${joDisplay}`, {
-        precedents: prec.verified,
-        interpretations: interp.verified,
-        appeals: appeal.verified,
-        constitutional: cons.verified,
-        ordinances: ordinance.verified,
-        citedLaws,
+        precedents: prec.verified, interpretations: interp.verified, appeals: appeal.verified,
+        constitutional: cons.verified, ordinances: ordinance.verified, citedLaws,
       })
       parts.push(`▶ Mermaid 그래프 (시각화)\n\`\`\`mermaid\n${mermaid}\n\`\`\`\n`)
     }

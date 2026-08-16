@@ -36,6 +36,12 @@ const DETC_XML = `<?xml version="1.0" encoding="UTF-8"?><DetcSearch><totalCnt>2<
   `<사건번호>2024헌바107</사건번호><종국일자>20250130</종국일자></Detc>` +
   `<Detc><헌재결정례일련번호>53221</헌재결정례일련번호><사건명><![CDATA[민법 제103조 위헌소원]]></사건명>` +
   `<사건번호>2007헌바12</사건번호><종국일자>20080828</종국일자></Detc>` +
+  // #116: 조번호는 같지만 법령이 다르다 — 제외돼야 한다
+  `<Detc><헌재결정례일련번호>900001</헌재결정례일련번호><사건명><![CDATA[상법 제103조 위헌소원]]></사건명>` +
+  `<사건번호>2010헌바99</사건번호><종국일자>20110101</종국일자></Detc>` +
+  // #116: 법령명을 읽을 수 없다 — 보류로 유지돼야 한다
+  `<Detc><헌재결정례일련번호>900002</헌재결정례일련번호><사건명><![CDATA[제103조 위헌소원]]></사건명>` +
+  `<사건번호>2012헌바7</사건번호><종국일자>20130101</종국일자></Detc>` +
   `</DetcSearch>`
 
 const PREC_XML = `<?xml version="1.0" encoding="UTF-8"?><PrecSearch><totalCnt>1</totalCnt><page>1</page>` +
@@ -113,6 +119,31 @@ describe("impactMap — 조번호 경계 앵커 (#90)", () => {
       lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
     })
     expect(r.content[0].text).toMatch(/조문 불일치|경계 불일치/)
+  })
+})
+
+describe("impactMap — 법령명 축 (#116)", () => {
+  beforeEach(() => lawCache.clear())
+
+  it("조번호가 같아도 법령이 다르면 제외한다", async () => {
+    const r = await impactMap(civilLawClient(), {
+      lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
+    })
+    expect(r.content[0].text).not.toContain("[900001]")  // 상법 제103조
+  })
+
+  it("법령명을 읽을 수 없는 항목은 제외가 아니라 보류로 유지한다", async () => {
+    const r = await impactMap(civilLawClient(), {
+      lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
+    })
+    expect(r.content[0].text).toContain("[900002]")
+  })
+
+  it("법령명 대조 결과를 확정/보류로 밝힌다", async () => {
+    const r = await impactMap(civilLawClient(), {
+      lawName: "민법", jo: "제103조", includeOrdinances: true, includeMermaid: false,
+    })
+    expect(r.content[0].text).toMatch(/법령명 대조:\s*확정 \d+건\s*\/\s*보류 \d+건/)
   })
 })
 
