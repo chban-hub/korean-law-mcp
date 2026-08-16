@@ -206,7 +206,7 @@ export async function getLawText(
       }
       tocText += `\n여러 조문 일괄 조회: get_batch_articles 도구 사용`
 
-      // 절단본을 캐시 — 캐시 히트 경로는 절단 없이 반환하므로 미절단 캐시 시 50KB 제한 우회됨
+      // 절단본을 캐시 — 캐시 히트 경로는 절단 없이 반환하므로 미절단 캐시 시 5만 자 제한 우회됨
       const truncatedToc = truncateResponse(tocText)
       lawCache.set(cacheKey, truncatedToc)
       return {
