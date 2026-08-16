@@ -1,5 +1,48 @@
 # Changelog
 
+## [4.11.0] - 2026-08-16
+
+요청 경계·릴리스 경계 하드닝. [#85](https://github.com/chrisryugj/korean-law-mcp/pull/85) (@humdrum00001010) 을 v4.10.0 위로 머지하고 이슈 [#80](https://github.com/chrisryugj/korean-law-mcp/issues/80)·[#81](https://github.com/chrisryugj/korean-law-mcp/issues/81)·[#82](https://github.com/chrisryugj/korean-law-mcp/issues/82)·[#83](https://github.com/chrisryugj/korean-law-mcp/issues/83)·[#84](https://github.com/chrisryugj/korean-law-mcp/issues/84) 을 닫는다.
+
+### ⚠️ Breaking
+
+- **HTTP 바인드 기본값이 `0.0.0.0` → `127.0.0.1`**. 외부에 노출하려면 `MCP_HTTP_HOST` 를 명시하고, 그와 함께 `MCP_AUTH_TOKEN` 또는 `MCP_ALLOW_UNAUTHENTICATED_REMOTE=1` 중 하나를 반드시 설정해야 한다(둘 다 없으면 **기동 시점에** 실패). 이 레포의 Dockerfile 은 `MCP_HTTP_HOST=0.0.0.0` 을 기본 주입하므로 컨테이너 사용자는 인증 값만 추가하면 된다. 통합 호스트(gomdori-mcp)는 launcher 가 `127.0.0.1:4001` 로 프록시하므로 영향 없음
+- **`TRUST_PROXY` 기본값이 `1` → `false`**, 허용값도 `1`~`10` 정수만. 직접 노출 배포에서 `X-Forwarded-For` 를 위조해 IP 버킷을 우회하던 경로를 막는다. 프록시 뒤 배포는 hop 수를 명시할 것(프로덕션은 이미 `TRUST_PROXY=1` 설정됨)
+- **`get_batch_articles` 입력 상한**: 법령 20개, 법령당 조문 50개, 요청당 조문 총 100개. 초과 시 Zod 검증 실패
+
+### Added
+
+- **요청 단위 실행 예산** (`src/lib/execution-limits.ts`): 하나의 HTTP 요청(JSON-RPC 배치 포함)이 공유하는 upstream 호출 수·응답 본문 byte 한도. 재시도와 안티봇 hop 까지 같은 예산에서 차감해, 한 번 계수된 요청이 수백 건의 업스트림 호출로 증폭되는 것을 막는다. `MCP_MAX_UPSTREAM_REQUESTS`(기본 48) / `MCP_MAX_UPSTREAM_BODY_BYTES` / `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES` / `MCP_MAX_TOOL_RESPONSE_CHARS`
+- **취소 전파**: HTTP 연결 끊김과 MCP item 취소 신호를 AsyncLocalStorage 로 도구·체인·업스트림 fetch·백오프 대기까지 전파. 종전에는 클라이언트가 끊어도 응답 전달만 멈추고 서버 작업은 끝까지 돌았다. 배치 형제 item 은 예산은 공유하되 취소 신호는 분리 (`combineAbortSignals`)
+- **상한이 걸린 응답 본문 리더** (`src/lib/response-body.ts`): `response.text()` 는 크기 훅이 없어 업스트림이 보내는 만큼 전부 메모리에 올린다. reader 로 바꿔 byte 예산과 취소가 스트리밍 도중에 작동
+- **시작 시점 설정 검증** (`src/server/http-config.ts`): 보안 관련 숫자 env 를 리스너 열기 전에 정수로 검증. 종전에는 오타 하나가 `NaN` 이 돼 해당 비교가 통째로 무력화됐다(`RATE_LIMIT_RPM=0` 이면 배치 상한까지 같이 꺼지던 것 포함 — 이제 배치 상한은 IP 한도와 독립)
+- **패키징 검증** (`scripts/clean-build.mjs`, `scripts/verify-package.mjs`): `build/` 를 매번 지우고 빌드하며, 소스가 없는 산출물·예상 밖 경로·`exports` 대상 부재를 `prepack`/`prepublishOnly` 에서 차단
+- **`scripts/verify-annex-runtime.mjs`**: optional 의존성 없이도 별표 PDF 파싱이 되는지 CI 에서 실증
+- **`CONTRIBUTING.md`**, `.github/workflows/publish.yml`(GitHub Release → OIDC trusted publishing + provenance)
+
+### Fixed
+
+- **stale 산출물 배포 (#82)**: 4.9.6 tarball 에 소스가 삭제된 `build/server/sse-server.js` 가 남아 있었다. `exports` 와일드카드로 import 하면 없어진 세션 상태 심볼을 참조해 터진다. clean build + packed 파일 검증으로 차단
+- `pdfjs-dist` 직접 의존을 `^5.5.207` → `4.10.38` 로 고정. 5.x 는 `src/` 에서 import 하지 않는데도 advisory 를 달고 설치됐고, 실제 별표 PDF 파싱은 kordoc 의 optional `pdfjs-dist@^4.10.38` 이 한다. 4.10.38 로 맞추면 dedupe 되어 `--omit=optional` 설치에서도 별표 파싱이 살아 있다(`verify:annex-runtime` 로 실증)
+- `hono` override `^4.13.1`, `ip-address` override `^10.5.0` — 전이 advisory 정리. `npm audit --omit=dev` 0건
+
+### Changed
+
+- Dockerfile: `node:20-alpine` → Node 22.12.0 Alpine (digest 고정), 빌드·prune 단계에서 `--ignore-scripts --omit=optional`. 컨테이너는 `MCP_HTTP_HOST=0.0.0.0` 을 기본 주입
+- CI: Node 20.19.0·22.12.0 매트릭스, action 을 커밋 SHA 로 고정, `npm ci --ignore-scripts`, 패키지·optional 제외 프로덕션 그래프 검증 단계 추가
+- 플러그인 `mcpServers` 실행을 `npx -y --ignore-scripts --omit=optional` 로
+
+### Notes
+
+- `engines` 는 `>=20.19.0` 유지 — 통합 호스트(gomdori-mcp)가 Node 20 런타임이라 선언만 올리면 실제와 어긋난다. Node 20 EOL 대응은 통합 호스트 런타임 이전과 함께 별도로 진행
+- `publish.yml` 은 npm 쪽 trusted publisher 등록 전까지 동작하지 않는다. 등록 전에는 로컬 `npm publish` 를 계속 쓴다
+
+## [4.10.0] - 2026-08-13
+
+### Added
+
+- **폐지 법령·행정규칙 감지**: 폐지된 규정은 현행 검색에 안 잡혀 LLM 이 '존재하지 않는 규정'으로 오판한다. `search_admin_rule` 은 현행 0건이면 `nw=2` 연혁을 재검색해 폐지일·직전 버전·폐지사유·후속 통합 규정을 안내하고, `search_law` 는 eflaw 연혁에서 법령ID별 최신 이력이 폐지·타법폐지인 건을 MST+efYd 조회 힌트와 함께 안내한다. 제명변경 케이스는 신명칭으로 연결 (`src/lib/abolished-laws.ts`)
+
 ## [4.9.7] - 2026-08-12
 
 ### Fixed

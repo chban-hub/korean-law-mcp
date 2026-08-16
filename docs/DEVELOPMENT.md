@@ -8,8 +8,8 @@
 
 ### 요구사항
 
-- **Node.js**: 18.0.0 이상
-- **npm**: 9.0.0 이상
+- **Node.js**: 20.19.0 이상 (`engines` 하한 = 통합 호스트 런타임). CI는 20.19.0·22.12.0 양쪽에서 돌고, Dockerfile 은 22.12.0 을 싣는다
+- **npm**: Node.js 20.19.0에 포함된 버전(10.8.2) 이상 — **package-lock.json 재생성도 이 버전으로** (상위 npm 으로 만들면 CI 의 `npm ci` 가 깨진다)
 - **TypeScript**: 5.7+ (프로젝트 종속성에 포함)
 
 ### 초기 설정
@@ -17,7 +17,7 @@
 ```bash
 git clone https://github.com/chrisryugj/korean-law-mcp.git
 cd korean-law-mcp
-npm install
+npm ci --ignore-scripts
 npm run build
 LAW_OC=your-api-key node build/index.js
 ```
@@ -181,9 +181,13 @@ Conventional Commits:
 
 ```bash
 npm version patch  # 버전 bump
-npm run build
-npm publish
+git push --follow-tags
+gh release create v$(node -p 'require("./package.json").version') --generate-notes
 ```
+
+GitHub Release가 `.github/workflows/publish.yml`을 실행합니다. workflow는 OIDC로 게시하고 provenance attestation을 자동 생성합니다.
+
+> ⚠️ **선행 조건 (2026-08-16 기준 미완료)**: npm 패키지 설정에서 이 저장소와 `publish.yml`을 trusted publisher로 등록해야 이 workflow 가 성공한다. 등록 전까지는 종전대로 로컬 `npm publish`(2FA)를 쓰고 GitHub Release 는 만들지 않는다 — 등록 없이 Release 를 만들면 publish job 이 인증 단계에서 실패한다.
 
 ### Fly.io
 
@@ -195,7 +199,8 @@ flyctl deploy
 
 ```bash
 docker build -t korean-law-mcp .
-docker run -e LAW_OC=your-key -p 3000:3000 korean-law-mcp
+docker run -e LAW_OC=your-key -e MCP_HTTP_HOST=0.0.0.0 \
+  -e MCP_AUTH_TOKEN=replace-with-a-secret -p 3000:3000 korean-law-mcp
 ```
 
 ---

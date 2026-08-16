@@ -1,0 +1,48 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Use an npm CLI with trusted-publishing support
+        run: npm install --global --ignore-scripts npm@11.19.0
+
+      - name: Verify release tag matches package version
+        run: node -e 'const version=require("./package.json").version; if (![version, `v${version}`].includes(process.env.GITHUB_REF_NAME)) { throw new Error(`Release tag ${process.env.GITHUB_REF_NAME} does not match package ${version}`) }'
+
+      - name: Install dependencies without transitive install scripts
+        run: npm ci --ignore-scripts
+
+      - name: Validate source and package
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+          npm run verify:package
+          npm audit --omit=dev
+
+      - name: Verify production graph without optional dependencies
+        run: |
+          npm prune --omit=dev --omit=optional --ignore-scripts
+          npm run verify:annex-runtime
+
+      - name: Publish with npm trusted publishing and provenance
+        run: npm publish --ignore-scripts --access public --provenance

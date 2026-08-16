@@ -5,9 +5,10 @@
 > 프로덕션은 이 레포가 아니라 **[gomdori-mcp](https://github.com/chrisryugj/gomdori-mcp) 통합 호스트**(fly 앱 `korean-law-mcp` 1대, MCP 5종 동거)가 서빙한다.
 > - 공식 주소: `https://mcp.gomdori.app/law` (구 `korean-law-mcp.fly.dev/mcp`는 하위호환으로 유지)
 > - **반영 절차**: 이 레포 커밋·푸시 → `npm publish` → `~/workspace/gomdori-mcp/Dockerfile`의 `korean-law-mcp@X.Y.Z` 핀 갱신 → `cd ~/workspace/gomdori-mcp && fly deploy -c fly.production.toml`
+>   - `.github/workflows/publish.yml`(GitHub Release → OIDC trusted publishing + provenance)이 준비돼 있으나 **npm 쪽 trusted publisher 등록이 아직 안 됐다**. 등록 완료 전에는 Release 를 만들지 말고 위 로컬 `npm publish` 경로를 쓴다.
 > - **🚫 이 레포에서 `fly deploy` 직접 실행 절대 금지** — 통합 이미지를 law 단독 이미지로 덮어써 stats·patent·archhub·school까지 전부 죽는다. 자세한 배경: [docs/FLY-COST.md](docs/FLY-COST.md)
 
-Korean Law MCP Server v4.10.0 - 법제처 42개 API → 10개 통합 도구 (내부 98개) + 9개 시나리오 + 자연어 CLI + HTTP stateless + 판례 토큰 74% 감축 + **legal_research (체인 8종 통합, task 파라미터)** + **legal_analysis (인용검증·판례생사·행위시법·영향그래프 통합, mode 파라미터)** + **time_travel (시점 diff)** + **action_plan (이럴 땐 이렇게, 5단계 안내)** + **시행예정 감지 (search_law가 제명변경·미시행 개정 자동 병기)** + **ordinance_radar (조례 정비 레이더 — 근거 상위법 개정 자동 대조, v4.7.0)** + **인용 검증 표기 내성 (낫표·가운뎃점·`같은 법` 조응, v4.9.0)** + **폐지 감지 (검색 0건 시 폐지 법령·행정규칙 연혁 추적 — 폐지사유·후속 통합 규정 자동 안내, v4.10.0)**
+Korean Law MCP Server v4.11.0 - 법제처 42개 API → 10개 통합 도구 (내부 98개) + 9개 시나리오 + 자연어 CLI + HTTP stateless + 판례 토큰 74% 감축 + **legal_research (체인 8종 통합, task 파라미터)** + **legal_analysis (인용검증·판례생사·행위시법·영향그래프 통합, mode 파라미터)** + **time_travel (시점 diff)** + **action_plan (이럴 땐 이렇게, 5단계 안내)** + **시행예정 감지 (search_law가 제명변경·미시행 개정 자동 병기)** + **ordinance_radar (조례 정비 레이더 — 근거 상위법 개정 자동 대조, v4.7.0)** + **인용 검증 표기 내성 (낫표·가운뎃점·`같은 법` 조응, v4.9.0)** + **폐지 감지 (검색 0건 시 폐지 법령·행정규칙 연혁 추적 — 폐지사유·후속 통합 규정 자동 안내, v4.10.0)**
 
 ## Structure
 
@@ -21,7 +22,9 @@ src/
 │   ├── api-client.ts     # API 클라이언트 (throwIfError/checkHtmlError 통일)
 │   ├── query-router.ts   # 자연어 → 도구 라우팅 엔진 (verify/비교/시간필터 패턴 포함)
 │   ├── fetch-with-retry.ts  # 타임아웃/재시도 + maskSensitiveUrl (API키 로그 유출 방지)
-│   ├── session-state.ts  # 요청별 API 키 격리 (AsyncLocalStorage, stateless)
+│   ├── session-state.ts  # 요청별 API 키·취소 신호·실행 예산 격리 (AsyncLocalStorage, stateless)
+│   ├── execution-limits.ts  # 요청 단위 실행 예산 (upstream 호출 수·본문 byte) + env 정수 검증
+│   ├── response-body.ts  # 예산·취소가 걸린 업스트림 본문 리더 (response.text() 대체)
 │   ├── rate-limit.ts     # 토큰버킷 + 롤링 일일 캡 (폴백 쿼터 게이트, now 주입 테스트)
 │   ├── xml-parser.ts     # 공통 XML 파싱
 │   ├── errors.ts         # 에러 표준화
@@ -43,13 +46,14 @@ src/
 │   ├── document-analysis.ts  # 문서유형 분류/금액추출/리스크 탐지
 │   └── types.ts          # 공통 타입
 └── server/               # HTTP 서버 (Express)
-    └── http-server.ts    # Streamable HTTP stateless + scrubError + TRUST_PROXY 환경변수
+    ├── http-config.ts    # 보안 env 시작 시점 검증 (bind host·trust proxy·각종 한도)
+    └── http-server.ts    # Streamable HTTP stateless + scrubError + 연결 끊김 취소 전파
 ```
 
 ## Commands
 
 ```bash
-npm install           # 의존성 설치
+npm ci --ignore-scripts  # 개발 도구 optional binding은 설치하되 lifecycle script는 비활성
 npm run build         # TypeScript 빌드
 npm run watch         # 개발 모드
 LAW_OC=키 node build/index.js  # MCP 서버 실행
@@ -86,10 +90,12 @@ korean-law get_law_text --mst 160001 --jo "제1조"
 ## Environment
 
 - `LAW_OC`: 법제처 API 키 (필수) - https://open.law.go.kr/LSO/openApi/guideResult.do
-- `TRUST_PROXY`: Express trust proxy (기본 `1`, 첫 프록시만 신뢰). 다단 프록시는 숫자 증가, CIDR/IP 리스트도 패스스루. `true`/`all`은 XFF 스푸핑 위험으로 명시적 opt-in 필요
+- `MCP_HTTP_HOST`: HTTP 바인드 주소 (기본 `127.0.0.1`). 외부 바인드는 인증 또는 아래 명시적 override 필요
+- `MCP_ALLOW_UNAUTHENTICATED_REMOTE`: 인증 없는 외부 바인드를 의도적으로 허용할 때만 `1`
+- `TRUST_PROXY`: Express trust proxy (기본 `false`). 프록시 뒤에서만 `1`~`10`의 정확한 hop 수를 명시하며 문자열/CIDR/`true`는 허용하지 않음
 - `CORS_ORIGIN`: CORS 허용 도메인 (기본 `*` — 프로덕션 명시 권장). **명시 설정 시 Origin 검증의 허용 목록으로도 취급**
 - `ALLOWED_ORIGINS`: Origin 허용 목록(쉼표 구분). `Origin` 헤더가 붙은 요청은 이 목록에 없으면 403 — DNS rebinding 방어. 미설정 + `CORS_ORIGIN` 미설정이면 Origin 있는 요청은 전부 차단(비브라우저 클라이언트는 영향 없음)
-- `MCP_AUTH_TOKEN`: 설정 시 `/mcp`에 `x-mcp-token` 또는 `Authorization: Bearer` 인증 요구. **폐쇄망·사내망 배포 필수** (미설정이면 기존처럼 공개 동작)
+- `MCP_AUTH_TOKEN`: 설정 시 `/mcp`에 `x-mcp-token` 또는 `Authorization: Bearer` 인증 요구. 비-loopback 배포는 이 값 또는 명시적 unauthenticated override가 필수
 - `ALLOW_QUERY_API_KEY`: `0`이면 `?oc=` 쿼리스트링 API 키를 무시 (프록시 액세스 로그 유출 차단). 기본 `1`
 - `RATE_LIMIT_RPM`: IP당 분당 요청 한도 (기본 `60`, 고정창). claude.ai 커넥터는 소수 egress IP를 공유하므로 넉넉히 잡을 것
 - `FALLBACK_RATE_LIMIT_RPM`: 자체 키 없는 요청의 서버 LAW_OC 폴백 전역 상한 (기본 `120`, `0`이면 폴백 비활성). **토큰버킷** — 소진 후 연속 리필되며 429에 `Retry-After` 동반
@@ -97,6 +103,9 @@ korean-law get_law_text --mst 160001 --jo "제1조"
 - `FALLBACK_DAILY_CAP`: 폴백의 롤링 24시간 총량 캡 (기본 `0` = 비활성). 분당을 풀되 하루 총량으로 서버 키 quota 보호
 - `MCP_BODY_LIMIT`: POST body 한도 (기본 `100kb`)
 - `MCP_MAX_BATCH_CALLS`: 단일 POST(JSON-RPC 배치)에 허용하는 tools/call 최대 개수 (기본 `20`) — 배치 증폭으로 rate limit·폴백 쿼터 우회 차단
+- `MCP_MAX_UPSTREAM_REQUESTS`: 한 outer request가 사용할 수 있는 upstream attempt 수 (기본 `48`, 재시도/안티봇 hop 포함)
+- `MCP_MAX_UPSTREAM_BODY_BYTES` / `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES`: 단일/전체 upstream 응답 본문 byte 한도
+- `MCP_MAX_TOOL_RESPONSE_CHARS`: MCP 도구 응답 문자 한도 (기본 `50000`)
 
 ## Domain Knowledge
 

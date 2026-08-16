@@ -12,7 +12,9 @@
 
 ### 2단계: npm 릴리스
 4. `npm run build`로 빌드 확인 (실패 시 중단)
-5. `npm version patch|minor` → `npm publish` → `git push --follow-tags`
+5. `npm version patch|minor` → `git push --follow-tags` → 해당 태그의 GitHub Release 생성
+   - `.github/workflows/publish.yml`이 npm trusted publishing(OIDC + provenance)으로 게시한다.
+   - 로컬 `npm publish` 또는 장기 npm 토큰을 사용하지 않는다.
 
 ### 3단계: 통합 호스트 반영
 6. `~/workspace/gomdori-mcp/Dockerfile`의 `korean-law-mcp@X.Y.Z` 핀을 새 버전으로 갱신

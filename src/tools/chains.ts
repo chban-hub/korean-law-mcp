@@ -40,6 +40,7 @@ import {
   type StructuredPrecedentSearchResult,
 } from "./precedent-search-core.js"
 import { fetchPrecedentEvidence, validatePrecedentSearchResult } from "./precedent-evidence.js"
+import { getRequestSignal, throwIfRequestCancelled } from "../lib/session-state.js"
 
 // ========================================
 // Types
@@ -86,10 +87,12 @@ async function safeSearchPrecedentsStructured(
   context: PrecedentSearchContext = {}
 ): Promise<{ result: StructuredPrecedentSearchResult; error?: CallResult }> {
   try {
+    throwIfRequestCancelled()
     return {
       result: await searchPrecedentsStructured(apiClient, args, context),
     }
   } catch (error) {
+    if (getRequestSignal()?.aborted) throw error
     return {
       result: emptyStructuredPrecedentResult(args),
       error: errorCallResult(error, "search_precedents"),
@@ -104,9 +107,12 @@ async function callTool(
   input: Record<string, unknown>
 ): Promise<CallResult> {
   try {
+    throwIfRequestCancelled()
     const result = await handler(apiClient, input)
+    throwIfRequestCancelled()
     return { text: result.content?.[0]?.text || "", isError: !!result.isError }
   } catch (e) {
+    if (getRequestSignal()?.aborted) throw e
     return { text: `오류: ${e instanceof Error ? e.message : String(e)}`, isError: true }
   }
 }
@@ -116,13 +122,16 @@ async function callAiLaw(
   input: SearchAiLawInput
 ): Promise<CallResult> {
   try {
+    throwIfRequestCancelled()
     const result = await searchAiLawStructured(apiClient, input)
+    throwIfRequestCancelled()
     return {
       text: result.response.content?.[0]?.text || "",
       isError: !!result.response.isError,
       aiLawArticles: result.articleSignals,
     }
   } catch (e) {
+    if (getRequestSignal()?.aborted) throw e
     return { text: `오류: ${e instanceof Error ? e.message : String(e)}`, isError: true }
   }
 }
@@ -812,6 +821,7 @@ export async function chainDocumentReview(
   input: z.infer<typeof chainDocumentReviewSchema>
 ): Promise<ToolResponse> {
   try {
+    throwIfRequestCancelled()
     const parts = [`═══ 문서 종합 검토 ═══`]
 
     // Step 1: analyze_document 로 리스크 분석
@@ -849,6 +859,7 @@ export async function chainDocumentReview(
         validateResult: validation => validatePrecedentSearchResult(apiClient, validation, { apiKey: input.apiKey }),
       }))
     )
+    throwIfRequestCancelled()
     const precedentResults = precedentSearches.map(search => search.result)
 
     // AI 법령 검색은 상위 3개 힌트로 병렬 실행
@@ -856,6 +867,7 @@ export async function chainDocumentReview(
     const lawResults = await Promise.all(
       lawHints.map(hint => callTool(searchAiLaw, apiClient, { query: hint, display: 3, apiKey: input.apiKey }))
     )
+    throwIfRequestCancelled()
 
     // 판례 결과 합산
     const precTexts: string[] = []

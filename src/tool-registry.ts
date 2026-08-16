@@ -9,6 +9,9 @@ import { z } from "zod"
 import type { LawApiClient } from "./lib/api-client.js"
 import type { McpTool } from "./lib/types.js"
 import { formatToolError } from "./lib/errors.js"
+import { RequestExecutionBudget, readExecutionLimits, type ExecutionLimits } from "./lib/execution-limits.js"
+import { truncateResponse } from "./lib/schemas.js"
+import { getRequestSignal, requestContext, runWithRequestContext, throwIfRequestCancelled } from "./lib/session-state.js"
 import { discoverTools, DiscoverToolsSchema, executeTool, ExecuteToolSchema, setAllToolsRef } from "./tools/meta-tools.js"
 import { searchDecisions, SearchDecisionsSchema, getDecisionText, GetDecisionTextSchema } from "./tools/unified-decisions.js"
 
@@ -804,7 +807,11 @@ const exposedTools = allTools.filter(t => V3_EXPOSED.has(t.name))
 /** 노출/전체 도구 수 — 헬스체크 등 표기용 파생값 (하드코딩 금지) */
 export const TOOL_COUNTS = { exposed: exposedTools.length, total: allTools.length }
 
-export function registerTools(server: Server, apiClient: LawApiClient) {
+export function registerTools(
+  server: Server,
+  apiClient: LawApiClient,
+  executionLimits: ExecutionLimits = readExecutionLimits(),
+) {
   // ListTools 핸들러
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: exposedTools.map(tool => ({
@@ -821,30 +828,52 @@ export function registerTools(server: Server, apiClient: LawApiClient) {
   }))
 
   // CallTool 핸들러 — 전체 도구 실행 가능 (execute_tool 프록시 지원)
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    // The HTTP entrypoint puts one budget in AsyncLocalStorage for the whole
+    // JSON-RPC envelope.  A stdio request has no outer context, so create one
+    // here.  `extra.signal` is item-specific: cancelling one batch item does
+    // not cancel siblings that only share the budget.
+    const budget = requestContext.getStore()?.budget ?? new RequestExecutionBudget(executionLimits)
+    return runWithRequestContext({ budget, signal: extra.signal }, async () => {
+      const { name, arguments: args } = request.params
+      const tool = toolMap.get(name)
+      if (!tool) {
+        return {
+          content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
+          isError: true,
+        }
+      }
 
-    const tool = toolMap.get(name)
-    if (!tool) {
-      return {
-        content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
-        isError: true
+      try {
+        throwIfRequestCancelled()
+        const input = tool.schema.parse(args)
+        const result = await tool.handler(apiClient, input)
+        throwIfRequestCancelled()
+        const text = truncateResponse(
+          result.content.map(content => content.text).join("\n"),
+          executionLimits.maxToolResponseChars,
+        )
+        return {
+          content: [{ type: "text" as const, text }],
+          isError: result.isError,
+        }
+      } catch (error) {
+        // Do not turn MCP or connection cancellation into a normal tool
+        // result.  The SDK will suppress the response for its cancelled item;
+        // rethrowing also keeps upstream cancellation visible to the transport.
+        if (getRequestSignal()?.aborted) throw error
+        const errResult = formatToolError(error, name)
+        return {
+          content: [{
+            type: "text" as const,
+            text: truncateResponse(
+              errResult.content.map(content => content.text).join("\n"),
+              executionLimits.maxToolResponseChars,
+            ),
+          }],
+          isError: true,
+        }
       }
-    }
-
-    try {
-      const input = tool.schema.parse(args)
-      const result = await tool.handler(apiClient, input)
-      return {
-        content: result.content.map(c => ({ type: "text" as const, text: c.text })),
-        isError: result.isError
-      }
-    } catch (error) {
-      const errResult = formatToolError(error, name)
-      return {
-        content: errResult.content.map(c => ({ type: "text" as const, text: c.text })),
-        isError: true
-      }
-    }
+    })
   })
 }

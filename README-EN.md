@@ -260,7 +260,7 @@ This project wraps that entire legal system into **14 structured tools** that an
 **Auto setup (recommended):**
 
 ```bash
-npx korean-law-mcp setup
+npx --ignore-scripts --omit=optional korean-law-mcp setup
 ```
 
 Interactive wizard handles API key input, client selection, and config file registration.
@@ -269,7 +269,7 @@ Supports Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Gemini CLI, Zed
 **Manual setup:**
 
 ```bash
-npm install -g korean-law-mcp
+npm install --ignore-scripts --omit=optional -g korean-law-mcp
 ```
 
 Add to your MCP client config:
@@ -345,7 +345,7 @@ Get your free API key at [법제처 Open API](https://open.law.go.kr/LSO/openApi
 ### Option 3: CLI
 
 ```bash
-npm install -g korean-law-mcp
+npm install --ignore-scripts --omit=optional -g korean-law-mcp
 export LAW_OC=your-api-key
 
 korean-law search_law --query "관세법"
@@ -360,7 +360,8 @@ korean-law help search_law               # tool help
 
 ```bash
 docker build -t korean-law-mcp .
-docker run -e LAW_OC=your-api-key -p 3000:3000 korean-law-mcp
+docker run -e LAW_OC=your-api-key -e MCP_HTTP_HOST=0.0.0.0 \
+  -e MCP_AUTH_TOKEN=replace-with-a-secret -p 3000:3000 korean-law-mcp
 ```
 
 ---
@@ -420,12 +421,38 @@ User: "산업안전보건법 별표1 내용"
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `LAW_OC` | Yes | — | 법제처 API key ([get one free](https://open.law.go.kr/LSO/openApi/guideResult.do)) |
-| `PORT` | No | 3000 | HTTP server port |
+| `PORT` | No | 8000 | HTTP server port |
 | `CORS_ORIGIN` | No | `*` | CORS allowed origin. Setting it explicitly also allows that origin to pass Origin validation |
 | `ALLOWED_ORIGINS` | No | — | Comma-separated origin allowlist. Requests carrying an `Origin` header are rejected unless listed (DNS rebinding defense) |
-| `MCP_AUTH_TOKEN` | No | — | When set, `/mcp` requires `x-mcp-token` or `Authorization: Bearer`. Required for closed-network / intranet deployments |
+| `MCP_AUTH_TOKEN` | No | — | When set, `/mcp` requires `x-mcp-token` or `Authorization: Bearer`. Required for non-loopback deployments unless explicitly overridden |
+| `MCP_HTTP_HOST` | No | `127.0.0.1` | Bind address. A non-loopback host requires `MCP_AUTH_TOKEN`, unless the deliberate legacy override below is set |
+| `MCP_ALLOW_UNAUTHENTICATED_REMOTE` | No | `0` | Set to `1` only for a deliberately public, non-loopback deployment without MCP access authentication |
+| `TRUST_PROXY` | No | `false` | Set to a positive proxy-hop count (for example `1` behind one Fly/ingress proxy). Never use `true`/`all` |
 | `ALLOW_QUERY_API_KEY` | No | `1` | Set to `0` to reject the `?oc=` query-string API key (it leaks into proxy access logs) |
-| `RATE_LIMIT_RPM` | No | 60 | Requests per minute per IP |
+| `RATE_LIMIT_RPM` | No | 60 | Tool calls per minute per IP. `0` disables only the per-IP limiter; batch and execution limits remain active |
+| `MCP_MAX_BATCH_CALLS` | No | 20 | Maximum `tools/call` items in one JSON-RPC HTTP envelope |
+| `MCP_MAX_BODY_BYTES` | No | 102400 | Maximum incoming JSON request size. The older `MCP_BODY_LIMIT` (`100kb`, etc.) is accepted for compatibility |
+| `MCP_MAX_UPSTREAM_REQUESTS` | No | 48 | Request-wide upstream attempt budget, including retries and anti-bot hops |
+| `MCP_MAX_UPSTREAM_BODY_BYTES` | No | 2097152 | Maximum bytes read from one upstream response body |
+| `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES` | No | 8388608 | Maximum upstream body bytes read by one outer request |
+| `MCP_MAX_TOOL_RESPONSE_CHARS` | No | 50000 | Maximum returned MCP tool-response characters |
+
+All numeric limits are validated as whole numbers during startup. Invalid values fail startup rather than weakening a limit. `legal_research` and other documented chain tools share the 48-attempt request budget; JSON-RPC batch siblings share accounting but retain independent MCP cancellation signals.
+
+### HTTP deployment defaults
+
+HTTP mode is local by default: it binds only to `127.0.0.1`, does not trust `X-Forwarded-For`, and leaves token authentication optional for that loopback-only use. For a reverse-proxy deployment, set both the explicit public bind and the exact trusted hop count, for example:
+
+```bash
+MCP_HTTP_HOST=0.0.0.0 TRUST_PROXY=1 MCP_AUTH_TOKEN=replace-with-a-secret \
+  korean-law-mcp --mode http --port 8000
+```
+
+`MCP_ALLOW_UNAUTHENTICATED_REMOTE=1` preserves intentionally public legacy deployments, but emits a startup warning and should only be used where another access boundary is in place.
+
+### Dependency and install boundary
+
+`kordoc` remains because annex parsing is a reachable server feature. Its known-good pure-JS `pdfjs-dist@4.10.38` runtime is pinned as a normal dependency; optional OCR/ML/native helpers are not needed by this server. Plugin, documented, and Docker installs use `--omit=optional --ignore-scripts`. CI and publishing retain optional development-tool bindings with scripts disabled during validation, then prune to the production graph and run the PDF annex smoke test. Scanner reports for transitive HTTP-framework packages should be evaluated against the reachable server path rather than treated as proof that the server exposes the affected middleware.
 
 ## Documentation
 
