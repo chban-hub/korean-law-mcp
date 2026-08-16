@@ -11,6 +11,13 @@ import { UpstreamRecordMissingError } from "./upstream-miss.js"
  */
 export const ErrorCodes = {
   NOT_FOUND: "LAW_NOT_FOUND",
+  /**
+   * 업스트림이 자료를 주지 않았다는 **관측**. 부존재 주장이 아니다.
+   * `NOT_FOUND` 계열과 반드시 분리해 둔다 — 기계 독자에게는 산문의 유보보다
+   * 대괄호 라벨이 이기고, 이 경로에서 라벨이 "없음"으로 읽히면 실재하는 판례를
+   * 없다고 자문하는 거짓 부정이 된다 (_workspace/13_legal_wording_review.md 축①).
+   */
+  UPSTREAM_NO_DATA: "UPSTREAM_NO_DATA",
   INVALID_PARAM: "INVALID_PARAMETER",
   API_ERROR: "EXTERNAL_API_ERROR",
   RATE_LIMITED: "RATE_LIMITED",
@@ -110,14 +117,15 @@ export function formatToolError(error: unknown, context?: string): ToolResponse 
     msg = error.message
     suggestions = error.suggestions || []
   } else if (error instanceof UpstreamRecordMissingError) {
-    // 업스트림이 확인 재시도 후에도 자료를 주지 않았다 — 외부 API 장애가 아니라
-    // "그 레코드 없음"으로 읽히도록 분류해 LLM이 추측으로 메우지 않게 한다.
-    code = ErrorCodes.NOT_FOUND
+    // 관측 사실만 라벨에 담는다. 두 방향의 사고 — 없는 것을 지어내기와 있는 것을
+    // 없다고 단정하기 — 를 나란히 금지하고, 구별 불가한 두 원인에 순위를 매기지 않는다.
+    code = ErrorCodes.UPSTREAM_NO_DATA
     msg = error.message
     suggestions = [
-      "ID/MST가 검색 결과에서 얻은 값인지 확인하세요 (임의 생성 금지).",
-      "값이 확실하다면 법제처 일시 장애일 수 있으니 잠시 후 재시도하세요.",
-      "⚠️ 자료를 받지 못했습니다. LLM은 내용을 추측하거나 지어내지 마세요.",
+      "⚠️ 이 응답은 자료의 부존재를 증명하지 않습니다. 사용자에게 '조회 실패'로 보고하고, '그런 법령·판례는 없다'고 단정하지 마세요.",
+      "⚠️ 자료를 받지 못했습니다. 내용을 추측하거나 지어내지 마세요.",
+      "원인은 둘 중 하나이며 이 응답만으로는 구별되지 않습니다 — (a) 해당 ID/MST의 자료가 실제로 없음, (b) 법제처 점검·과부하로 본문이 빈 채 옴.",
+      "잠시 후 재시도해 보고, 그래도 같으면 ID/MST를 search_* 결과에서 재확인하세요 (임의 생성 금지).",
     ]
   } else if (error instanceof Error) {
     // Zod validation 에러 감지
