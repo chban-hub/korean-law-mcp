@@ -8,7 +8,7 @@
  */
 
 import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
-import { parseDateRange, stripDateExpressions, type DateRange } from "./date-parser.js"
+import { parseDateRange, stripMatchedDate, type DateRange } from "./date-parser.js"
 import { sortedRoutePatterns, yieldsToOther, type Pattern } from "./route-patterns.js"
 import { detectScenarioName } from "./scenario-rules.js"
 import { wantsFullText } from "./query-extract.js"
@@ -57,8 +57,8 @@ export function routeQuery(query: string): RouteResult {
   const dateParsed = parseDateRange(q)
   if (dateParsed.range) {
     result.dateRange = dateParsed.range
-    if (typeof result.params.query === "string") {
-      const cleaned = stripDateExpressions(result.params.query)
+    if (typeof result.params.query === "string" && dateParsed.matched) {
+      const cleaned = stripMatchedDate(result.params.query, dateParsed.matched)
       if (cleaned) result.params.query = cleaned
     }
   }

@@ -150,6 +150,9 @@ const routePatterns: Pattern[] = [
     patterns: [
       // "XX법 별표", "XX령 서식" 등 법령명이 함께 있는 경우만 매칭
       /(?<![가-힣])[가-힣]+(?:법|령|규칙|규정)\s*(?:별표|서식|양식|별지)/,
+      // 조문번호가 사이에 끼어도 별표 의도가 이긴다 — "관세법 제38조 별표 2" (#130).
+      // 조문 조회로 가면 별표 번호가 통째로 사라진다
+      /(?<![가-힣])[가-힣]+(?:법|령|규칙|규정)[^]{0,20}?제?\s*\d{1,4}\s*조(?:\s*의\s*\d{1,3})?\s*(?:별표|서식|양식|별지)/,
       // "별표" 단독은 매칭하되 법령명 추출이 비어있으면 chain_full_research로 폴백
     ],
     tool: "get_annexes",
@@ -215,8 +218,10 @@ const routePatterns: Pattern[] = [
     tool: "search_admin_appeals",
     // `례` 단독 제거 금지 — 사례·선례·관례·비례가 전부 잘린다
     extract: searchExtract(/행정\s*심판례?|행심/g),
+    // `행정심판례` 는 `판례` 를 품는다 — precedent(10)보다 앞서야 심판례 질의를 뺏기지 않는다(#129).
+    // 한글엔 낱말 경계가 없어 `판례` 쪽 부정 예측(#111 반증 사례)보다 순위 조정이 안전하다
     reason: "행정심판 키워드 → 행정심판례 검색",
-    priority: 10,
+    priority: 9,
   },
 
   // ── 11. 조세심판 ──
@@ -227,8 +232,9 @@ const routePatterns: Pattern[] = [
     ],
     tool: "search_tax_tribunal_decisions",
     extract: searchExtract(/조세\s*심판원?|세금\s*심판|결정례?/g),
+    // `조세심판례` 도 `판례` 를 품는다 — 같은 이유로 precedent 보다 앞선다(#129)
     reason: "조세심판 키워드 → 조세심판 결정례 검색",
-    priority: 10,
+    priority: 9,
   },
 
   // ── 12. 영문 법령 ──

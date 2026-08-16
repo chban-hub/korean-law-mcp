@@ -14,6 +14,7 @@ import {
   type LawInfo,
 } from "../lib/law-search.js"
 import { routeQuery } from "../lib/query-router.js"
+import { resolveChainBaseLaw } from "./chain-law-lookup.js"
 import { runScenario, detectScenario, formatSections, formatSuggestedActions } from "./scenarios/index.js"
 import type { ScenarioType, ScenarioContext } from "./scenarios/index.js"
 
@@ -193,11 +194,16 @@ function secOrSkip(title: string, result: CallResult): string {
   return `\n▶ ${title} [NOT_FOUND / FAILED]\n   ⚠️ 이 섹션은 조회 실패 — LLM은 내용을 추측/생성하지 마세요.\n`
 }
 
-function noResult(query: string): ToolResponse {
+function noResult(query: string, attempts: string[] = []): ToolResponse {
   const keywords = query.trim().split(/\s+/)
   const lines = [`[NOT_FOUND] '${query}' 관련 법령을 찾을 수 없습니다.`]
   lines.push("")
   lines.push("⚠️ 이 체인은 기반 법령을 찾지 못해 실행을 중단했습니다. LLM은 법령·조문·판례를 추측/생성하지 마세요. 사용자에게 '검색 실패'를 명시 보고하세요.")
+  // 무엇으로 찾아봤는지 밝힌다 — 안 밝히면 이용자는 다르게 물을 방법을 모른다(#105)
+  if (attempts.length) {
+    lines.push("")
+    lines.push(`시도한 검색어: ${attempts.map(a => `"${a}"`).join(" → ")}`)
+  }
   if (keywords.length >= 2) {
     lines.push("")
     lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
@@ -325,8 +331,9 @@ export async function chainLawSystem(
   input: z.infer<typeof chainLawSystemSchema>
 ): Promise<ToolResponse> {
   try {
-    const laws = await findLaws(apiClient, input.query, input.apiKey)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     const parts = [
@@ -386,8 +393,9 @@ export async function chainActionBasis(
   input: z.infer<typeof chainActionBasisSchema>
 ): Promise<ToolResponse> {
   try {
-    const laws = await findLaws(apiClient, input.query, input.apiKey)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     const parts = [`═══ 처분 근거 확인: ${p.lawName} ═══`]
@@ -555,8 +563,9 @@ export async function chainAmendmentTrack(
 
     // 법령 검색 (MST 모르면)
     if (!mst && !lawId) {
-      const laws = await findLaws(apiClient, input.query, input.apiKey, 1)
-      if (laws.length === 0) return noResult(input.query)
+      const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 1)
+      const laws = base.laws
+      if (laws.length === 0) return noResult(input.query, base.attempts)
       mst = laws[0].mst
       lawId = laws[0].lawId
       lawName = laws[0].lawName
@@ -685,7 +694,7 @@ export async function chainFullResearch(
     // Step 1: AI 검색 + 법령 검색 + 해석례를 병렬 실행하고, 판례는 AI 구조화 신호를 받은 뒤 공통 core로 검색한다.
     // findLaws를 안전하게 래핑 (throw 시 Promise.all 전체 reject 방지)
     const safeFindLaws = async (): Promise<LawInfo[]> => {
-      try { return await findLaws(apiClient, input.query, input.apiKey, 2) }
+      try { return (await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 2)).laws }
       catch { return [] }
     }
     const [aiResult, rawLawsResult, interpResult] = await Promise.all([
@@ -766,8 +775,9 @@ export async function chainProcedureDetail(
     const parts = [`═══ 절차/비용 안내: ${input.query} ═══`]
 
     // Step 1: 법령 검색
-    const laws = await findLaws(apiClient, input.query, input.apiKey, 3)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 3)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     parts.push(`법령: ${p.lawName} (${p.lawType}) | MST: ${p.mst}`)

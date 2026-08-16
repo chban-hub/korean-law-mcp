@@ -15,6 +15,8 @@ export interface DateParseResult {
   range?: DateRange
   /** 날짜 표현을 제거한 쿼리 (검색용) */
   cleanQuery: string
+  /** 실제로 시간 표현으로 인식한 원문 조각 — 다른 문자열에서 같은 것을 지울 때 쓴다 */
+  matched?: string
 }
 
 /** YYYYMMDD 포맷 */
@@ -179,6 +181,13 @@ const patterns: TimePattern[] = [
       to: fmt(new Date()),
     }),
   },
+  // "YYYY년" 단독 — 그 해 전체. 반드시 마지막에 둔다(위 구체 패턴이 먼저 잡아야 한다).
+  // 앞뒤에 또 다른 "YYYY년"이 있으면 두 시점 비교이므로 여기서 처리하지 않는다 —
+  // 잡으면 time_travel 이 뽑아 둔 toDate 를 그 해 말일로 덮어쓴다(양방향 확인 필수)
+  {
+    regex: /(?<!\d{4}\s*년[\s\S]{0,20})(\d{4})\s*년(?![\s\S]{0,20}\d{4}\s*년)/,
+    resolve: (m) => ({ from: `${m[1]}0101`, to: `${m[1]}1231` }),
+  },
 ]
 
 /**
@@ -205,13 +214,18 @@ export function parseDateRange(query: string): DateParseResult {
   for (const p of patterns) {
     const m = query.match(p.regex)
     if (m) {
-      return { range: p.resolve(m), cleanQuery: removeTimeExpression(query, m[0]) }
+      return { range: p.resolve(m), cleanQuery: removeTimeExpression(query, m[0]), matched: m[0] }
     }
   }
   return { cleanQuery: query }
 }
 
-/** 시간 표현만 걷어낸 검색어 (날짜 범위는 이미 확보했고 검색어만 정리할 때) */
-export function stripDateExpressions(query: string): string {
-  return parseDateRange(query).cleanQuery
+/**
+ * 이미 인식한 시간 표현을 다른 문자열에서 걷어낸다.
+ *
+ * 재파싱하지 않는다 — 원문에서 "2024년"을 잡았는데 정제된 검색어를 다시 파싱하면
+ * "2024년 전"(YYYY년 이전)처럼 **다른 패턴**이 걸려 엉뚱한 글자까지 먹는다.
+ */
+export function stripMatchedDate(text: string, matched: string): string {
+  return removeTimeExpression(text, matched)
 }

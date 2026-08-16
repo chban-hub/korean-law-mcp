@@ -72,6 +72,57 @@ describe("#122 applicable_law 파라미터 정합", () => {
   })
 })
 
+describe("판정 규약 동기화 — 연도 필터는 충족 요건이다 (12 문서 R37 재정)", () => {
+  it("'YYYY년' 단독 시점이 기간 필터로 추출된다", () => {
+    const r = routeQuery("관세법 판례 2024년이랑 비교해줘")
+    expect([r.dateRange?.from, r.dateRange?.to]).toEqual(["20240101", "20241231"])
+  })
+
+  it("두 시점 비교의 연도는 삼키지 않는다 — time_travel 이 뽑은 값을 덮어쓰면 안 된다", () => {
+    for (const q of ["관세법 2024년과 2025년 차이", "2020년부터 2023년까지 관세법 개정 이력"]) {
+      const r = routeQuery(q)
+      // 두 시점이 파라미터로 살아 있어야 한다
+      expect([q, r.params.fromDate, r.params.toDate]).toEqual([q, expect.any(String), expect.any(String)])
+    }
+    expect(routeQuery("관세법 2024년과 2025년 차이").dateRange).toBeUndefined()
+  })
+})
+
+describe("#129 '판례'가 심판례 합성어를 가로채지 않는다", () => {
+  it("행정심판례 질의는 행정심판 검색으로 간다", () => {
+    expect(reached("행정심판례 건축허가")).toContain("search_admin_appeals")
+  })
+
+  it("조세심판례 질의는 조세심판 검색으로 간다", () => {
+    expect(reached("조세심판례 부가세")).toContain("search_tax_tribunal_decisions")
+  })
+
+  it("일반 판례 질의는 그대로 판례 검색이다", () => {
+    expect(reached("건축허가 거부 판례")).toContain("search_precedents")
+    expect(reached("음주운전 무죄 판례 있어?")).toContain("search_precedents")
+  })
+})
+
+describe("#130 조문 동반 별표 질의", () => {
+  it("별표 어휘가 있으면 조문이 함께 와도 별표 경로가 이긴다", () => {
+    expect(reached("관세법 제38조 별표 2")).toContain("get_annexes")
+  })
+
+  it("법령명과 별표번호가 각각 전달된다", () => {
+    const p = routeQuery("관세법 제38조 별표 2").params
+    expect([p.lawName, p.annexNo]).toEqual(["관세법", "2"])
+  })
+
+  it("조문번호가 별표번호로 잘못 들어가지 않는다", () => {
+    expect(routeQuery("관세법 제38조 별표 2").params.annexNo).not.toBe("38")
+  })
+
+  it("별표 단독형은 기존대로다", () => {
+    const p = routeQuery("도로교통법 시행규칙 별표28").params
+    expect([p.lawName, p.annexNo]).toEqual(["도로교통법 시행규칙", "28"])
+  })
+})
+
 describe("#123 가드 구조의 안전장치", () => {
   it("패턴 이름이 겹쳐도 가드가 한쪽만 보지 않는다", () => {
     // scenario_action_plan 은 두 단계로 선언된다 — 이름 충돌이 조용히 덮어쓰기가 되면 안 된다
