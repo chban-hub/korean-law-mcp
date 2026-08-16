@@ -4,7 +4,10 @@
  * 규칙 통합(#99~#104) 이후 남은 선존재 결함 + 통합이 드러낸 구조 문제.
  */
 import { describe, it, expect } from "vitest"
+import { z } from "zod"
 import { routeQuery } from "./query-router.js"
+import { sortedRoutePatterns } from "./route-patterns.js"
+import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
 import { allTools } from "../tool-registry.js"
 
 function reached(query: string): string[] {
@@ -42,7 +45,59 @@ describe("#119 검색계 추출이 검색어를 훼손하지 않는다", () => {
   })
 })
 
+describe("#119 트리거 제거가 낱말을 자르지 않는다", () => {
+  it("탐지 어휘가 낱말 일부여도 그 낱말을 자르지 않는다", () => {
+    // 탐지는 부분 일치를 허용하지만(`대법원\s*판`, `위헌`) 제거는 낱말 경계를 지켜야 한다
+    expect(mainQuery("대법원 판단 기준 알려줘")).toBe("판단 기준 알려줘")
+    expect(mainQuery("위헌성 심사 기준")).toBe("위헌성 심사 기준")
+    expect(mainQuery("행정심판 사례 분석")).toBe("사례 분석")
+    expect(mainQuery("행정심판 비례원칙")).toBe("비례원칙")
+    expect(mainQuery("행정심판 선례 조사")).toBe("선례 조사")
+  })
+
+  it("트리거만 남은 질의는 한 음절 잔재가 아니라 원문으로 돌아간다", () => {
+    expect(mainQuery("헌법재판소 결정")).toBe("헌법재판소 결정")
+    expect(mainQuery("중앙노동위원회 결정문")).toBe("중앙노동위원회 결정문")
+  })
+})
+
+describe("#122 applicable_law 파라미터 정합", () => {
+  it("'무렵' 계열 수식어가 법령명에 섞이지 않는다", () => {
+    for (const q of [
+      "2023년 5월 10일 무렵 도로교통법 제44조",
+      "2023년 5월 10일 무렵에 시행되던 도로교통법 제44조 당시 적용",
+    ]) {
+      expect([q, routeQuery(q).params.lawName]).toEqual([q, "도로교통법"])
+    }
+  })
+})
+
+describe("#123 가드 구조의 안전장치", () => {
+  it("패턴 이름이 겹쳐도 가드가 한쪽만 보지 않는다", () => {
+    // scenario_action_plan 은 두 단계로 선언된다 — 이름 충돌이 조용히 덮어쓰기가 되면 안 된다
+    const names = sortedRoutePatterns.map(p => p.name)
+    const dupes = names.filter((n, i) => names.indexOf(n) !== i)
+    for (const d of new Set(dupes)) {
+      expect([d, sortedRoutePatterns.filter(p => p.name === d).length > 1]).toEqual([d, true])
+    }
+  })
+
+  it("수신 패턴이 실제로 받아 가지 않으면 양보하지 않는다", () => {
+    // applicable_law 는 정규식이 맞아도 날짜가 없으면 _fallback — 양보하면 조문 의도까지 잃는다
+    expect(reached("민법 제38조 당시 시행")).toContain("get_law_text")
+  })
+})
+
 describe("#120 full 미지원 도구에서 의도가 무음 소멸하지 않는다", () => {
+  it("supportsFull 선언이 실제 스키마와 어긋나지 않는다", () => {
+    for (const [search, chain] of Object.entries(SEARCH_DETAIL_CHAINS)) {
+      const tool = allTools.find(t => t.name === chain.detailTool)
+      const shape = tool?.schema instanceof z.ZodObject ? tool.schema.shape : undefined
+      const actual = !!shape && "full" in shape
+      expect([search, chain.supportsFull === true]).toEqual([search, actual])
+    }
+  })
+
   it("full 을 받는 상세도구에는 전달된다", () => {
     const r = routeQuery("대법원 2022도6643 판결 전문 보여줘")
     expect(JSON.stringify(r.pipeline)).toContain("\"full\":true")

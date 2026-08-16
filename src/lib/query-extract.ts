@@ -54,23 +54,21 @@ export function wantsFullText(query: string): boolean {
 }
 
 /**
- * 검색 도구에 넘길 검색어 — 매칭에 쓴 정규식이 잡아낸 트리거(match[0])만 걷어낸다.
+ * 검색 도구용 extract 를 만든다 — 트리거 어휘를 걷어낸 나머지가 검색어다.
  *
- * 트리거 제거용 정규식을 따로 쓰면 매칭 정규식과 어긋난다(#119):
- * `유권\s*해석` 로 매칭해 놓고 `유권해석`(공백 없음)으로 지우면 "유권"이 남고,
- * `용어\s*뜻` 로 매칭해 놓고 `뜻이?|의$` 로 지우면 "선의"가 "선"으로 잘린다.
+ * `strip` 은 탐지용 `patterns` 와 별개다. 탐지는 부분 일치를 허용해도 되지만
+ * (`위헌`으로 헌재 질의를 알아본다) 제거는 낱말을 잘라선 안 된다(`위헌성` → `성`).
+ * 그래서 두 정규식은 같은 어휘를 다루되 같은 것일 수 없다 — 대신 선언을 나란히 둬
+ * 어긋남이 눈에 보이게 한다. 어긋나면 "유권 해석"의 반쪽만 지워지고
+ * "법령 용어 선의"가 "선"으로 잘린다(#119).
  *
  * 트리거가 곧 질의 전부여서 남는 게 없으면 원문을 돌려준다 — 빈 검색어는 업스트림에 보내지 않는다.
  */
-export function searchQueryFromMatch(
-  query: string,
-  match: RegExpMatchArray | null,
-  extraStrip?: RegExp
-): string {
-  let out = match?.[0] ? query.replace(match[0], " ") : query
-  if (extraStrip) out = out.replace(extraStrip, " ")
-  out = out.replace(/\s+/g, " ").trim()
-  return out || query.trim()
+export function searchExtract(strip: RegExp) {
+  return (query: string): Record<string, unknown> => {
+    const out = query.replace(strip, " ").replace(/\s+/g, " ").trim()
+    return { query: out || query.trim() }
+  }
 }
 
 /**
@@ -127,7 +125,7 @@ export function extractTimeTravel(query: string): Record<string, unknown> {
       .replace(/\d{4}\s*[.\-년]?\s*\d{0,2}\s*[.\-월]?\s*\d{0,2}\s*일?/g, " ")
       .replace(/작년|재작년|예전|과거|종전|지금|현재|현행|오늘|올해/g, " ")
       .replace(/vs\.?|↔|~|이?랑|하고|대비|부터|까지|에서|와|과/gi, " ")
-      .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전/g, " ")
+      .replace(/뭐가|달라(?:요|졌어|진\s*게)?|다른\s*점|차이|비교(?:해줘|해\s*줘)?|시점|버전|두/g, " ")
   )
   params.query = lawName || query
   return params

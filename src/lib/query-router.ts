@@ -90,6 +90,11 @@ function _matchRoute(q: string): RouteResult {
 
       const params = pattern.extract(q, match)
 
+      // _clarify 는 조기 return(_fallback/_reroute)보다 먼저 떼어낸다 —
+      // 뒤에서 떼면 그 경로로 나갈 때 내부 플래그가 도구 파라미터로 샌다
+      const clarify = typeof params._clarify === "string" ? params._clarify : undefined
+      delete params._clarify
+
       // _skip 플래그: 이 패턴은 매칭되었으나 의도가 다름 → 다음 패턴으로 진행
       // break로 inner loop(regex 목록) 전체를 빠져나가야 outer loop(패턴 목록)이 다음으로 진행
       if (params._skip) break
@@ -115,10 +120,6 @@ function _matchRoute(q: string): RouteResult {
           reason: `${pattern.reason} → ${rerouteTool}로 재라우팅`,
         }
       }
-
-      // _clarify 플래그: 해석이 갈리는 질의 — 진행하되 확인 문구를 함께 돌려준다(#122)
-      const clarify = typeof params._clarify === "string" ? params._clarify : undefined
-      delete params._clarify
 
       // _needsMst 플래그: 법령 검색이 먼저 필요한 경우 파이프라인 구성
       if (params._needsMst) return _mstPipeline(q, pattern, params)
