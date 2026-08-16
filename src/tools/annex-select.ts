@@ -5,6 +5,8 @@
  * 표기 문법("별표4" · "별표 제4호" · "별표 1의2")은 lib/annex-notation 이 단일 원본이다.
  */
 
+import { parseAnnexNumber, toAnnexCode } from "../lib/annex-notation.js"
+
 /** 법제처 별표/서식 API 응답 개별 항목 */
 export interface AnnexItem {
   별표번호?: string
@@ -96,46 +98,48 @@ export function buildSelectorCandidates(selector: string): Set<string> {
 
   candidates.add(trimmed)
 
-  const numMatch = trimmed.match(/(\d{1,6})/)
-  if (!numMatch) {
+  const rawDigits = trimmed.match(/\d{1,6}/)?.[0]
+  const parsed = parseAnnexNumber(trimmed)
+  if (!rawDigits || !parsed) {
     return candidates
   }
 
-  const rawDigits = numMatch[1]
-  const asNumber = Number.parseInt(rawDigits, 10)
-  if (Number.isNaN(asNumber)) {
+  // 가지번호(별표 1의2)가 있으면 6자리 코드가 유일한 정답이다. 본번 후보까지 함께
+  // 내면 가지 별표가 목록에 없을 때 **별표 1이 조용히 선택된다** — NOT_FOUND 보다
+  // 나쁜 실패다. lawName 경로(parseLawNameAndHint)와 같은 코드로 수렴시킨다.
+  if (parsed.sub != null) {
+    candidates.add(toAnnexCode(parsed.main, parsed.sub))
     return candidates
   }
 
   candidates.add(rawDigits)
-  candidates.add(String(asNumber))
+  candidates.add(String(parsed.main))
 
   // 법제처 별표번호는 관행적으로 000100, 000200 형식이 많아 둘 다 허용
-  candidates.add(String(asNumber).padStart(6, "0"))
+  candidates.add(String(parsed.main).padStart(6, "0"))
   if (rawDigits.length <= 3) {
-    candidates.add(String(asNumber * 100).padStart(6, "0"))
+    candidates.add(toAnnexCode(parsed.main, 0))
   }
 
   return candidates
 }
 
 export function extractSelectorNumbers(selector: string): string[] {
-  const numbers = new Set<string>()
-  const numMatch = selector.match(/(\d{1,6})/)
-  if (!numMatch) {
+  const rawDigits = selector.match(/\d{1,6}/)?.[0]
+  const parsed = parseAnnexNumber(selector)
+  if (!rawDigits || !parsed) {
     return []
   }
 
-  const rawDigits = numMatch[1]
-  const asNumber = Number.parseInt(rawDigits, 10)
-  if (Number.isNaN(asNumber)) {
-    return []
+  // 제목 매칭도 가지번호를 지킨다 — "1"로 돌려주면 "[별표1]"이 잡힌다
+  if (parsed.sub != null) {
+    return [`${parsed.main}의${parsed.sub}`]
   }
 
-  numbers.add(String(asNumber))
+  const numbers = new Set<string>([String(parsed.main)])
 
-  if (rawDigits.length === 6 && asNumber % 100 === 0) {
-    numbers.add(String(asNumber / 100))
+  if (rawDigits.length === 6 && parsed.main % 100 === 0) {
+    numbers.add(String(parsed.main / 100))
   }
 
   return Array.from(numbers)

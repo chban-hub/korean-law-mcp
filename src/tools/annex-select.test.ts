@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { annexQueryKeywords, filterByAnnexQuery, type AnnexItem } from "./annex-select.js"
+import { annexQueryKeywords, buildSelectorCandidates, extractSelectorNumbers, filterByAnnexQuery, findMatchingAnnex, type AnnexItem } from "./annex-select.js"
 import { parseLawNameAndHint } from "../lib/annex-notation.js"
 
 // 도로교통법 시행규칙 별표 목록 실측 발췌 (총 263건 중)
@@ -59,5 +59,64 @@ describe("query의 번호 힌트 (#94)", () => {
 
   it("'별표 1의2'는 6자리 코드로 변환한다", () => {
     expect(parseLawNameAndHint("별표 1의2").annexNo).toBe("000102")
+  })
+})
+
+// ─── 별표번호 6자리 코드 체계 (실측 확정) ──────────────────
+//
+// 2026-08-17 도로교통법 시행규칙 licbyl 실호출(totalCnt=264)의 실번호 목록으로 확정:
+//   [002800] 별표 운전면허 취소·정지처분 기준(제91조제1항관련)   → 별표 28
+//   [012800] 서식 (강사, 기능검정원)자격증 기재사항 변경 신청서  → 별지 제128호
+//   [002003] [002004] [002005] 서식 어린이통학버스 안전교육 …    → 별지 제20호의3·의4·의5
+//   [001708]~[001712] 서식 음주운전 방지장치 …                   → 별지 제17호의8 ~ 의12
+// 즉 AAAABB = 번호 4자리 zero-pad + 가지번호(의N) 2자리. JO 코드와 같은 체계다.
+describe("buildSelectorCandidates 별표번호 코드 체계", () => {
+  it.each([
+    ["28", "002800"],
+    ["128", "012800"],
+    ["20", "002000"],
+  ])("본번 %s → 6자리 코드 %s", (selector, code) => {
+    expect(buildSelectorCandidates(selector)).toContain(code)
+  })
+
+  it.each(["1의2", "별표 1의2", "제1호의2", "별표 제1호의2"])(
+    "가지번호 표기 %s 는 000102 로 간다",
+    (selector) => { expect(buildSelectorCandidates(selector)).toContain("000102") }
+  )
+
+  it("가지번호를 삼키고 본번 별표를 고르지 않는다", () => {
+    // 회귀: "1의2" 가 {1, 000001, 000100} 으로 풀려 **별표 1** 이 조용히 선택됐다.
+    // NOT_FOUND 보다 나쁜 실패다 — 다른 규범을 정답인 양 돌려준다.
+    const c = buildSelectorCandidates("1의2")
+    expect(c).not.toContain("000100")
+    expect(c).not.toContain("000001")
+    expect(extractSelectorNumbers("1의2")).not.toContain("1")
+  })
+
+  it("lawName 경로(parseLawNameAndHint)와 같은 코드로 수렴한다", () => {
+    for (const [inline, bare] of [["별표 1의2", "1의2"], ["별표 28의3", "28의3"]]) {
+      const fromLawName = parseLawNameAndHint(`도로교통법 시행규칙 ${inline}`).annexNo as string
+      expect([inline, buildSelectorCandidates(bare).has(fromLawName)]).toEqual([inline, true])
+    }
+  })
+
+  it("목록에 있기만 하면 본번 선택값이 실제 별표를 집는다", () => {
+    // 실호출의 [NOT_FOUND]는 후보 생성이 아니라 목록 페이징(#148, display=100 · totalCnt=264)
+    // 때문이다 — 002800은 2페이지에 있어 annexList에 애초에 담기지 않는다.
+    expect(findMatchingAnnex(LIST, "28")?.별표번호).toBe("002800")
+  })
+
+  it("이미 6자리 코드면 그대로 쓴다 (bylSeq 경로)", () => {
+    expect(buildSelectorCandidates("002800")).toContain("002800")
+    expect(buildSelectorCandidates("000102")).toContain("000102")
+  })
+
+  it("가지번호 요청에 본번 별표가 잡히지 않는다", () => {
+    const list: AnnexItem[] = [
+      { 별표번호: "000100", 별표명: "별표 1 본번", 별표종류: "별표" },
+      { 별표번호: "000102", 별표명: "별표 1의2 가지", 별표종류: "별표" },
+    ]
+    expect(findMatchingAnnex(list, "1의2")?.별표번호).toBe("000102")
+    expect(findMatchingAnnex(list, "1")?.별표번호).toBe("000100")
   })
 })
