@@ -2,9 +2,11 @@ import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { cleanHtml } from "../lib/article-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError } from "../lib/errors.js"
+import { formatToolError, notFoundResponse } from "../lib/errors.js"
 import { fetchWithRetry } from "../lib/fetch-with-retry.js"
 import { readResponseText } from "../lib/response-body.js"
+import { UpstreamRecordMissingError } from "../lib/upstream-miss.js"
+import { containsHtmlMarkup } from "../lib/body-shape.js"
 import {
   type ExternalHttpsProxyConfig,
   getExternalHttpsProxyConfig,
@@ -223,7 +225,7 @@ function extractTaxlawEditorBody(actionData: any): string {
 
   for (const item of editorList) {
     const value = typeof item?.dcmFleByte === "string" ? item.dcmFleByte : ""
-    if (!value.includes("<html") && !value.includes("<body") && value.length <= 100) continue
+    if (!containsHtmlMarkup(value) && value.length <= 100) continue
     const body = normalizeTaxlawBodyCandidate(value)
     if (body) return body
   }
@@ -372,6 +374,18 @@ async function resolveTaxlawDetailUrl(iframeUrl: string): Promise<string> {
   throw new Error("HTML fallback response did not expose ntstDcmId")
 }
 
+/**
+ * HTML 폴백 페이지가 "요청한 판례가 이 페이지에 없다"고 말한 경우.
+ * 폴백 기구 자체가 깨진 것(iframe·ntstDcmId 누락 등)과 구별해야 한다 —
+ * 전자는 자료 부존재의 두 번째 증거이고, 후자는 우리 쪽 복구 경로의 고장이다.
+ */
+class PrecedentAbsentError extends Error {
+  constructor(id: string) {
+    super(`판례 ID ${id}: 법제처 JSON 응답과 국세법령정보 HTML 폴백 어디에도 본문이 없습니다.`)
+    this.name = "PrecedentAbsentError"
+  }
+}
+
 async function fetchHtmlFallbackPrecedent(
   apiClient: LawApiClient,
   args: GetPrecedentTextInput,
@@ -389,7 +403,7 @@ async function fetchHtmlFallbackPrecedent(
   const iframeSrc = extractIframeSrc(html)
   const iframeUrl = iframeSrc ? normalizeUrl(iframeSrc) : ""
   if (hiddenPrecSeq !== args.id && !iframeMatchesPrecedentId(iframeUrl, args.id)) {
-    throw new Error("Precedent not found or invalid response format")
+    throw new PrecedentAbsentError(args.id)
   }
   if (!iframeUrl) {
     throw new Error("HTML fallback response did not include a precedent iframe URL")
@@ -447,6 +461,11 @@ export async function getPrecedentText(
         apiKey: args.apiKey,
       });
     } catch (err) {
+      // 확인 재시도까지 마친 미스는 판정이 끝났다 — HTML 폴백을 더 돌아도 같은 답이고
+      // 왕복만 는다. 국세법령정보 판례는 이 가지로 오지 않는다: 실측(ID 615819)상
+      // 88바이트 `{"Law": "일치하는 판례가 없습니다…"}` 봉투로 와서, 아래
+      // isMissingPrecedentJson 분기가 폴백을 태운다.
+      if (err instanceof UpstreamRecordMissingError) throw err
       const fallback = await fetchHtmlFallbackPrecedent(apiClient, args, extraParams)
       const output = formatPrecedentText(fallback.basic, fallback.content, args.full)
       return {
@@ -513,6 +532,14 @@ export async function getPrecedentText(
     }]
   };
   } catch (error) {
+    // 두 원천(JSON 봉투 + HTML 폴백)이 나란히 없다고 답한 경우만 부존재로 표면화한다.
+    // 폴백 기구 고장은 여전히 외부 API 오류다.
+    if (error instanceof PrecedentAbsentError) {
+      return notFoundResponse(error.message, [
+        "search_decisions{domain:'precedent'}로 사건번호·판례명을 다시 검색해 유효한 ID를 확인하세요.",
+        "ID를 임의로 만들지 마세요.",
+      ])
+    }
     return formatToolError(error, "get_precedent_text")
   }
 }

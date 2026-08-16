@@ -4,8 +4,11 @@
  *
  * 추가 조회: 관세3법 체계 + 관세청 해석례 + FTA 조약 + 세율 별표 + 조세심판
  */
-import type { ScenarioContext, ScenarioResult, ScenarioSection } from "./types.js"
+import type { ScenarioContext, ScenarioResult, ScenarioSection, ScenarioResource } from "./types.js"
 import { callTool } from "./types.js"
+
+/** 이 시나리오가 응답에 싣는 자원 — ctx.law 기준 별표(세율표)를 싣는다 */
+export const PROVIDES: ScenarioResource[] = ["annex"]
 import { searchCustomsInterpretations } from "../customs-interpretations.js"
 import { searchTreaties } from "../treaties.js"
 import { getAnnexes } from "../annex.js"

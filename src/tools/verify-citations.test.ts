@@ -1,36 +1,37 @@
 import { describe, it, expect } from "vitest"
 import {
   lawNameCandidates,
-  looseMatchLawName,
-  extractLawName,
+  lawNameFromCitationContext,
   resolveLawAnaphora,
   parseCitations,
+  verifyCitations,
 } from "./verify-citations.js"
+import type { LawApiClient } from "../lib/api-client.js"
 
-describe("extractLawName — 인용 직전 문맥에서 법령명 추출", () => {
+describe("lawNameFromCitationContext — 인용 직전 문맥에서 법령명 추출", () => {
   // 회귀: 「법령명」 제N조 는 법제처·판결문·실무 문서의 표준 표기인데, 닫는 낫표가
   // LAW_NAME_REGEX의 $ 앵커를 막아 법령명이 전혀 추출되지 않았다. 그 결과 조문 실존
   // 검증에 진입하지 못해 없는 조문·없는 항조차 ✗로 잡히지 않았다(환각 탐지 미가동).
   it("낫표로 감싼 표준 표기에서 법령명을 추출한다", () => {
-    expect(extractLawName("「식품 등의 표시·광고에 관한 법률」 ")).toBe("식품 등의 표시·광고에 관한 법률")
-    expect(extractLawName("이 사건에는 「형법」")).toBe("형법")
-    expect(extractLawName("『민법』")).toBe("민법")
+    expect(lawNameFromCitationContext("「식품 등의 표시·광고에 관한 법률」 ")).toBe("식품 등의 표시·광고에 관한 법률")
+    expect(lawNameFromCitationContext("이 사건에는 「형법」")).toBe("형법")
+    expect(lawNameFromCitationContext("『민법』")).toBe("민법")
   })
 
   it("낫표 없는 평문은 종전대로 추출 (#55 동작 유지)", () => {
-    expect(extractLawName("절도죄는 형법")).toBe("절도죄는 형법")
-    expect(extractLawName("전자상거래 등에서의 소비자보호에 관한 법률")).toBe(
+    expect(lawNameFromCitationContext("절도죄는 형법")).toBe("절도죄는 형법")
+    expect(lawNameFromCitationContext("전자상거래 등에서의 소비자보호에 관한 법률")).toBe(
       "전자상거래 등에서의 소비자보호에 관한 법률"
     )
   })
 
   it("접속사·부사 수식어는 제거", () => {
-    expect(extractLawName("또한 상법")).toBe("상법")
+    expect(lawNameFromCitationContext("또한 상법")).toBe("상법")
   })
 
   it("법령명이 없으면 undefined", () => {
-    expect(extractLawName("계약서에 따라")).toBeUndefined()
-    expect(extractLawName("")).toBeUndefined()
+    expect(lawNameFromCitationContext("계약서에 따라")).toBeUndefined()
+    expect(lawNameFromCitationContext("")).toBeUndefined()
   })
 })
 
@@ -125,28 +126,6 @@ describe("parseCitations — 조응 인용의 법령명 승계 (#70)", () => {
   })
 })
 
-describe("looseMatchLawName", () => {
-  it("공백 무시 완전 일치", () => {
-    expect(looseMatchLawName("형법", "형법")).toBe(true)
-  })
-
-  it("공식 법령명이 후보로 시작하면 매칭 (약칭)", () => {
-    expect(looseMatchLawName("개인정보", "개인정보 보호법")).toBe(true)
-  })
-
-  it("법률/법 접미 정규화로 매칭", () => {
-    expect(looseMatchLawName("국가공무원법", "국가공무원법")).toBe(true)
-  })
-
-  it("수식어가 남은 후보는 매칭 실패 (조문검증 저하 방지 대상)", () => {
-    expect(looseMatchLawName("절도죄는 형법", "형법")).toBe(false)
-  })
-
-  it("전혀 다른 법령은 매칭 실패", () => {
-    expect(looseMatchLawName("형법", "민법")).toBe(false)
-  })
-})
-
 describe("법령명 추출 — 가운뎃점 변형 (#75 후속)", () => {
   // looseMatch 정규화는 5종을 흡수하는데 추출 정규식이 2종만 통과시켜, U+2027 등으로
   // 표기된 법령명이 '광고에 관한 법률'로 절단 추출돼 조문 검증에 진입조차 못 했다.
@@ -177,5 +156,56 @@ describe("'같은 법' 조응 — 문단 경계 이후", () => {
     const cites = parseCitations("「형법」 제250조와 같은 법 제251조를 본다.", 15)
     expect(cites[0].lawName).toBe("형법")
     expect(cites[1].lawName).toBe("형법")
+  })
+})
+
+describe("verifyCitations — 판례 인용 검증 범위 (#93)", () => {
+  const CIVIL_LAW_XML = `<?xml version="1.0" encoding="UTF-8"?><LawSearch><totalCnt>1</totalCnt>` +
+    `<law id="1"><법령일련번호>284415</법령일련번호><법령명한글><![CDATA[민법]]></법령명한글>` +
+    `<법령ID>001706</법령ID><법령구분명>법률</법령구분명></law></LawSearch>`
+
+  // 제999조의9는 없고 제1조~제1118조만 있는 응답
+  const LAW_JSON = JSON.stringify({
+    법령: { 조문: { 조문단위: [
+      { 조문여부: "조문", 조문번호: "1", 조문가지번호: "0", 조문제목: "법원" },
+      { 조문여부: "조문", 조문번호: "1118", 조문가지번호: "0", 조문제목: "준용규정" },
+    ] } },
+  })
+  const EMPTY_PREC = `<?xml version="1.0" encoding="UTF-8"?><PrecSearch><totalCnt>0</totalCnt><page>1</page></PrecSearch>`
+
+  function client(): LawApiClient {
+    return {
+      searchLaw: async () => CIVIL_LAW_XML,
+      getLawText: async () => LAW_JSON,
+      fetchApi: async () => EMPTY_PREC,
+    } as unknown as LawApiClient
+  }
+
+  it("법령 인용과 함께 사건번호 인용도 검증 대상에 넣는다", async () => {
+    const r = await verifyCitations(client(), {
+      text: "민법 제999조의9와 대법원 2099다99999 판결에 따르면 가능하다.",
+      maxCitations: 15,
+    })
+    expect(r.content[0].text).toContain("2099다99999")
+  })
+
+  it("검증 범위(법령 N건 / 판례 M건)를 헤더에 명시한다", async () => {
+    const r = await verifyCitations(client(), {
+      text: "민법 제999조의9와 대법원 2099다99999 판결에 따르면 가능하다.",
+      maxCitations: 15,
+    })
+    const text = r.content[0].text
+    expect(text).toMatch(/판례 인용 1건/)
+    expect(text).toMatch(/법령 인용 1건/)
+  })
+
+  it("업스트림 미검색은 부존재 단정이 아니라 '미확인'으로 표기한다", async () => {
+    const r = await verifyCitations(client(), {
+      text: "대법원 2013다61381 판결 참조.",
+      maxCitations: 15,
+    })
+    const text = r.content[0].text
+    expect(text).toContain("미확인")
+    expect(text).not.toContain("[HALLUCINATION_DETECTED]")
   })
 })

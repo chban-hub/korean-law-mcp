@@ -13,6 +13,7 @@ import { RequestExecutionBudget, readExecutionLimits, type ExecutionLimits } fro
 import { truncateResponse } from "./lib/schemas.js"
 import { getRequestSignal, requestContext, runWithRequestContext, throwIfRequestCancelled } from "./lib/session-state.js"
 import { discoverTools, DiscoverToolsSchema, executeTool, ExecuteToolSchema, setAllToolsRef } from "./tools/meta-tools.js"
+import { V3_EXPOSED } from "./lib/tool-profiles.js"
 import { searchDecisions, SearchDecisionsSchema, getDecisionText, GetDecisionTextSchema } from "./tools/unified-decisions.js"
 
 // Tool imports
@@ -92,7 +93,7 @@ export const allTools: McpTool[] = [
   },
   {
     name: "get_law_text",
-    description: "[법령조회] 조문 전문 조회. mst/lawId 필수, jo로 특정 조문만 가능.",
+    description: "[법령조회] 조문 전문 조회. mst/lawId 필수, jo로 특정 조문만 가능 — jo는 '제148조의2' 같은 자연어 조문 표기를 그대로 받는다(권장). 6자리 JO 코드를 직접 쓰려면 조번호 4자리 zero-pad + 의X 2자리: 제10조의2→001002, 제234조의2→023402(234002 아님).",
     schema: GetLawTextSchema,
     handler: getLawText
   },
@@ -600,13 +601,13 @@ export const allTools: McpTool[] = [
   // 원본 도구는 allTools에 유지 — 직접 CallTool/execute_tool 하위호환.
   {
     name: "legal_research",
-    description: "[⛓리서치] 다단계 법령 리서치 통합 — 여러 API를 병렬로 엮는 복합 질문 전용. task: full_research=도메인·법령명 불명확한 자연어 질문 폴백(기본값, 예 '음주운전 처벌 기준') | law_system=법률·시행령·시행규칙 3단+위임+별표(예 '관세법 체계') | action_basis=처분·허가의 법적 근거+해석례+판례+행심(예 '영업정지 근거') | dispute_prep=불복·소송 준비, 판례+심판례+도메인 결정례(예 '과세처분 불복') | amendment_track=개정 이력+신구대조+연혁(예 '2023년 개정 뭐 바뀜') | ordinance_compare=조례 전국 비교+상위법 적합성(예 '서울시 주차 조례') | procedure_detail=절차·수수료·별표서식(예 '건축허가 절차') | document_review=계약서·약관 조항 리스크+근거법령(text 필수). 단일 조회로 답이 되면 search_law/get_law_text 쓸 것.",
+    description: "[⛓리서치] 다단계 법령 리서치 통합 — 여러 API를 병렬로 엮는 복합 질문 전용. task: full_research=도메인·법령명 불명확한 자연어 질문 폴백(기본값, 예 '음주운전 처벌 기준') | law_system=법률·시행령·시행규칙 3단+위임+별표(예 '관세법 체계') | action_basis=처분·허가의 법적 근거+해석례+판례+행심(예 '영업정지 근거') | dispute_prep=불복·소송 준비, 판례+심판례+도메인 결정례(예 '과세처분 불복') | amendment_track=개정 이력+신구대조+연혁(예 '2023년 개정 뭐 바뀜') | ordinance_compare=조례 전국 비교+상위법 적합성(예 '서울시 주차 조례') | procedure_detail=절차·수수료·별표서식(예 '건축허가 절차') | document_review=계약서·약관 조항 리스크+근거법령(text 필수). scenario(선택): 확장 시나리오 — time_travel(두 시점 본문 diff)·timeline·penalty·action_plan·delegation·impact·compliance·customs·manual. 미지정 시 쿼리에서 자동 감지되며, task별 호환 조합은 scenario 파라미터 설명 참조. 단일 조회로 답이 되면 search_law/get_law_text 쓸 것.",
     schema: LegalResearchSchema,
     handler: legalResearch
   },
   {
     name: "legal_analysis",
-    description: "[정밀분석] 검증·분석 4종 통합. mode: verify_citations=텍스트 속 조문 인용('민법 제750조' 등)이 실존하는지 법제처 DB 교차검증, LLM 환각 방지(text 필수) | cite_check=판례 생사 확인 — 사건번호로 후속 인용 역추적+변경·폐기 감지, 한국형 Citator(caseNumber 필수) | applicable_law=사건 시점에 시행되던 법령 버전+그 시점 조문+부칙 경과조치, 행위시법 판단(lawName+date 필수, jo 선택) | impact_map=한 조문을 인용한 판례·헌재·해석례·행심·조례 역방향 그래프+mermaid(lawName+jo 필수)",
+    description: "[정밀분석] 검증·분석 4종 통합. mode: verify_citations=텍스트 속 법령 조문·판례 인용('민법 제750조', '대법원 2013다61381' 등)이 실존하는지 법제처 DB 교차검증, LLM 환각 방지 — 판례는 실존불가/미확인 구분(text 필수) | cite_check=판례 생사 확인 — 사건번호로 후속 인용 역추적+변경·폐기 감지, 한국형 Citator(caseNumber 필수) | applicable_law=사건 시점에 시행되던 법령 버전+그 시점 조문+부칙 경과조치, 행위시법 판단(lawName+date 필수, jo 선택) | impact_map=한 조문을 인용한 판례·헌재·해석례·행심·조례 역방향 그래프+mermaid(lawName+jo 필수, jo는 '제103조'·'103조'·JO 6자리 코드 '010300' 모두 수용)",
     schema: LegalAnalysisSchema,
     handler: legalAnalysis
   },
@@ -772,19 +773,9 @@ function toMcpInputSchema(schema: unknown) {
  * (verify_citations/cite_check/applicable_law/impact_map) → legal_analysis(mode).
  * 원본 12개는 allTools에 유지 — CallTool 직접 호출/execute_tool 하위호환.
  *
- * ⚠️ get_annexes 제거 금지:
- *   헬스장 환불 케이스(trace ld-1775959823220, 79s)에서 별표 3의2를 가져오기 위해
- *   discover_tools × 2 + execute_tool 헛발질로 ~15초 손실. 직노출로 해결.
+ * 목록 자체는 lib/tool-profiles 의 V3_EXPOSED — discover_tools 의 말미 안내가
+ * 같은 목록을 봐야 "1-hop 도구를 주면서 2-hop 을 안내"하는 어긋남이 안 생긴다.
  */
-const V3_EXPOSED = new Set([
-  "legal_research",   // v4.4.0: chain_* 8개 통합 (task 파라미터)
-  "legal_analysis",   // v4.4.0: verify_citations/cite_check/applicable_law/impact_map 통합 (mode 파라미터)
-  "search_law", "get_law_text",
-  "get_annexes",
-  "search_decisions", "get_decision_text",
-  "ordinance_radar",  // v4.7.0: 조례 정비 레이더 (조례 담당 공무원 킬러기능)
-  "discover_tools", "execute_tool",
-])
 
 /**
  * 마켓플레이스(playmcp 등) 광고용 메타데이터.

@@ -14,7 +14,9 @@ import {
   type LawInfo,
 } from "../lib/law-search.js"
 import { routeQuery } from "../lib/query-router.js"
-import { runScenario, detectScenario, formatSections, formatSuggestedActions } from "./scenarios/index.js"
+import { resolveChainBaseLaw } from "./chain-law-lookup.js"
+import { startChainDeadline, raceDeadline, timedOutSection } from "./chain-deadline.js"
+import { runScenario, detectScenario, scenarioProvides, formatSections, formatSuggestedActions } from "./scenarios/index.js"
 import type { ScenarioType, ScenarioContext } from "./scenarios/index.js"
 
 // Tool handler imports
@@ -40,7 +42,18 @@ import {
   type StructuredPrecedentSearchResult,
 } from "./precedent-search-core.js"
 import { fetchPrecedentEvidence, validatePrecedentSearchResult } from "./precedent-evidence.js"
-import { getRequestSignal, throwIfRequestCancelled } from "../lib/session-state.js"
+import { getRequestSignal, throwIfRequestCancelled, runWithRequestContext } from "../lib/session-state.js"
+
+/**
+ * 체인 query 길이 상한 (#121).
+ *
+ * 체인 query 는 "법령명 + 키워드"라 짧다. 평가 세트(R/B 케이스 76건)의 최장 정상 질의가
+ * 145자(인용 검증용 붙여넣기)이므로 그 13배가 넘는 여유를 뒀다.
+ * 상한이 없으면 무제한 사용자 텍스트가 routeQuery 의 O(n²) 패턴에 그대로 들어가
+ * 이벤트 루프를 장기 점유한다(8.5k자 476ms, HTTP body 한도 100kb 안에서도 통과).
+ */
+const MAX_CHAIN_QUERY = 2000
+const chainQuery = (desc: string) => z.string().max(MAX_CHAIN_QUERY).describe(desc)
 
 // ========================================
 // Types
@@ -136,6 +149,22 @@ async function callAiLaw(
   }
 }
 
+/**
+ * 체인이 별표를 따로 받아야 하는가 (#131).
+ *
+ * 별표를 싣는 시나리오가 붙으면 체인은 받지 않는다 — 또 받으면 같은 파일을 두 번
+ * 내려받아 파싱하고(실측 3.0초) 같은 표가 두 번 나온다.
+ * 어느 시나리오가 무엇을 싣는지는 **시나리오가 선언**한다(scenarios/*.ts 의 PROVIDES).
+ * 여기에 이름을 하드코딩하면 별표를 싣는 새 시나리오가 생길 때마다 중복이 되살아난다.
+ */
+export function shouldFetchAnnexSeparately(
+  expansions: ExpansionType[],
+  scenario: ScenarioType | null
+): boolean {
+  const wanted = expansions.includes("annex_fee") || expansions.includes("annex_table")
+  return wanted && !scenarioProvides(scenario).includes("annex")
+}
+
 function detectExpansions(query: string): ExpansionType[] {
   const exp: ExpansionType[] = []
   // 환불/반환/배상/수강료 등 소비자분쟁 관련 금액 키워드 확장
@@ -182,11 +211,16 @@ function secOrSkip(title: string, result: CallResult): string {
   return `\n▶ ${title} [NOT_FOUND / FAILED]\n   ⚠️ 이 섹션은 조회 실패 — LLM은 내용을 추측/생성하지 마세요.\n`
 }
 
-function noResult(query: string): ToolResponse {
+function noResult(query: string, attempts: string[] = []): ToolResponse {
   const keywords = query.trim().split(/\s+/)
   const lines = [`[NOT_FOUND] '${query}' 관련 법령을 찾을 수 없습니다.`]
   lines.push("")
   lines.push("⚠️ 이 체인은 기반 법령을 찾지 못해 실행을 중단했습니다. LLM은 법령·조문·판례를 추측/생성하지 마세요. 사용자에게 '검색 실패'를 명시 보고하세요.")
+  // 무엇으로 찾아봤는지 밝힌다 — 안 밝히면 이용자는 다르게 물을 방법을 모른다(#105)
+  if (attempts.length) {
+    lines.push("")
+    lines.push(`시도한 검색어: ${attempts.map(a => `"${a}"`).join(" → ")}`)
+  }
   if (keywords.length >= 2) {
     lines.push("")
     lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
@@ -302,7 +336,7 @@ function wrapError(error: unknown, toolName?: string): ToolResponse {
 // ========================================
 
 export const chainLawSystemSchema = z.object({
-  query: z.string().describe("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
+  query: chainQuery("법령명 또는 키워드 (예: '관세법', '건축법 허가')"),
   articles: z.array(z.string()).optional().describe("조회할 조문 번호 (예: ['제38조', '제39조'])"),
   scenario: z.enum(["delegation", "impact"]).optional()
     .describe("확장 시나리오. delegation=위임입법 미이행 감시, impact=개정 영향도 분석. 미지정 시 쿼리에서 자동 감지."),
@@ -314,8 +348,9 @@ export async function chainLawSystem(
   input: z.infer<typeof chainLawSystemSchema>
 ): Promise<ToolResponse> {
   try {
-    const laws = await findLaws(apiClient, input.query, input.apiKey)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     const parts = [
@@ -364,7 +399,7 @@ export async function chainLawSystem(
 // ========================================
 
 export const chainActionBasisSchema = z.object({
-  query: z.string().describe("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
+  query: chainQuery("처분 유형 + 키워드 (예: '건축허가 거부 근거', '보조금 환수')"),
   scenario: z.enum(["penalty"]).optional()
     .describe("확장 시나리오. penalty=처분·벌칙 기준 종합 (별표 처분기준표 + 감경 판례 + 개정이력). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -375,52 +410,79 @@ export async function chainActionBasis(
   input: z.infer<typeof chainActionBasisSchema>
 ): Promise<ToolResponse> {
   try {
-    const laws = await findLaws(apiClient, input.query, input.apiKey)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     const parts = [`═══ 처분 근거 확인: ${p.lawName} ═══`]
 
-    // Step 1: 3단 비교 (요건 체계)
-    const threeTier = await callTool(getThreeTier, apiClient, { mst: p.mst, apiKey: input.apiKey })
-    parts.push(secOrSkip("법령 체계 (법률·시행령·시행규칙)", threeTier))
-
-    // Step 2: 해석례 + 판례 + 행정심판 (병렬)
-    // 법령명 기반 검색 (input.query는 AND 키워드 과다로 결과 없을 수 있음)
-    const searchQuery = p.lawName
-    const [interpR, precR, appealR] = await Promise.all([
-      callTool(searchInterpretations, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-      callTool(searchPrecedents, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-      callTool(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-    ])
-
-    parts.push(secOrSkip("법령 해석례", interpR))
-    parts.push(secOrSkip("관련 판례", precR))
-    parts.push(secOrSkip("행정심판례", appealR))
-
-    const [interpDetail, precDetail, appealDetail] = await Promise.all([
-      fetchSearchDetailChain(apiClient, "search_interpretations", interpR, { apiKey: input.apiKey }),
-      fetchSearchDetailChain(apiClient, "search_precedents", precR, { apiKey: input.apiKey }),
-      fetchSearchDetailChain(apiClient, "search_admin_appeals", appealR, { apiKey: input.apiKey }),
-    ])
-    if (interpDetail) parts.push(secOrSkip("법령 해석례 상세", interpDetail))
-    if (precDetail) parts.push(secOrSkip("관련 판례 상세", precDetail))
-    if (appealDetail) parts.push(secOrSkip("행정심판례 상세", appealDetail))
-
-    // 키워드 확장
     const exp = detectExpansions(input.query)
-    if (exp.includes("annex_fee") || exp.includes("annex_table")) {
-      const annexes = await callTool(getAnnexes, apiClient, { lawName: p.lawName, apiKey: input.apiKey })
-      parts.push(secOrSkip("별표 (과태료/기준표)", annexes))
+    const scenario = (input.scenario || detectScenario(input.query, "chain_action_basis")) as ScenarioType | null
+    const wantsAnnex = shouldFetchAnnexSeparately(exp, scenario)
+
+    // 기반 법령이 정해지면 이후 4갈래는 서로를 기다릴 이유가 없다 — 전에는 순차라
+    // 왕복이 그대로 누적됐다(실측 35초, 클라이언트 기본 타임아웃 60초에 근접)(#131).
+    // 출력 순서는 조립 단계에서 그대로 지킨다.
+    const searchQuery = p.lawName  // input.query는 AND 키워드 과다로 결과 없을 수 있음
+
+    // 업스트림 꼬리는 병렬화로 못 막는다 — 시간이 다하면 받은 것까지 조립하고
+    // 못 받은 자리는 마커로 남긴다(#131). 갈래들은 데드라인 신호를 공유해
+    // 만료 시 진행 중 요청이 함께 끊긴다.
+    const deadline = startChainDeadline()
+    let threeTier, evidence, annexes, sr
+    try {
+      ;[threeTier, evidence, annexes, sr] = await runWithRequestContext(
+        { signal: deadline.signal },
+        () => Promise.all([
+          raceDeadline(deadline, callTool(getThreeTier, apiClient, { mst: p.mst, apiKey: input.apiKey })),
+          raceDeadline(deadline, (async () => {
+            const [interpR, precR, appealR] = await Promise.all([
+              callTool(searchInterpretations, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+              callTool(searchPrecedents, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+              callTool(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+            ])
+            const [interpDetail, precDetail, appealDetail] = await Promise.all([
+              fetchSearchDetailChain(apiClient, "search_interpretations", interpR, { apiKey: input.apiKey }),
+              fetchSearchDetailChain(apiClient, "search_precedents", precR, { apiKey: input.apiKey }),
+              fetchSearchDetailChain(apiClient, "search_admin_appeals", appealR, { apiKey: input.apiKey }),
+            ])
+            return { interpR, precR, appealR, interpDetail, precDetail, appealDetail }
+          })()),
+          raceDeadline(deadline, wantsAnnex
+            ? callTool(getAnnexes, apiClient, { lawName: p.lawName, apiKey: input.apiKey })
+            : Promise.resolve(null)),
+          raceDeadline(deadline, scenario
+            ? runScenario(scenario, { apiClient, query: input.query, law: p, apiKey: input.apiKey } as ScenarioContext)
+            : Promise.resolve(null)),
+        ])
+      )
+    } finally {
+      deadline.dispose()
     }
 
-    // Scenario 확장
-    const scenario = (input.scenario || detectScenario(input.query, "chain_action_basis")) as ScenarioType | null
-    if (scenario) {
-      const ctx: ScenarioContext = { apiClient, query: input.query, law: p, apiKey: input.apiKey }
-      const sr = await runScenario(scenario, ctx)
-      parts.push(formatSections(sr.sections))
-      parts.push(formatSuggestedActions(sr.suggestedActions))
+    if (threeTier.ok) parts.push(secOrSkip("법령 체계 (법률·시행령·시행규칙)", threeTier.value))
+    else parts.push(timedOutSection("법령 체계 (법률·시행령·시행규칙)", "get_three_tier"))
+
+    if (evidence.ok) {
+      const e = evidence.value
+      parts.push(secOrSkip("법령 해석례", e.interpR))
+      parts.push(secOrSkip("관련 판례", e.precR))
+      parts.push(secOrSkip("행정심판례", e.appealR))
+      if (e.interpDetail) parts.push(secOrSkip("법령 해석례 상세", e.interpDetail))
+      if (e.precDetail) parts.push(secOrSkip("관련 판례 상세", e.precDetail))
+      if (e.appealDetail) parts.push(secOrSkip("행정심판례 상세", e.appealDetail))
+    } else {
+      parts.push(timedOutSection("법령 해석례·판례·행정심판례", "search_interpretations / search_decisions"))
+    }
+
+    if (!annexes.ok) parts.push(timedOutSection("별표 (과태료/기준표)", "get_annexes"))
+    else if (annexes.value) parts.push(secOrSkip("별표 (과태료/기준표)", annexes.value))
+
+    if (!sr.ok) parts.push(timedOutSection(`시나리오(${scenario})`, "legal_research"))
+    else if (sr.value) {
+      parts.push(formatSections(sr.value.sections))
+      parts.push(formatSuggestedActions(sr.value.suggestedActions))
     }
 
     return wrapResult(parts.join("\n"))
@@ -434,7 +496,7 @@ export async function chainActionBasis(
 // ========================================
 
 export const chainDisputePrepSchema = z.object({
-  query: z.string().describe("분쟁 키워드 (예: '건축허가 취소 행정심판', '징계처분 감경')"),
+  query: chainQuery("분쟁 키워드 (예: '건축허가 취소 행정심판', '징계처분 감경')"),
   domain: z.enum(["tax", "labor", "privacy", "competition", "general"]).optional()
     .describe("전문 분야 (tax=조세심판, labor=노동위, privacy=개인정보위, competition=공정위). 미지정 시 쿼리에서 자동 감지"),
   apiKey: z.string().optional(),
@@ -521,7 +583,7 @@ export async function chainDisputePrep(
 // ========================================
 
 export const chainAmendmentTrackSchema = z.object({
-  query: z.string().describe("법령명 (예: '관세법', '지방세특례제한법')"),
+  query: chainQuery("법령명 (예: '관세법', '지방세특례제한법')"),
   mst: z.string().optional().describe("법령일련번호 (알고 있으면)"),
   lawId: z.string().optional().describe("법령ID (알고 있으면)"),
   scenario: z.enum(["timeline", "time_travel"]).optional()
@@ -544,8 +606,9 @@ export async function chainAmendmentTrack(
 
     // 법령 검색 (MST 모르면)
     if (!mst && !lawId) {
-      const laws = await findLaws(apiClient, input.query, input.apiKey, 1)
-      if (laws.length === 0) return noResult(input.query)
+      const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 1)
+      const laws = base.laws
+      if (laws.length === 0) return noResult(input.query, base.attempts)
       mst = laws[0].mst
       lawId = laws[0].lawId
       lawName = laws[0].lawName
@@ -588,7 +651,7 @@ export async function chainAmendmentTrack(
 // ========================================
 
 export const chainOrdinanceCompareSchema = z.object({
-  query: z.string().describe("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
+  query: chainQuery("조례 관련 키워드 (예: '주민자치회', '개발행위 허가 기준')"),
   parentLaw: z.string().optional().describe("상위 법령명 (예: '지방자치법'). 미지정 시 자동 검색."),
   scenario: z.enum(["compliance"]).optional()
     .describe("확장 시나리오. compliance=조례 상위법 적합성 검증 (헌재·행심 위법 판결 + 상위법 근거 분석). 미지정 시 쿼리에서 자동 감지."),
@@ -658,7 +721,7 @@ export async function chainOrdinanceCompare(
 // ========================================
 
 export const chainFullResearchSchema = z.object({
-  query: z.string().describe("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
+  query: chainQuery("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
   scenario: z.enum(["customs", "action_plan"]).optional()
     .describe("확장 시나리오. customs=관세·통관 종합 | action_plan=이럴 땐 이렇게, 5단계 안내(v4.0, 진단→권리→기관/기한→서류→함정). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -668,13 +731,15 @@ export async function chainFullResearch(
   apiClient: LawApiClient,
   input: z.infer<typeof chainFullResearchSchema>
 ): Promise<ToolResponse> {
+  // 체인 전체를 덮는 시계 — 뒤 갈래들은 앞 단계가 쓰고 남은 시간만 갖는다(#131)
+  const deadline = startChainDeadline()
   try {
     const parts = [`═══ 종합 리서치: ${input.query} ═══`]
 
     // Step 1: AI 검색 + 법령 검색 + 해석례를 병렬 실행하고, 판례는 AI 구조화 신호를 받은 뒤 공통 core로 검색한다.
     // findLaws를 안전하게 래핑 (throw 시 Promise.all 전체 reject 방지)
     const safeFindLaws = async (): Promise<LawInfo[]> => {
-      try { return await findLaws(apiClient, input.query, input.apiKey, 2) }
+      try { return (await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 2)).laws }
       catch { return [] }
     }
     const [aiResult, rawLawsResult, interpResult] = await Promise.all([
@@ -705,34 +770,54 @@ export async function chainFullResearch(
     parts.push(secOrSkip("관련 판례", precedentBundle.searchResult))
     parts.push(secOrSkip("법령 해석례", interpResult))
 
-    const [interpDetail] = await Promise.all([
-      fetchSearchDetailChain(apiClient, "search_interpretations", interpResult, { apiKey: input.apiKey }),
-    ])
-    if (precedentBundle.detailResult) parts.push(secOrSkip("관련 판례 상세", precedentBundle.detailResult))
-    if (interpDetail) parts.push(secOrSkip("법령 해석례 상세", interpDetail))
-
-    // 키워드 확장
-    const exp = detectExpansions(input.query)
-    if (lawsResult.length > 0) {
-      if (exp.includes("annex_fee") || exp.includes("annex_table") || exp.includes("annex_form")) {
-        const annexes = await callTool(getAnnexes, apiClient, { lawName: lawsResult[0].lawName, apiKey: input.apiKey })
-        parts.push(secOrSkip("별표/서식", annexes))
-      }
-    }
-
     // Scenario 확장
     const scenario = (input.scenario || detectScenario(input.query, "chain_full_research")) as ScenarioType | null
-    if (scenario) {
-      const law = lawsResult.length > 0 ? lawsResult[0] : undefined
-      const ctx: ScenarioContext = { apiClient, query: input.query, law, apiKey: input.apiKey }
-      const sr = await runScenario(scenario, ctx)
-      parts.push(formatSections(sr.sections))
-      parts.push(formatSuggestedActions(sr.suggestedActions))
+
+    // 키워드 확장 — 시나리오(customs·action_plan)가 같은 법령의 별표를 이미 싣는다면 생략(#131).
+    // 이 체인은 서식(annex_form)도 같은 조회로 받으므로 함께 가린다
+    const exp = detectExpansions(input.query)
+    const providesAnnex = scenarioProvides(scenario).includes("annex")
+    const wantsAnnex = lawsResult.length > 0 &&
+      (shouldFetchAnnexSeparately(exp, scenario) || (exp.includes("annex_form") && !providesAnnex))
+
+    // 남은 세 갈래는 서로 독립이다 — 남은 시간 안에서 함께 돌리고, 못 끝낸 자리는 마커로 남긴다
+    const [interpDetailR, annexR, srR] = await runWithRequestContext(
+      { signal: deadline.signal },
+      () => Promise.all([
+        raceDeadline(deadline,
+          fetchSearchDetailChain(apiClient, "search_interpretations", interpResult, { apiKey: input.apiKey })),
+        raceDeadline(deadline, wantsAnnex
+          ? callTool(getAnnexes, apiClient, { lawName: lawsResult[0].lawName, apiKey: input.apiKey })
+          : Promise.resolve(null)),
+        raceDeadline(deadline, scenario
+          ? runScenario(scenario, {
+              apiClient,
+              query: input.query,
+              law: lawsResult.length > 0 ? lawsResult[0] : undefined,
+              apiKey: input.apiKey,
+            } as ScenarioContext)
+          : Promise.resolve(null)),
+      ])
+    )
+
+    if (precedentBundle.detailResult) parts.push(secOrSkip("관련 판례 상세", precedentBundle.detailResult))
+    if (!interpDetailR.ok) parts.push(timedOutSection("법령 해석례 상세", "search_interpretations"))
+    else if (interpDetailR.value) parts.push(secOrSkip("법령 해석례 상세", interpDetailR.value))
+
+    if (!annexR.ok) parts.push(timedOutSection("별표/서식", "get_annexes"))
+    else if (annexR.value) parts.push(secOrSkip("별표/서식", annexR.value))
+
+    if (!srR.ok) parts.push(timedOutSection(`시나리오(${scenario})`, "legal_research"))
+    else if (srR.value) {
+      parts.push(formatSections(srR.value.sections))
+      parts.push(formatSuggestedActions(srR.value.suggestedActions))
     }
 
     return wrapResult(parts.join("\n"))
   } catch (error) {
     return wrapError(error)
+  } finally {
+    deadline.dispose()
   }
 }
 
@@ -741,7 +826,7 @@ export async function chainFullResearch(
 // ========================================
 
 export const chainProcedureDetailSchema = z.object({
-  query: z.string().describe("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
+  query: chainQuery("절차/비용 관련 질문 (예: '여권발급 절차 수수료', '건축허가 신청 방법')"),
   scenario: z.enum(["manual"]).optional()
     .describe("확장 시나리오. manual=공무원 처리 매뉴얼 (행정규칙 + 자치법규 특칙 + 해석례 추가). 미지정 시 쿼리에서 자동 감지."),
   apiKey: z.string().optional(),
@@ -755,8 +840,9 @@ export async function chainProcedureDetail(
     const parts = [`═══ 절차/비용 안내: ${input.query} ═══`]
 
     // Step 1: 법령 검색
-    const laws = await findLaws(apiClient, input.query, input.apiKey, 3)
-    if (laws.length === 0) return noResult(input.query)
+    const base = await resolveChainBaseLaw(apiClient, input.query, input.apiKey, 3)
+    const laws = base.laws
+    if (laws.length === 0) return noResult(input.query, base.attempts)
 
     const p = laws[0]
     parts.push(`법령: ${p.lawName} (${p.lawType}) | MST: ${p.mst}`)

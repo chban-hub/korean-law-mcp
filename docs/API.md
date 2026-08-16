@@ -1,6 +1,6 @@
 # Korean Law MCP - API Reference
 
-> **v4.9.1** | 10개 노출 도구 (내부 98개, 미노출 도구는 execute_tool 또는 직접 호출로 접근)
+> **v4.11.0** | 10개 노출 도구 (내부 98개, 미노출 도구는 execute_tool 또는 직접 호출로 접근)
 
 도구 구조는 [README.md](../README.md) 참조.
 상세 파라미터는 각 도구의 Zod 스키마(`src/tools/*.ts`) 참조.
@@ -71,6 +71,17 @@
 | `legal_research` | 다단계 리서치 — `task` 8종(full_research·law_system·action_basis·dispute_prep·amendment_track·ordinance_compare·procedure_detail·document_review)으로 아래 체인 도구 8개를 디스패치 |
 | `legal_analysis` | 정밀 분석/검증 — `mode` 4종(verify_citations·cite_check·applicable_law·impact_map)으로 아래 킬러 기능 4개를 디스패치. 비용 옵션 패스스루: `maxCitations`(기본 15), `display`(기본 20), `deepScan`(기본 true), `includeOrdinances`(기본 true), `includeMermaid`(기본 true) — v4.4.1 |
 
+**mode별 필수 파라미터**
+
+| mode | 필수 | 선택 |
+|---|---|---|
+| `verify_citations` | `text` | `maxCitations` |
+| `cite_check` | `caseNumber` (문장 포함 가능 — `"2013다61381 아직 유효해?"`) | `display`, `deepScan` |
+| `applicable_law` | `lawName`, `date` | `jo` |
+| `impact_map` | `lawName`, `jo` | `includeOrdinances`, `includeMermaid` |
+
+`jo`는 자연어 표기(`"제103조"`, `"제10조의2"`)와 6자리 JO 코드(`"010300"`, `"001002"`)를 모두 수용한다.
+
 ### 조례 정비 레이더 (1개, 직노출 — v4.7.0)
 
 | 도구 | 설명 |
@@ -91,7 +102,24 @@
 | `parse_jo_code` | - | 조문번호 ↔ 코드 변환 |
 | `get_law_history` | - | 특정일 법령 변경 목록 |
 | `advanced_search` | - | 기간/AND/OR 검색 |
-| `get_annexes` | - | 별표/서식 조회 + HWPX/HWP 본문 추출 |
+| `get_annexes` | - | 별표/서식 조회 + HWPX/HWP 본문 추출 (아래 파라미터 표 참조) |
+
+#### `get_annexes` 파라미터
+
+| 파라미터 | 필수 | 설명 |
+|---|---|---|
+| `lawName` | ✓ | 법령명. 표기를 함께 실어도 된다 — `"관세법 별표4"`, `"관세법 별표 1의2"`, `"관세법 별표 제4호"` |
+| `annexNo` | | 별표 번호. `"4"` · `"별표4"` · `"제4호"` · `"4의2"` 모두 수용 (가지번호는 6자리 코드 `000402`로 정규화) |
+| `bylSeq` | | 법제처 별표번호 6자리 코드 직접 지정 (`"000300"`) |
+| `query` | | **번호를 모를 때** 별표명으로 좁히기 (`"운전면허 취소·정지"`, `"과태료"`). 1건으로 좁혀지면 그 별표 본문을 바로 추출한다. 자연어 라우팅에서 번호 없는 별표 질의가 이 값으로 온다 |
+| `jo` | | 위임 조문 (`"제38조"`, `"38"`). 별표명의 `(제38조 관련)` 표기와 대조해 좁히고 응답에 위임 관계를 표기 |
+| `knd` | | `1`=별표 `2`=서식 `3`=부칙별표 `4`=부칙서식 `5`=전체 |
+
+**별표번호 6자리 코드(AAAABB)** — 번호 4자리 + 가지번호 2자리. JO 코드와 같은 체계다.
+`002800`=별표 28, `012800`=별지 제128호, `002003`=별지 제20호의3 (2026-08-17 licbyl 실측).
+
+목록 조회는 업스트림이 한 페이지당 100건에서 자르므로(`display` 상향 불가) `page`로 이어 받는다.
+상한 5페이지(500건)이며, 걸리면 응답 맨 앞에 `⚠️ … 500건까지만 수집`을 명시한다.
 
 ### 조회 (9개)
 
@@ -223,6 +251,37 @@
 | `chain_full_research` | 종합 리서치 (AI검색→법령→판례→해석) |
 | `chain_procedure_detail` | 절차/비용/서식 (법체계→별표→시행규칙별표) |
 | `chain_document_review` | 문서 리뷰 (문서분석→관련법령→판례) |
+
+---
+
+### 메타 도구 (2개, 직노출)
+
+| 도구 | 설명 |
+|------|------|
+| `discover_tools` | 의도/카테고리 자연어로 도구 찾기 |
+| `execute_tool` | 미노출 도구 프록시 실행 (`tool_name` + `params`) |
+
+**`discover_tools` 응답 형식**
+
+```
+"<intent>" 관련 도구:
+
+[카테고리]
+  - tool_name: 설명
+  - ...
+
+(연관도 낮은 N개 카테고리 생략 — intent를 좁히면 나머지가 보입니다.)
+
+<말미 안내>
+```
+
+- 별칭이 직접 겨냥하는 의도 카테고리는 **1-hop 진입점**(`legal_research`/`legal_analysis`)을 앞세운다.
+  예: `"판례 유효성"` → `[판례생사] legal_analysis, cite_check`
+- 노출 도구는 설명 대신 `노출 도구 — 직접 호출` 포인터로 실린다 (같은 description을 반복해 싣지 않음).
+- 말미 안내는 결과에 따라 갈린다 — 노출 도구가 섞이면
+  `"<노출도구>는 그대로 호출하세요. 나머지는 execute_tool 경유입니다."`,
+  전부 미노출이면 `"execute_tool로 실행하세요."`
+- 무매칭이면 전체 카테고리 목록 대신 카테고리 수 + 대표 카테고리만 돌려준다.
 
 ---
 

@@ -17,7 +17,7 @@ src/
 ├── index.ts              # 엔트리포인트 (STDIO/HTTP 모드)
 ├── cli.ts                # CLI v2.0 (자연어 라우팅 + REPL)
 ├── tool-registry.ts      # 98개 도구 등록, V3_EXPOSED 10개만 노출 (TOOL_COUNTS 파생값)
-├── tools/                # 도구 구현 (50개 파일, 각 200줄 미만)
+├── tools/                # 도구 구현 (76개 파일, scenarios/ 포함)
 ├── lib/
 │   ├── api-client.ts     # API 클라이언트 (throwIfError/checkHtmlError 통일)
 │   ├── query-router.ts   # 자연어 → 도구 라우팅 엔진 (verify/비교/시간필터 패턴 포함)
@@ -29,7 +29,7 @@ src/
 │   ├── xml-parser.ts     # 공통 XML 파싱
 │   ├── errors.ts         # 에러 표준화
 │   ├── schemas.ts        # 날짜/응답크기 검증 (truncateResponse)
-│   ├── search-normalizer.ts  # 검색어 정규화 (LexDiff, 약칭 52개)
+│   ├── search-normalizer.ts  # 검색어 정규화 (LexDiff, 약칭 표제 60개)
 │   ├── upcoming-laws.ts  # 시행예정 법령 감지 (eflaw 보조검색 — 제명변경·미시행 개정 병기)
 │   ├── abolished-laws.ts # 폐지 감지 (법령=eflaw·행정규칙=nw=2 연혁 — 폐지사유·후속 통합 규정 안내)
 │   ├── law-parser.ts     # JO 코드 변환 (LexDiff)
@@ -106,6 +106,7 @@ korean-law get_law_text --mst 160001 --jo "제1조"
 - `MCP_MAX_UPSTREAM_REQUESTS`: 한 outer request가 사용할 수 있는 upstream attempt 수 (기본 `48`, 재시도/안티봇 hop 포함)
 - `MCP_MAX_UPSTREAM_BODY_BYTES` / `MCP_MAX_TOTAL_UPSTREAM_BODY_BYTES`: 단일/전체 upstream 응답 본문 byte 한도
 - `MCP_MAX_TOOL_RESPONSE_CHARS`: MCP 도구 응답 문자 한도 (기본 `50000`)
+- `MCP_CHAIN_DEADLINE_MS`: 체인(`legal_research`) 한 건의 데드라인 (기본 `45000`, 허용 `5000`~`300000`). 만료 시 받은 갈래까지 조립해 **부분 결과**를 돌려주고 못 받은 자리는 마커로 남긴다 — MCP 클라이언트 기본 타임아웃 60초보다 넉넉히 짧게 잡을 것
 
 ## Domain Knowledge
 
@@ -137,10 +138,14 @@ get_law_text(mst, jo="006300") → 제63조(휴직) 조회
 ## Critical Rules
 
 1. **LexDiff 코드 수정 금지**: `search-normalizer.ts`, `law-parser.ts`는 LexDiff에서 가져온 코드. 수정 시 원본 확인 필수
+   - 현재 `search-normalizer.ts`에는 **LexDiff 표 직접 편집**이 하나 있다(도로교통법 약칭, `LAW_ALIAS_ENTRIES` 배열 안쪽 · 상류 대조 주석 동반). 별도 파일 오버레이가 **아니므로** LexDiff 동기화 시 clean overwrite가 안 된다 — 덮어쓰기 전 이 항목을 옮겨야 한다
+   - `citation-content-matcher.ts`도 LexDiff 이식본이다. 헤더가 "동작 동일" 재구현만 허용하므로 동작이 바뀌는 수정은 상류 대조 없이 넣지 않는다
 2. **파일 크기 200줄 미만**: 초과 시 `src/lib/`로 분리 (예외: `risk-rules.ts`는 데이터 선언 위주라 500줄 경계 허용)
+   - **(제안, 미확정)** `route-patterns.ts`도 같은 계열의 예외 후보다 — 본문 대부분이 단일 `Pattern[]` 데이터 배열이고, 도메인 축으로 쪼개면 "어느 규칙이 이겼는가"를 한 파일에서 못 읽게 된다. 채택하려면 예외 기준("데이터 선언 위주")을 명문화할 것
+   - 현실 고지: 이 규칙을 넘긴 파일이 현재 38개다. 신규 파일에는 엄격히 적용하되, 기존 초과분 정리는 별도 과제
 3. **Zod 스키마**: 모든 도구 입력에 Zod 검증 필수
 4. **도구 추가**: `tool-registry.ts`의 `allTools` 배열에 추가
-5. **truncateResponse 필수**: 모든 도구의 최종 출력에 `truncateResponse()` 적용 (50KB 제한)
+5. **truncateResponse 필수**: 모든 도구의 최종 출력에 `truncateResponse()` 적용. 한도는 **5만 자(UTF-16 code unit)**이지 50KB가 아니다 — 한글은 UTF-8로 자당 3바이트라 5만 자는 최대 150KB다(#92). `MCP_MAX_TOOL_RESPONSE_CHARS`로 조정
 6. **단일 객체 정규화**: API 응답의 배열 필드가 단일 객체로 올 수 있음 — `Array.isArray(x) ? x : [x]` 패턴 사용
 7. **cleanHtml 재사용**: HTML 엔티티 디코딩은 `article-parser.ts`의 `cleanHtml()` 사용 (수동 디코딩 금지)
 8. **console.log/error 금지**: STDIO 모드에서 간섭 방지. 에러는 throw로 전파. HTTP 모드 에러 로깅은 반드시 `scrubError()` 경유 (API 키 유출 방지)
@@ -175,7 +180,55 @@ get_law_text(mst, jo="006300") → 제63조(휴직) 조회
 | `tools/chains.ts` | 8개 체인 도구 + scenario 분기 (자동감지/수동지정) |
 | `tools/scenarios/index.ts` | 시나리오 통합 실행기 + detectScenario() |
 | `tools/scenarios/*.ts` | 9개 시나리오 모듈 (penalty/customs/manual/delegation/impact/timeline/compliance + v4.0 time-travel/action-plan) |
-| `lib/article-parser.ts` | 조문 파서 (cleanHtml, extractHangContent) |
+| `lib/article-parser.ts` | 조문 파서 (cleanHtml, extractHangContent, CIRCLED_DIGITS ①~㊿) |
+
+### 라우팅·추출 (query-router 분해 산물)
+
+| 파일 | 역할 |
+|------|------|
+| `lib/route-patterns.ts` | 라우팅 패턴 테이블 — "어떤 자연어가 어떤 도구로" 선언부 |
+| `lib/query-extract.ts` | 질의 → 도구 파라미터 추출기 (`lawNameFromQuery`, `stripArticleTail`, `extractAnnexParams`) |
+| `lib/scenario-rules.ts` | 시나리오 판정 어휘 — CLI·MCP 공통 원본 |
+| `lib/route-explain.ts` | 라우팅 근거 설명기 (`--verbose`/`explain`) |
+| `lib/date-parser.ts` · `lib/date-patterns.ts` · `lib/date-types.ts` | 자연어 날짜 엔진 / 패턴 테이블 + 상대 시점 어휘 / 타입 |
+| `lib/tool-discovery.ts` | discover_tools 랭킹·섹션 상한 |
+
+### 인용·조문 앵커 (분석 도구 공용)
+
+| 파일 | 역할 |
+|------|------|
+| `lib/case-citation.ts` | 사건부호 **단일 원본** — 추출·실존 확인 (`CASE_CODE_PATTERN`) |
+| `lib/article-anchor.ts` | 조문 인용 앵커 파싱 + 법령명 동일성 판정 |
+| `lib/citation-content-matcher.ts` | 인용 내용 일치 검증 (LexDiff 이식) |
+| `lib/impact-buckets.ts` | impact_map 버킷 분류 |
+| `lib/precedent-body.ts` | 판례 본문 필드 정규화 + 변경·폐기 문구 스캔 |
+
+### 업스트림 경계 (실행 예산·미스 판정)
+
+| 파일 | 역할 |
+|------|------|
+| `lib/execution-limits.ts` | 요청 단위 예산 + `parseIntegerLimit` (env 정수 검증 단일 원본) |
+| `lib/response-body.ts` | 예산·취소가 걸린 본문 리더 |
+| `lib/body-shape.ts` · `lib/upstream-miss.ts` | HTML/빈 본문 술어 단일 원본 / 미스 확정 판정 |
+| `tools/chain-deadline.ts` | 체인 데드라인 + 부분 결과 조립 (`MCP_CHAIN_DEADLINE_MS`) |
+
+### 별표/서식
+
+| 파일 | 역할 |
+|------|------|
+| `lib/annex-notation.ts` | 별표 표기 문법 **단일 원본** (별표4 · 별표 제4호 · 별표 1의2 → AAAABB) |
+| `tools/annex-list.ts` | 목록 수집 — 봉투 파싱 + 페이지네이션(업스트림 100건/페이지) |
+| `tools/annex-select.ts` | 번호·제목·위임조문으로 목록에서 항목 선택 |
+| `lib/annex-canonical.ts` | 현행 본문 별표단위 대조 (정본 링크·신설 병합) |
+
+### 기타 공용
+
+| 파일 | 역할 |
+|------|------|
+| `lib/escape-regex.ts` | 정규식 메타문자 이스케이프 단일 원본 |
+| `lib/truncate-text.ts` | 의미 경계 절단 (`cutAtSafeBoundary`) |
+| `lib/ordinance-relevance.ts` | 자치법규 조문 인용 실측 대조 |
+| `lib/law-search.ts` | 법령명 완화 매칭 (`looseMatchLawName`) 등 검색 공용 |
 
 ## Docs
 

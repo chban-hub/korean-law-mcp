@@ -16,6 +16,8 @@
  *    (동작 동일).
  */
 
+import { CIRCLED_DIGITS } from "./article-parser.js"
+
 export type MatchMethod = 'exact' | 'token-jaccard' | 'semantic' | 'mismatch'
 
 export interface ContentMatchResult {
@@ -31,7 +33,24 @@ const MIN_EXACT_LEN = 30
 // 0.05~0.10 수준. 어순/조사 paraphrase로 공통 의미를 유지하면 0.25~0.50.
 const JACCARD_THRESHOLD = 0.25
 
-const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮'
+/*
+ * 원숫자(항 번호) 범위 — 상류 대조 완료 후 의도적 확장 (#147, 2026-08-17 확인).
+ *
+ * 상류: chrisryugj/lexdiff@f15d400 `lib/citation-content-matcher.ts:42-43`은
+ * `[①…⑮]` 15개에서 멈춘다(해당 파일 최종 변경 5c3a725, 2026-04-12). 상류를 직접 읽고
+ * 확인했으며, 로컬 이식본은 그 범위를 그대로 옮긴 것이었다.
+ *
+ * 그런데 상류 자신이 이 파일에서만 ⑮이고 나머지 전 모듈(admrul-parser·link-pattern-matchers·
+ * link-specialized·law-xml-parser·delegation-gap/patterns)은 ⑳까지 쓴다 — 상류 내부
+ * 불일치이자 이 파일 쪽 누락으로 보인다. 이 레포에도 article-parser의 CIRCLED_DIGITS(㊿)가
+ * 이미 단일 원본으로 있어, 같은 문서를 두 알파벳으로 읽는 상태였다.
+ *
+ * 제16항 이상을 못 읽으면 정규화가 조용히 실패해 인용 대조가 어긋나므로, 상류 확인을
+ * 마친 근거로 CIRCLED_DIGITS를 참조해 확장한다(규칙 1의 "원본 확인" 충족,
+ * search-normalizer:267의 문서화된 의도적 분기와 같은 방식).
+ */
+const CIRCLED = CIRCLED_DIGITS
+const CIRCLED_RE = new RegExp(`[${CIRCLED_DIGITS}]`, "g")
 
 // zero-width: U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+FEFF BOM
 function isZeroWidth(cp: number): boolean {
@@ -56,7 +75,7 @@ export function normalizeLegalText(s: string): string {
     cleaned += cp === 0x00a0 ? ' ' : ch
   }
   return cleaned
-    .replace(/[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/g, (m) => `(${CIRCLED.indexOf(m) + 1})`)
+    .replace(CIRCLED_RE, (m) => `(${CIRCLED.indexOf(m) + 1})`)
     .replace(/[「『]/g, '')
     .replace(/[」』]/g, '')
     .replace(/[·•]/g, ' ')

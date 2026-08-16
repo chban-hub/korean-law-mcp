@@ -2,19 +2,20 @@
  * Scenario 통합 실행기
  * 시나리오 타입에 따라 적절한 모듈을 호출하고 결과를 반환
  */
-export type { ScenarioType, ScenarioResult, ScenarioContext } from "./types.js"
+export type { ScenarioType, ScenarioResult, ScenarioContext, ScenarioResource } from "./types.js"
 export { formatSections, formatSuggestedActions } from "./types.js"
 
-import type { ScenarioType, ScenarioContext, ScenarioResult } from "./types.js"
-import { runPenaltyScenario } from "./penalty.js"
-import { runCustomsScenario } from "./customs.js"
+import type { ScenarioType, ScenarioContext, ScenarioResult, ScenarioResource } from "./types.js"
+import { detectScenarioName } from "../../lib/scenario-rules.js"
+import { runPenaltyScenario, PROVIDES as PENALTY_PROVIDES } from "./penalty.js"
+import { runCustomsScenario, PROVIDES as CUSTOMS_PROVIDES } from "./customs.js"
 import { runManualScenario } from "./manual.js"
 import { runDelegationScenario } from "./delegation.js"
 import { runImpactScenario } from "./impact.js"
 import { runTimelineScenario } from "./timeline.js"
 import { runComplianceScenario } from "./compliance.js"
 import { runTimeTravelScenario } from "./time-travel.js"
-import { runActionPlanScenario } from "./action-plan.js"
+import { runActionPlanScenario, PROVIDES as ACTION_PLAN_PROVIDES } from "./action-plan.js"
 
 const SCENARIO_RUNNERS: Record<ScenarioType, (ctx: ScenarioContext) => Promise<ScenarioResult>> = {
   penalty: runPenaltyScenario,
@@ -26,6 +27,22 @@ const SCENARIO_RUNNERS: Record<ScenarioType, (ctx: ScenarioContext) => Promise<S
   compliance: runComplianceScenario,
   time_travel: runTimeTravelScenario,
   action_plan: runActionPlanScenario,
+}
+
+/**
+ * 시나리오별로 "이미 싣는 자원" 선언을 모은다.
+ * 선언은 각 시나리오 모듈에 있다 — 체인이 시나리오 이름을 하드코딩하면
+ * 같은 자원을 싣는 새 시나리오가 생길 때마다 중복 조회가 되살아난다(#131).
+ */
+const SCENARIO_PROVIDES: Partial<Record<ScenarioType, ScenarioResource[]>> = {
+  penalty: PENALTY_PROVIDES,
+  customs: CUSTOMS_PROVIDES,
+  action_plan: ACTION_PLAN_PROVIDES,
+}
+
+/** 이 시나리오가 응답에 이미 싣는 자원 (없으면 빈 배열) */
+export function scenarioProvides(type: ScenarioType | null | undefined): ScenarioResource[] {
+  return (type && SCENARIO_PROVIDES[type]) || []
 }
 
 /** 시나리오 실행 — 알 수 없는 타입이면 빈 결과 반환 */
@@ -54,60 +71,12 @@ export async function runScenario(
   }
 }
 
-/** query-router 자동감지용: 쿼리에서 시나리오 타입 추론 */
+/**
+ * 쿼리에서 시나리오 타입 추론 (MCP 직접호출 경로).
+ *
+ * 판정 어휘·우선순위는 lib/scenario-rules.ts 하나에만 있다 — CLI(query-router)도 같은 함수를 본다.
+ * 규칙이 두 벌이던 시절엔 같은 쿼리가 표면에 따라 다른 시나리오로 갔다(#101).
+ */
 export function detectScenario(query: string, hostChain: string): ScenarioType | null {
-  // 각 체인별 시나리오 감지 패턴
-  if (hostChain === "chain_action_basis") {
-    if (/과태료|벌칙|벌금|처분\s*기준|영업\s*정지|감경|행정\s*처분|과징금|이행\s*강제금/.test(query)) {
-      return "penalty"
-    }
-  }
-
-  if (hostChain === "chain_full_research") {
-    if (/관세|수출|수입|통관|FTA|원산지|HS\s*코드|품목\s*분류|관세사/.test(query)) {
-      return "customs"
-    }
-  }
-
-  if (hostChain === "chain_procedure_detail") {
-    if (/처리\s*방법|처리\s*절차|업무\s*매뉴얼|담당|민원|공무원|처리\s*기한/.test(query)) {
-      return "manual"
-    }
-  }
-
-  if (hostChain === "chain_law_system") {
-    if (/위임\s*입법|미이행|미제정|위임\s*현황|하위\s*법령\s*제정/.test(query)) {
-      return "delegation"
-    }
-    if (/영향\s*도|영향\s*분석|연쇄\s*개정|파급|하위\s*법령\s*영향/.test(query)) {
-      return "impact"
-    }
-  }
-
-  if (hostChain === "chain_amendment_track") {
-    // time_travel 우선 (두 시점 명시 패턴)
-    if (/\d{4}\s*[\.\-년]\s*\d{1,2}.*(?:vs|와|과|↔|~|부터|에서)/.test(query) ||
-        /시점\s*비교|버전\s*비교|두\s*시점|time\s*travel/i.test(query)) {
-      return "time_travel"
-    }
-    if (/시계열|타임라인|판례\s*변화|해석\s*변화|적용\s*시점|소급/.test(query)) {
-      return "timeline"
-    }
-  }
-
-  if (hostChain === "chain_full_research") {
-    // 시민 시나리오 키워드 (action_plan)
-    if (/(?:받았어|걸렸어|당했어|돼\?|되나|어떻게\s*해야|뭘\s*해야|뭐\s*해야)/.test(query) ||
-        /실행\s*가이드|단계\s*별|step\s*by\s*step|시민\s*가이드|action\s*plan/i.test(query)) {
-      return "action_plan"
-    }
-  }
-
-  if (hostChain === "chain_ordinance_compare") {
-    if (/적합성|상위법\s*위반|위법|초과|저촉|법제\s*심사/.test(query)) {
-      return "compliance"
-    }
-  }
-
-  return null
+  return detectScenarioName(query, hostChain)
 }

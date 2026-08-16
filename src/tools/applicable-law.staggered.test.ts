@@ -71,11 +71,11 @@ describe("applicableLaw — 분리시행(단계 시행일) 보정", () => {
 
     const r = await applicableLaw(client, { lawName: "소득세법", date: "2010-05-01" })
     const text = r.content[0].text
-    expect(text).toContain("[시행 2010.4.1.]")
+    expect(text).toContain("[시행 2010.04.01]")
     expect(text).toContain("(MST 131405)")
     expect(text).toContain("제9897호")
     expect(text).toContain("분리시행 보정")
-    expect(text).not.toContain("[시행 2010.3.10.]")
+    expect(text).not.toContain("[시행 2010.03.10]")
   })
 
   it("슬라이스 조회가 실패해도 lsHistory 결과로 진행한다 (보수적)", async () => {
@@ -93,7 +93,7 @@ describe("applicableLaw — 분리시행(단계 시행일) 보정", () => {
 
     const r = await applicableLaw(client, { lawName: "소득세법", date: "2010-05-01" })
     const text = r.content[0].text
-    expect(text).toContain("[시행 2010.3.10.]")
+    expect(text).toContain("[시행 2010.03.10]")
     expect(text).not.toContain("분리시행 보정")
   })
 })
@@ -119,9 +119,34 @@ describe("applicableLaw — 적용 버전 자신의 부칙 발췌 (laterVersions
 
     const r = await applicableLaw(client, { lawName: LAW, date: "2022-01-27" })
     const text = r.content[0].text
-    expect(text).toContain("[시행 2022.1.27.]")
+    expect(text).toContain("[시행 2022.01.27]")
     expect(text).toContain("적용례·경과조치 발췌")
     expect(text).toContain("50명 미만")
+  })
+
+  // 표기 통일: applicable_law만 "2022.1.27."(무패딩·후행점)을 썼고 나머지 도구는
+  // formatDateDot의 "2022.01.27"을 쓴다. 같은 날짜가 도구마다 달리 보이면
+  // 사용자가 그대로 재인용할 때 표기가 흔들린다.
+  it("날짜 표기가 코드베이스 표준(YYYY.MM.DD)을 따른다", async () => {
+    const LAW = "중대재해 처벌 등에 관한 법률"
+    const client = {
+      searchLaw: async () => searchXml(LAW, "228817"),
+      fetchApi: async (p: FetchApiParams) => {
+        if (p.target === "lsHistory") {
+          return histPage(1, [histRow(LAW, "228817", "20220127", "17907", "2021.01.26", "제정")])
+        }
+        if (p.target === "eflaw") return EFLAW_EMPTY_XML
+        if (p.target === "law") return JUNGDAEJAEHAE_ADDENDUM_JSON
+        throw new Error(`unexpected target: ${p.target}`)
+      },
+    } as unknown as LawApiClient
+
+    const r = await applicableLaw(client, { lawName: LAW, date: "2022-01-27" })
+    const text = r.content[0].text
+    expect(text).toContain("행위시법 판단: 중대재해 처벌 등에 관한 법률 @ 2022.01.27")
+    expect(text).toContain("부칙 <제17907호, 2021.01.26>")
+    // 한 자리 월·일에 0을 붙이지 않던 옛 표기가 남아 있으면 안 된다
+    expect(text).not.toMatch(/\d{4}\.\d\./)
   })
 })
 

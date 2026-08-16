@@ -6,10 +6,11 @@
 import { z } from "zod"
 import { LawApiClient } from "./api-client.js"
 import { allTools } from "../tool-registry.js"
-import { routeQuery, explainRoute } from "./query-router.js"
+import { routeQuery } from "./query-router.js"
 import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
 import type { ToolResponse } from "./types.js"
 import { fmt, printRouteInfo, formatOutput } from "./cli-format.js"
+import { explainRoute } from "./route-explain.js"
 
 // ────────────────────────────────────────
 // API Client
@@ -72,15 +73,37 @@ export async function executeNaturalQuery(
   const route = routeQuery(query)
 
   if (verbose) {
-    console.log(fmt.dim(explainRoute(query)))
+    // 이미 라우팅한 결과를 넘긴다 — 설명기가 다시 계산하면 날짜 파싱까지 두 번 돌고
+    // 설명이 실제 실행된 라우팅과 갈릴 수 있다(#132)
+    console.log(fmt.dim(explainRoute(query, route)))
   } else {
     printRouteInfo(route.tool, route.reason)
+  }
+
+  // 해석이 갈리는 질의는 먼저 확인을 요청한다 (#122)
+  if (route.clarify) {
+    console.log(fmt.yellow(`❓ ${route.clarify}`))
+  }
+
+  // 목적지가 받지 않는 파라미터는 조용히 버려진다 — 미적용 사실을 알린다 (#120)
+  if (route.unsupportedParams?.length) {
+    const target = route.pipeline?.[0]?.tool ?? route.tool
+    console.log(fmt.yellow(
+      `⚠️  ${target}는 ${route.unsupportedParams.join(", ")} 옵션을 지원하지 않습니다 — 축약된 결과가 표시됩니다.`
+    ))
   }
 
   // 날짜 범위가 있으면 검색 파라미터에 주입
   if (route.dateRange) {
     route.params.fromDate = route.dateRange.from
     route.params.toDate = route.dateRange.to
+    // 받지 못하는 도구면 Zod가 조용히 버린다 — 필터가 사라졌다는 사실은 알려야 한다
+    if (!acceptsDateRange(route.tool)) {
+      console.log(fmt.yellow(
+        `⚠️  ${route.tool}는 기간 필터를 받지 않습니다 — ` +
+        `"${route.dateRange.from}~${route.dateRange.to}" 조건은 적용되지 않았습니다.`
+      ))
+    }
   }
 
   // 1단계: 메인 도구 실행
@@ -156,9 +179,13 @@ export async function executeNaturalQueryJson(
       const firstOutput = result.content[0]?.text || ""
       const pipeId = extractPipelineId(route.tool, firstOutput)
       if (pipeId) {
-        const pipeParams = { ...route.pipeline[0].params, ...pipeId }
-        const pResult = await executeTool(apiClient, route.pipeline[0].tool, pipeParams)
-        pipelineResult = pResult.content.map(c => c.text).join("\n")
+        // 단계마다 실행한다 — 첫 단계만 쓰면 "민법 제309조·제310조"의 두 번째 조문이 사라진다
+        const outputs: string[] = []
+        for (const step of route.pipeline) {
+          const pResult = await executeTool(apiClient, step.tool, { ...step.params, ...pipeId })
+          outputs.push(pResult.content.map(c => c.text).join("\n"))
+        }
+        pipelineResult = outputs.join("\n\n")
       }
     }
 
@@ -182,6 +209,13 @@ export async function executeNaturalQueryJson(
 // ────────────────────────────────────────
 // Pipeline Helpers
 // ────────────────────────────────────────
+
+/** 도구 스키마가 기간 필터(fromDate)를 받는지 */
+function acceptsDateRange(toolName: string): boolean {
+  const tool = allTools.find(t => t.name === toolName)
+  const shape = tool?.schema instanceof z.ZodObject ? tool.schema.shape : undefined
+  return !!shape && "fromDate" in shape
+}
 
 /**
  * 파이프라인 ID 추출 (검색 도구별 설정 또는 기본 MST 패턴)

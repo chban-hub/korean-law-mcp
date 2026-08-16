@@ -15,7 +15,7 @@ import { MAX_RESPONSE_SIZE, truncateResponse } from "../lib/schemas.js"
 export const GetLawTextSchema = z.object({
   mst: z.string().optional().describe("법령일련번호 (search_law에서 획득)"),
   lawId: z.string().optional().describe("법령ID (search_law에서 획득)"),
-  jo: z.string().optional().describe("조문 번호 (예: '제38조' 또는 '003800')"),
+  jo: z.string().optional().describe("조문 번호. 자연어 표기 권장 — '제38조'·'제148조의2'를 그대로 넣으면 서버가 변환한다. 6자리 JO 코드 직접 지정 시 조번호 4자리 zero-pad + 의X 2자리: 제38조→003800, 제10조의2→001002, 제234조의2→023402(234002 아님)"),
   efYd: z.string().optional().describe("시행일자 (YYYYMMDD 형식)"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 }).refine(data => data.mst || data.lawId, {
@@ -206,7 +206,7 @@ export async function getLawText(
       }
       tocText += `\n여러 조문 일괄 조회: get_batch_articles 도구 사용`
 
-      // 절단본을 캐시 — 캐시 히트 경로는 절단 없이 반환하므로 미절단 캐시 시 50KB 제한 우회됨
+      // 절단본을 캐시 — 캐시 히트 경로는 절단 없이 반환하므로 미절단 캐시 시 5만 자 제한 우회됨
       const truncatedToc = truncateResponse(tocText)
       lawCache.set(cacheKey, truncatedToc)
       return {

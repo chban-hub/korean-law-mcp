@@ -9,8 +9,14 @@
  *   STEP 4. 필요 서류 / 양식
  *   STEP 5. 함정 / 주의 (패소·각하 사유)
  */
-import type { ScenarioContext, ScenarioResult, ScenarioSection } from "./types.js"
+import type { ScenarioContext, ScenarioResult, ScenarioSection, ScenarioResource } from "./types.js"
 import { callTool } from "./types.js"
+
+/**
+ * 이 시나리오가 응답에 싣는 자원 — 별표/서식을 싣는다.
+ * 체인이 기반 법령을 잡았을 때는 ctx.law 를 그대로 쓰므로 체인이 받을 별표와 같은 것이다.
+ */
+export const PROVIDES: ScenarioResource[] = ["annex"]
 import { getAnnexes } from "../annex.js"
 import { searchAdminRule } from "../admin-rule.js"
 import { searchPrecedents } from "../precedents.js"
@@ -18,13 +24,19 @@ import { searchInterpretations } from "../interpretations.js"
 import { findLaws } from "../../lib/law-search.js"
 
 /** 시민 시나리오 → 핵심 명사구 추출 + 도메인 매핑 */
-function extractActionKeyword(query: string): { keyword: string; domain?: string } {
+export function extractActionKeyword(query: string): { keyword: string; domain?: string } {
   let q = query
-    // 어미·어말 통째 제거 (단어 경계 무시)
-    .replace(/받았어요?|걸렸어요?|당했어요?|돼요?\??|되나요?\??/g, " ")
+    // 부정·완곡 표현부터 통째로 (어간만 먼저 지우면 "못"이 홀로 남아 검색어를 망친다).
+    // lib/scenario-rules.ts 의 ACTION_PLAN_SITUATION 과 짝 — 한쪽만 넓히면 잔재가 생긴다
+    .replace(/못\s*(?:돌려)?받\S*|(?:돌려)?받지\s*못\S*|못\s*[주줘준]\S*/g, " ")
+    .replace(/안\s*(?:줘|주고|준대|줍니다|돌려\s*[주줘])\S*/g, " ")
+    // 어미·어말 통째 제거 (단어 경계 무시). 어간까지만 잡아 경어체·연결어미를 함께 흡수
+    .replace(/받았\S*|걸렸\S*|당했\S*|돼요?\??|되나요?\??/g, " ")
     .replace(/어떻게|얼마|언제|어디서|왜|뭐|뭘|뭐\s*해야/g, " ")
-    .replace(/못\s*받|안\s*돼|안\s*해|안\s*나/g, " ")
+    .replace(/안\s*돼|안\s*해|안\s*나/g, " ")
     .replace(/거부|취소|위반|당하|받|걸리|되니/g, " ")
+    // 홀로 남은 부정 조사 제거 ("관세 환급을 못" → "관세 환급을")
+    .replace(/(?:^|\s)(?:못|안)(?=\s|$)/g, " ")
     .replace(/\s+/g, " ")
     .trim()
 

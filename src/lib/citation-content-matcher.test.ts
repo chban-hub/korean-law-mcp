@@ -31,6 +31,16 @@ describe("normalizeLegalText", () => {
     expect(normalizeLegalText("①항")).toBe("(1)항")
   })
 
+  // 상류(chrisryugj/lexdiff@f15d400)는 이 파일에서만 ⑮에서 멈춘다(2026-08-17 대조).
+  // 제16항 이상이 원문자로 남으면 정규화가 조용히 실패해 인용 대조(L1 substring /
+  // L2 bigram)가 어긋난다 — 상류 확인 후 CIRCLED_DIGITS 단일 원본으로 확장 (#147).
+  it("⑮ 경계를 넘어 제16항 이상도 변환한다", () => {
+    expect(normalizeLegalText("⑮항")).toBe("(15)항")
+    expect(normalizeLegalText("⑯항")).toBe("(16)항")
+    expect(normalizeLegalText("⑳항")).toBe("(20)항")
+    expect(normalizeLegalText("㊿항")).toBe("(50)항")
+  })
+
   it("법명 홑화살괄호 제거", () => {
     expect(normalizeLegalText("「민법」")).toBe("민법")
   })
