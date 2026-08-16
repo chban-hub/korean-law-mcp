@@ -148,6 +148,20 @@ async function callAiLaw(
   }
 }
 
+/**
+ * 체인이 별표를 따로 받아야 하는가 (#131).
+ *
+ * penalty 시나리오는 같은 법령의 별표(처분기준표)를 이미 싣는다 — 체인이 또 받으면
+ * 같은 파일을 두 번 내려받아 파싱하고(실측 3.0초) 같은 표가 두 번 나온다.
+ */
+export function shouldFetchAnnexSeparately(
+  expansions: ExpansionType[],
+  scenario: string | null
+): boolean {
+  const wanted = expansions.includes("annex_fee") || expansions.includes("annex_table")
+  return wanted && scenario !== "penalty"
+}
+
 function detectExpansions(query: string): ExpansionType[] {
   const exp: ExpansionType[] = []
   // 환불/반환/배상/수강료 등 소비자분쟁 관련 금액 키워드 확장
@@ -400,44 +414,46 @@ export async function chainActionBasis(
     const p = laws[0]
     const parts = [`═══ 처분 근거 확인: ${p.lawName} ═══`]
 
-    // Step 1: 3단 비교 (요건 체계)
-    const threeTier = await callTool(getThreeTier, apiClient, { mst: p.mst, apiKey: input.apiKey })
-    parts.push(secOrSkip("법령 체계 (법률·시행령·시행규칙)", threeTier))
-
-    // Step 2: 해석례 + 판례 + 행정심판 (병렬)
-    // 법령명 기반 검색 (input.query는 AND 키워드 과다로 결과 없을 수 있음)
-    const searchQuery = p.lawName
-    const [interpR, precR, appealR] = await Promise.all([
-      callTool(searchInterpretations, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-      callTool(searchPrecedents, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-      callTool(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
-    ])
-
-    parts.push(secOrSkip("법령 해석례", interpR))
-    parts.push(secOrSkip("관련 판례", precR))
-    parts.push(secOrSkip("행정심판례", appealR))
-
-    const [interpDetail, precDetail, appealDetail] = await Promise.all([
-      fetchSearchDetailChain(apiClient, "search_interpretations", interpR, { apiKey: input.apiKey }),
-      fetchSearchDetailChain(apiClient, "search_precedents", precR, { apiKey: input.apiKey }),
-      fetchSearchDetailChain(apiClient, "search_admin_appeals", appealR, { apiKey: input.apiKey }),
-    ])
-    if (interpDetail) parts.push(secOrSkip("법령 해석례 상세", interpDetail))
-    if (precDetail) parts.push(secOrSkip("관련 판례 상세", precDetail))
-    if (appealDetail) parts.push(secOrSkip("행정심판례 상세", appealDetail))
-
-    // 키워드 확장
     const exp = detectExpansions(input.query)
-    if (exp.includes("annex_fee") || exp.includes("annex_table")) {
-      const annexes = await callTool(getAnnexes, apiClient, { lawName: p.lawName, apiKey: input.apiKey })
-      parts.push(secOrSkip("별표 (과태료/기준표)", annexes))
-    }
-
-    // Scenario 확장
     const scenario = (input.scenario || detectScenario(input.query, "chain_action_basis")) as ScenarioType | null
-    if (scenario) {
-      const ctx: ScenarioContext = { apiClient, query: input.query, law: p, apiKey: input.apiKey }
-      const sr = await runScenario(scenario, ctx)
+    const wantsAnnex = shouldFetchAnnexSeparately(exp, scenario)
+
+    // 기반 법령이 정해지면 이후 4갈래는 서로를 기다릴 이유가 없다 — 전에는 순차라
+    // 왕복이 그대로 누적됐다(실측 35초, 클라이언트 기본 타임아웃 60초에 근접)(#131).
+    // 출력 순서는 조립 단계에서 그대로 지킨다.
+    const searchQuery = p.lawName  // input.query는 AND 키워드 과다로 결과 없을 수 있음
+    const [threeTier, evidence, annexes, sr] = await Promise.all([
+      callTool(getThreeTier, apiClient, { mst: p.mst, apiKey: input.apiKey }),
+      (async () => {
+        const [interpR, precR, appealR] = await Promise.all([
+          callTool(searchInterpretations, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+          callTool(searchPrecedents, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+          callTool(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
+        ])
+        const [interpDetail, precDetail, appealDetail] = await Promise.all([
+          fetchSearchDetailChain(apiClient, "search_interpretations", interpR, { apiKey: input.apiKey }),
+          fetchSearchDetailChain(apiClient, "search_precedents", precR, { apiKey: input.apiKey }),
+          fetchSearchDetailChain(apiClient, "search_admin_appeals", appealR, { apiKey: input.apiKey }),
+        ])
+        return { interpR, precR, appealR, interpDetail, precDetail, appealDetail }
+      })(),
+      wantsAnnex
+        ? callTool(getAnnexes, apiClient, { lawName: p.lawName, apiKey: input.apiKey })
+        : Promise.resolve(null),
+      scenario
+        ? runScenario(scenario, { apiClient, query: input.query, law: p, apiKey: input.apiKey } as ScenarioContext)
+        : Promise.resolve(null),
+    ])
+
+    parts.push(secOrSkip("법령 체계 (법률·시행령·시행규칙)", threeTier))
+    parts.push(secOrSkip("법령 해석례", evidence.interpR))
+    parts.push(secOrSkip("관련 판례", evidence.precR))
+    parts.push(secOrSkip("행정심판례", evidence.appealR))
+    if (evidence.interpDetail) parts.push(secOrSkip("법령 해석례 상세", evidence.interpDetail))
+    if (evidence.precDetail) parts.push(secOrSkip("관련 판례 상세", evidence.precDetail))
+    if (evidence.appealDetail) parts.push(secOrSkip("행정심판례 상세", evidence.appealDetail))
+    if (annexes) parts.push(secOrSkip("별표 (과태료/기준표)", annexes))
+    if (sr) {
       parts.push(formatSections(sr.sections))
       parts.push(formatSuggestedActions(sr.suggestedActions))
     }

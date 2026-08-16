@@ -21,8 +21,10 @@ export async function runPenaltyScenario(ctx: ScenarioContext): Promise<Scenario
 
   const { lawName, lawId, mst } = ctx.law
 
-  // 병렬 실행: 별표(처분기준표) + 감경 행심 + 벌칙 조문
-  const [annexR, appealR, penaltyR] = await Promise.all([
+  // 병렬 실행: 별표(처분기준표) + 감경 행심 + 벌칙 조문 + 개정이력.
+  // 개정이력은 lawId 만 있으면 되므로 뒤에 따로 기다릴 이유가 없다 — 이 시나리오가
+  // action_basis 체인의 최장 구간이라 한 왕복이 그대로 체감 지연이다(#131)
+  const [annexR, appealR, penaltyR, histR] = await Promise.all([
     callTool(getAnnexes, ctx.apiClient, { lawName, apiKey: ctx.apiKey }),
     callTool(searchAdminAppeals, ctx.apiClient, {
       query: `${lawName} 감경`,
@@ -34,6 +36,9 @@ export async function runPenaltyScenario(ctx: ScenarioContext): Promise<Scenario
       search: "벌칙",
       apiKey: ctx.apiKey,
     }),
+    lawId
+      ? callTool(getArticleHistory, ctx.apiClient, { lawId, apiKey: ctx.apiKey })
+      : Promise.resolve(null),
   ])
 
   if (!annexR.isError && annexR.text.trim()) {
@@ -49,11 +54,8 @@ export async function runPenaltyScenario(ctx: ScenarioContext): Promise<Scenario
   }
 
   // 조문 개정이력 (lawId 있을 때만)
-  if (lawId) {
-    const histR = await callTool(getArticleHistory, ctx.apiClient, { lawId, apiKey: ctx.apiKey })
-    if (!histR.isError && histR.text.trim()) {
-      sections.push({ title: "벌칙 조항 개정이력", content: histR.text })
-    }
+  if (histR && !histR.isError && histR.text.trim()) {
+    sections.push({ title: "벌칙 조항 개정이력", content: histR.text })
   }
 
   // 후속 액션 제안
