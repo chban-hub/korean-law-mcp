@@ -12,6 +12,11 @@
  * 예시: "조세심판원" → search_tax_tribunal_decisions
  *       "김영란법" → search_law (약칭은 search-normalizer가 처리)
  *       "하자" → search_precedents (민사 분쟁 키워드)
+ *
+ * ⚠️ 키는 반드시 TOOL_CATEGORIES에 실재하는 카테고리명이어야 한다.
+ *    resolveAliasToCategory가 이 키로 TOOL_CATEGORIES를 조회하므로, 없는 키는
+ *    "별칭은 해석되는데 결과는 0건"인 무음 실패가 된다 (#102).
+ *    src/tools/meta-tools.test.ts의 정합 테스트가 이 불변식을 지킨다.
  */
 export const TOOL_ALIASES: Record<string, string[]> = {
   // 카테고리명 별칭
@@ -38,7 +43,7 @@ export const TOOL_ALIASES: Record<string, string[]> = {
   "인용검증": ["verify_citations", "조문 실존 확인", "환각 검증"],
   "판례생사": ["cite_check", "판례 유효성", "판례 변경 여부", "인용 추적", "citator"],
   "행위시법": ["applicable_law", "당시 법령", "적용 법령 판단", "경과조치", "부칙"],
-  "문서검토": ["analyze_document", "chain_document_review", "계약서 검토", "약관 검토"],
+  "문서분석": ["analyze_document", "chain_document_review", "계약서 검토", "약관 검토"],
   "처분기준": ["chain_action_basis", "과태료 기준", "과징금 기준", "영업정지 기간"],
   "절차매뉴얼": ["chain_procedure_detail", "처리 절차", "신청 방법", "수수료"],
 }
@@ -73,9 +78,12 @@ export const TOOL_CATEGORIES: Record<string, string[]> = {
   "조약": ["search_treaties", "get_treaty_text"],
   "영문법령": ["search_english_law", "get_english_law_text"],
   "용어": ["search_legal_terms", "get_legal_term_kb", "get_legal_term_detail", "get_daily_term", "get_daily_to_legal", "get_legal_to_daily", "get_term_articles", "get_related_laws"],
-  "문서분석": ["analyze_document"],
+  "문서분석": ["analyze_document", "chain_document_review"],
+  "인용검증": ["verify_citations"],
   "판례생사": ["cite_check"],
   "행위시법": ["applicable_law"],
+  "처분기준": ["chain_action_basis"],
+  "절차매뉴얼": ["chain_procedure_detail"],
   "유틸리티": ["parse_jo_code", "get_law_abbreviations"],
 }
 

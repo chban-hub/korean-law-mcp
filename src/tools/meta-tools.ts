@@ -25,6 +25,28 @@ export const DiscoverToolsSchema = z.object({
   intent: z.string().describe("찾고 싶은 도구의 의도 또는 카테고리 (예: '공정위', '조약', '용어', '헌재')"),
 })
 
+/** 한국어에는 낱말 사이 공백이 없으므로 "글자가 아닌 것"을 낱말 경계로 본다. */
+const WORD_CHAR = /[\p{L}\p{N}_]/u
+
+/**
+ * 질의가 별칭을 **낱말 단위로** 포함하는지.
+ *
+ * 역방향(별칭이 질의를 포함)은 쓰지 않는다 — 짧은 질의가 긴 별칭에 흡수됐다:
+ * `판례`가 `조세심판례`에 걸려 조세심판 카테고리로 해석됐다 (#106).
+ * 정방향도 시작 경계를 요구한다 — `행정규칙`은 자치법규 별칭 `규칙`을 꼬리에
+ * 담고 있을 뿐인데 자치법규로 해석됐다 (#106).
+ * 끝 경계는 요구하지 않는다: 한국어는 조사가 붙어 `조세심판원에`처럼 쓰인다.
+ */
+function matchesAlias(query: string, alias: string): boolean {
+  if (query === alias) return true
+  for (let from = 0; ; ) {
+    const at = query.indexOf(alias, from)
+    if (at < 0) return false
+    if (at === 0 || !WORD_CHAR.test(query[at - 1])) return true
+    from = at + 1
+  }
+}
+
 /**
  * 별칭/자연어 입력을 카테고리명으로 해석.
  * TOOL_ALIASES에서 매칭되는 경우 해당 카테고리 키 반환, 없으면 undefined.
@@ -32,11 +54,8 @@ export const DiscoverToolsSchema = z.object({
 function resolveAliasToCategory(query: string): string | undefined {
   const q = query.toLowerCase().trim()
   for (const [category, aliases] of Object.entries(TOOL_ALIASES)) {
-    for (const alias of aliases) {
-      const lowAlias = alias.toLowerCase()
-      if (q === lowAlias || q.includes(lowAlias) || lowAlias.includes(q)) {
-        return category
-      }
+    if (aliases.some(alias => matchesAlias(q, alias.toLowerCase()))) {
+      return category
     }
   }
   return undefined
@@ -51,8 +70,8 @@ function resolveAliasToTools(query: string): string[] | undefined {
   for (const aliases of Object.values(TOOL_ALIASES)) {
     for (const alias of aliases) {
       if (/^(search_|chain_|verify_|get_|analyze_)/.test(alias)) {
-        // 별칭 배열에 도구 이름이 섞여 있는 경우 (처분기준, 문서검토 등)
-        if (q === alias.toLowerCase() || q.includes(alias.toLowerCase())) {
+        // 별칭 배열에 도구 이름이 섞여 있는 경우 (처분기준, 문서분석 등)
+        if (matchesAlias(q, alias.toLowerCase())) {
           return aliases.filter((a) => /^(search_|chain_|verify_|get_|analyze_)/.test(a))
         }
       }
