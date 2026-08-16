@@ -6,10 +6,11 @@
 import { z } from "zod"
 import { LawApiClient } from "./api-client.js"
 import { allTools } from "../tool-registry.js"
-import { routeQuery, explainRoute } from "./query-router.js"
+import { routeQuery } from "./query-router.js"
 import { SEARCH_DETAIL_CHAINS } from "./tool-chain-config.js"
 import type { ToolResponse } from "./types.js"
 import { fmt, printRouteInfo, formatOutput } from "./cli-format.js"
+import { explainRoute } from "./route-explain.js"
 
 // ────────────────────────────────────────
 // API Client
