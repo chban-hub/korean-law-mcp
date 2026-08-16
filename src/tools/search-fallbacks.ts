@@ -10,6 +10,7 @@
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { noResultHint } from "../lib/errors.js"
+import { isRegionToken } from "../lib/query-extract.js"
 import { buildUpcomingNotes, fetchUpcomingLaws } from "../lib/upcoming-laws.js"
 import { buildAbolishedLawNotes, findAbolishedLaws } from "../lib/abolished-laws.js"
 import { searchAdminRule } from "./admin-rule.js"
@@ -23,9 +24,11 @@ const asText = (text: string): ToolResult => ({
 
 // '광진구 복무 조례'처럼 조례 키워드나 지역명 토큰(○○시/군/구)이 있으면 자치법규 쿼리로 판단.
 // '도'는 도로법·양도세 등 오탐이 많아 제외. 토큰 3자 미만('구', '시')도 제외.
+// 접미사만 보면 '재청구'·'선거구'도 지역이 된다 — 그 판정은 isRegionToken 단일 원본(#104)이
+// 한다. 여기에 블랙리스트를 베껴 두면 어휘가 늘 때 한쪽만 알게 된다.
 export function looksLikeOrdinanceQuery(query: string): boolean {
   if (query.includes("조례")) return true
-  return query.split(/\s+/).some((t) => t.length >= 3 && /[시군구]$/.test(t))
+  return query.split(/\s+/).some((t) => t.length >= 3 && /[시군구]$/.test(t) && isRegionToken(t))
 }
 
 export async function searchLawFallbacks(
