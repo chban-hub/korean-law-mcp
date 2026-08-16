@@ -128,8 +128,11 @@ export class RequestExecutionBudget {
 
   ensureResponseBodySize(bytes: number): void {
     if (bytes > this.limits.maxUpstreamBodyBytes) {
+      // 실측 크기와 한도를 함께 적는다 — 운영자가 MCP_MAX_UPSTREAM_BODY_BYTES를
+      // 얼마로 올려야 하는지 이 한 줄로 판단할 수 있어야 한다.
       throw new ExecutionLimitError(
-        `Upstream response body exceeds the per-response limit (${this.limits.maxUpstreamBodyBytes} bytes).`,
+        `Upstream response body is ${bytes} bytes, over the per-response limit of ` +
+        `${this.limits.maxUpstreamBodyBytes} bytes (MCP_MAX_UPSTREAM_BODY_BYTES).`,
       )
     }
   }
