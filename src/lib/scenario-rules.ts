@@ -1,17 +1,14 @@
 /**
  * 시나리오 감지 규칙 — 단일 원본 (#101)
  *
- * 자연어 → 시나리오 판정은 두 표면에서 일어난다.
- *   CLI  : query-router 가 도구를 고르고 params.scenario 를 붙인다
- *   MCP  : chain_* 도구가 detectScenario(query, host) 로 스스로 판정한다
- * 규칙이 두 벌이면 같은 쿼리가 표면에 따라 다른 시나리오로 간다(2026-08-16 실측, divergence 10건).
- * 그래서 **판정 어휘(patterns)와 우선순위(precedence)는 이 파일에만 존재한다** —
- * 두 표면 모두 여기서 읽는다.
+ * 판정은 두 표면에서 일어난다 — CLI(query-router 가 params.scenario 를 붙임)와
+ * MCP(chain_* 가 detectScenario 로 스스로 판정). 규칙이 두 벌이면 같은 쿼리가 표면에 따라
+ * 다른 시나리오로 간다(2026-08-16 실측, divergence 10건). 그래서 **판정 어휘와 우선순위는
+ * 이 파일에만 존재한다** — 두 표면 모두 여기서 읽는다.
  *
- * precedence: 낮을수록 우선. 같은 hostChain 안에서만 경쟁한다.
- *   라우터의 기존 우선순위(구체 상황 > 구획 주제)를 단일 기준으로 채택했다.
- *   → chain_full_research 안에서 action_plan(7) 이 customs(13) 보다 앞선다.
- *     "관세 환급을 못 받았어" 같은 시민 질의가 관세 구획에 먹히던 문제(BUG-R4)의 수정.
+ * precedence: 낮을수록 우선, 같은 hostChain 안에서만 경쟁. 라우터의 기존 순서
+ * (구체 상황 > 구획 주제)를 단일 기준으로 채택 → action_plan(7) 이 customs(13) 보다 앞선다.
+ * "관세 환급을 못 받았어" 가 관세 구획에 먹히던 문제(BUG-R4)의 수정.
  */
 
 /** 지원 시나리오 (tools/scenarios/types.ts 의 ScenarioType 원본) */
@@ -35,10 +32,9 @@ export interface ScenarioRule {
   /** 시나리오 판정 어휘 (OR) */
   patterns: RegExp[]
   /**
-   * 라우터가 "이 신호만 보고 hostChain 을 고를" 때 쓰는 트리거.
-   * null = 라우터는 이 시나리오로 도구를 고르지 않는다(다른 패턴이 체인을 고른 뒤 라벨만 붙는다).
-   * patterns 보다 좁은 경우가 있다 — 판정 어휘를 그대로 도구 선택에 쓰면
-   * "관세"·"과태료" 같은 넓은 구획어가 절차·쟁송 라우팅을 통째로 가로챈다.
+   * 라우터가 "이 신호만 보고 hostChain 을 고를" 때 쓰는 트리거. null = 도구 선택에는 쓰지 않는다
+   * (다른 패턴이 체인을 고른 뒤 라벨만 붙는다). patterns 보다 좁을 수 있다 — 판정 어휘를 그대로
+   * 도구 선택에 쓰면 "관세"·"과태료" 같은 넓은 구획어가 절차·쟁송 라우팅을 가로챈다.
    */
   routeTriggers: RegExp[] | null
 }
