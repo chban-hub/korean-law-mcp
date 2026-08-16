@@ -20,6 +20,20 @@ function escapeRe(s: string): string {
 }
 
 /**
+ * 법제처 JSON 필드는 문자열·배열·`{"#text":…}` 중 무엇으로도 온다(CLAUDE.md 규칙 6).
+ * String()으로 뭉개면 판시사항이 "[object Object]"로 출력된다 — 법률 도구에서는 침묵보다 나쁘다.
+ */
+function fieldText(value: unknown): string {
+  if (value == null) return ""
+  if (Array.isArray(value)) return value.map(fieldText).filter(Boolean).join(" ")
+  if (typeof value === "object") {
+    const rec = value as Record<string, unknown>
+    return fieldText(rec["#text"] ?? rec._ ?? "")
+  }
+  return String(value).trim()
+}
+
+/**
  * 대상 판례의 판시사항(없으면 판결요지)을 1~2줄로 발췌.
  * 전문(판례내용)은 절대 붙이지 않는다 — 토큰이 폭증하고 cite_check의 목적도 아니다.
  */
@@ -27,10 +41,11 @@ export function extractHolding(
   detail: Record<string, unknown> | null,
   maxChars = 240
 ): { label: string; text: string } | undefined {
-  const source = String(detail?.판시사항 || "").trim()
-    ? { label: "판시사항", raw: String(detail?.판시사항) }
-    : String(detail?.판결요지 || "").trim()
-      ? { label: "판결요지", raw: String(detail?.판결요지) }
+  const 판시사항 = fieldText(detail?.판시사항)
+  const source = 판시사항
+    ? { label: "판시사항", raw: 판시사항 }
+    : fieldText(detail?.판결요지)
+      ? { label: "판결요지", raw: fieldText(detail?.판결요지) }
       : undefined
   if (!source) return undefined
 

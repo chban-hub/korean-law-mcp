@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { citeCheck } from "./cite-check.js"
+import { extractHolding } from "../lib/precedent-body.js"
 import type { LawApiClient } from "../lib/api-client.js"
 
 const TARGET_SEARCH_XML = `<?xml version="1.0" encoding="UTF-8"?><PrecSearch><totalCnt>1</totalCnt><page>1</page>` +
@@ -46,5 +47,30 @@ describe("citeCheck — 판시사항 노출 (#95)", () => {
     const r = await citeCheck(stubClient(), { caseNumber: "2013다61381", display: 20, deepScan: false })
     const text = r.content[0].text
     expect(text).not.toContain("본문 전문")
+  })
+})
+
+describe("extractHolding — 응답 필드 shape 변동 (CLAUDE.md 규칙 6)", () => {
+  it("배열·객체로 와도 사람이 읽을 문장을 낸다", () => {
+    expect(extractHolding({ 판시사항: ["[1] 조약의 해석 방법", "[2] 위자료청구권"] })?.text)
+      .toBe("[1] 조약의 해석 방법 [2] 위자료청구권")
+    expect(extractHolding({ 판시사항: { "#text": "조약의 해석 방법" } })?.text)
+      .toBe("조약의 해석 방법")
+  })
+
+  it("판시사항이 비면 판결요지로 내려간다", () => {
+    expect(extractHolding({ 판시사항: "", 판결요지: "요지 본문" }))
+      .toEqual({ label: "판결요지", text: "요지 본문" })
+  })
+
+  it("둘 다 없으면 undefined — 없는 판시사항을 지어내지 않는다", () => {
+    expect(extractHolding({})).toBeUndefined()
+    expect(extractHolding(null)).toBeUndefined()
+  })
+
+  it("긴 판시사항은 잘라서 전문 유입을 막는다", () => {
+    const long = extractHolding({ 판시사항: "가".repeat(400) })!
+    expect(long.text.length).toBeLessThanOrEqual(241)
+    expect(long.text.endsWith("…")).toBe(true)
   })
 })
