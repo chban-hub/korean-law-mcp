@@ -87,3 +87,85 @@ describe("discover_tools — 별칭 부분일치 경계 (#106)", () => {
     expect(await discoverText("하자")).toContain("찾지 못했습니다")
   })
 })
+
+describe("도구명 별칭은 레지스트리 실재로 판정 (#108)", () => {
+  // 회귀: 판정이 접두사 열거(/^(search_|chain_|verify_|get_|analyze_)/)였던 탓에
+  // 접두사 없는 cite_check·applicable_law가 도구로 인식되지 않았다.
+  it.each(["cite_check", "applicable_law", "verify_citations", "analyze_document"])(
+    "intent=%s는 별칭 매칭 섹션을 만든다",
+    async name => {
+      const sections = await discoverSections(name)
+      expect(sections.some(s => s.startsWith("별칭 매칭"))).toBe(true)
+    }
+  )
+
+  it("도구가 아닌 영어 별칭(citator·treaty)은 도구로 오인하지 않는다", async () => {
+    const sections = await discoverSections("citator")
+    expect(sections.some(s => s.startsWith("별칭 매칭"))).toBe(false)
+    expect(sections).toContain("판례생사")
+  })
+})
+
+describe("카테고리 등재 누락 (#109)", () => {
+  // discover_tools 카테고리 탐색으로 도달해야 하는 도구들.
+  // 노출 도구(V3_EXPOSED)가 디스커버리에서 빠지면 "안내가 노출 도구를 모르는" 역설이 된다.
+  it.each([
+    "legal_research", "legal_analysis", "search_decisions", "get_decision_text",
+    "impact_map", "ordinance_radar", "chain_law_system", "chain_dispute_prep",
+    "chain_amendment_track", "chain_ordinance_compare", "chain_full_research",
+  ])("%s는 어떤 카테고리에든 등재돼 있다", tool => {
+    const homes = Object.entries(TOOL_CATEGORIES).filter(([, tools]) => tools.includes(tool))
+    expect(homes.map(([c]) => c)).not.toEqual([])
+  })
+
+  // 메타 도구는 의도적 제외 — 자기 출력에 자기를 싣는 자기참조이고, 둘 다 항상 노출된다.
+  it.each(["discover_tools", "execute_tool"])("메타 도구 %s는 등재하지 않는다", tool => {
+    const homes = Object.entries(TOOL_CATEGORIES).filter(([, tools]) => tools.includes(tool))
+    expect(homes.map(([c]) => c)).toEqual([])
+  })
+
+  it("impact_map은 별칭으로도 도달한다", async () => {
+    expect(await discoverText("조문 영향")).toContain("impact_map")
+  })
+})
+
+describe("별칭 안내는 1-hop 진입점 우선 (#110)", () => {
+  it.each(["처분기준", "절차매뉴얼", "문서분석"])(
+    "%s 카테고리는 legal_research를 먼저 제시한다",
+    category => {
+      expect(TOOL_CATEGORIES[category][0]).toBe("legal_research")
+    }
+  )
+
+  it("'과태료 기준'은 legal_research를 chain_action_basis보다 먼저 안내", async () => {
+    const text = await discoverText("과태료 기준")
+    expect(text.indexOf("legal_research")).toBeGreaterThan(-1)
+    expect(text.indexOf("legal_research")).toBeLessThan(text.indexOf("chain_action_basis"))
+  })
+})
+
+describe("응답 중복 제거 (#109/#110 부수)", () => {
+  // legal_research는 종합리서치·문서분석·처분기준·절차매뉴얼 4곳에 속한다.
+  // 중복 제거가 없으면 600자 description이 한 응답에 4번 실린다.
+  it("같은 도구가 두 번 이상 실리지 않는다", async () => {
+    for (const intent of ["수수료", "판례", "법령", "해석례"]) {
+      const text = await discoverText(intent)
+      const listed = [...text.matchAll(/^ {2}- ([a-z0-9_]+):/gm)].map(m => m[1])
+      expect(new Set(listed).size).toBe(listed.length)
+    }
+  })
+
+  it("중복 제거로 비어버린 섹션 헤더는 남기지 않는다", async () => {
+    const text = await discoverText("수수료")
+    expect(text).not.toMatch(/^\[[^\]]+\]\n\n/m)
+    expect(text).not.toContain("\n\n\n")
+  })
+})
+
+describe("intent 정규화 (#111)", () => {
+  // 회귀: intent를 trim하지 않아 앞뒤 공백이 description 매칭을 통째로 막았다.
+  it("앞뒤 공백은 결과에 영향을 주지 않는다", async () => {
+    expect(await discoverSections("  판례  ")).toEqual(await discoverSections("판례"))
+    expect(await discoverSections("\t행정규칙\n")).toEqual(await discoverSections("행정규칙"))
+  })
+})
