@@ -24,6 +24,7 @@ import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
 import { toArray } from "../lib/xml-parser.js"
 import { matchCitationContent } from "../lib/citation-content-matcher.js"
+import { verifyCaseCitations } from "../lib/case-citation.js"
 
 export const VerifyCitationsSchema = z.object({
   text: z.string().min(1).describe("검증할 법률 텍스트 (LLM 답변/계약서/판결문 등). 조문 인용이 포함된 문자열"),
@@ -368,19 +369,21 @@ export async function verifyCitations(
 ): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
   try {
     const citations = parseCitations(input.text, input.maxCitations ?? 15)
-    if (citations.length === 0) {
+    // 판례 인용은 법령 인용과 독립 축이다 — 사건번호를 추출조차 않으면 [HALLUCINATION_DETECTED]
+    // 배너가 "전체 인용이 검증됐다"로 오독된다(#93).
+    const [results, cases] = await Promise.all([
+      Promise.all(citations.map((c) => verifyOne(apiClient, c, input.apiKey))),
+      verifyCaseCitations(apiClient, input.text, input.apiKey),
+    ])
+
+    if (citations.length === 0 && cases.total === 0) {
       return {
         content: [{
           type: "text",
-          text: "[NO_CITATIONS_FOUND] 입력 텍스트에서 조문 인용이 발견되지 않았습니다.\n\n지원 패턴: '민법 제750조', '상법 제401조의2 제2항 제3호'. 법령명이 빠진 단독 '제N조' 인용은 앞 문맥에서 법령명을 추출하려고 시도합니다.\n\n⚠️ 이 결과는 '검증 성공'이 아니라 '검증할 인용이 없음'입니다. 인용을 포함한 텍스트로 재요청하세요.",
+          text: "[NO_CITATIONS_FOUND] 입력 텍스트에서 조문·판례 인용이 발견되지 않았습니다.\n\n지원 패턴: '민법 제750조', '상법 제401조의2 제2항 제3호', 사건번호 '2013다61381'. 법령명이 빠진 단독 '제N조' 인용은 앞 문맥에서 법령명을 추출하려고 시도합니다.\n\n⚠️ 이 결과는 '검증 성공'이 아니라 '검증할 인용이 없음'입니다. 인용을 포함한 텍스트로 재요청하세요.",
         }],
       }
     }
-
-    // 병렬 검증
-    const results = await Promise.all(
-      citations.map((c) => verifyOne(apiClient, c, input.apiKey))
-    )
 
     const okCount = results.filter((r) => r.startsWith("✓")).length
     const failCount = results.filter((r) => r.startsWith("✗")).length
@@ -389,26 +392,38 @@ export async function verifyCitations(
 
     // 환각 감지 시 isError=true로 LLM이 "검증 통과"로 오인하지 못하게 차단.
     // 폐지 법령(⌛)은 실존했으므로 환각이 아님 — failCount에 포함되지 않는다.
-    const hasHallucination = failCount > 0
+    const hasHallucination = failCount > 0 || cases.fail > 0
 
     const headerMarker = hasHallucination
       ? "[HALLUCINATION_DETECTED] "
       : repealedCount > 0 ? "[REPEALED_REFERENCE] "
-        : warnCount > 0 ? "[PARTIAL_VERIFIED] " : "[VERIFIED] "
-    let output = `${headerMarker}== 인용 검증 결과 ==\n총 ${citations.length}건 | ✓ ${okCount} 실존 | ✗ ${failCount} 오류 | ⌛ ${repealedCount} 폐지 | ⚠ ${warnCount} 확인필요\n\n`
+        : (warnCount > 0 || cases.unknown > 0) ? "[PARTIAL_VERIFIED] " : "[VERIFIED] "
+    let output = `${headerMarker}== 인용 검증 결과 ==\n`
+    output += `법령 인용 ${citations.length}건 | ✓ ${okCount} 실존 | ✗ ${failCount} 오류 | ⌛ ${repealedCount} 폐지 | ⚠ ${warnCount} 확인필요\n`
+    output += `판례 인용 ${cases.total + cases.skipped}건 | ✓ ${cases.ok} 실존 | ✗ ${cases.fail} 실존불가 | ⚠ ${cases.unknown} 미확인${cases.skipped > 0 ? ` | ⊘ ${cases.skipped} 미검증` : ""}\n\n`
+    if (results.length > 0) output += `▶ 법령 인용\n`
     for (const line of results) {
       output += `${line}\n`
+    }
+    if (cases.lines.length > 0) {
+      output += `${results.length > 0 ? "\n" : ""}▶ 판례 인용\n`
+      for (const line of cases.lines) {
+        output += `${line}\n`
+      }
     }
     if (repealedCount > 0) {
       output += `\n⌛ [REPEALED_REFERENCE] ${repealedCount}건은 폐지된 법령(연혁) 인용입니다. 실존했던 법령이라 '환각'은 아니지만 현행이 아니므로, 후속·대체 법령으로 갱신이 필요한지 확인하세요.\n`
     }
     if (hasHallucination) {
-      output += `\n⚠️ [HALLUCINATION_DETECTED] ${failCount}건 인용이 법제처 DB에 실존하지 않거나 인용 내용(조문 제목)이 실제와 불일치합니다.\n`
+      output += `\n⚠️ [HALLUCINATION_DETECTED] ${failCount + cases.fail}건 인용이 법제처 DB에 실존하지 않거나 인용 내용(조문 제목)이 실제와 불일치합니다.\n`
       output += `   LLM이 지어낸 인용일 가능성이 높습니다. 원문을 수정하거나 사용자에게 '인용 오류'를 명시 보고하세요.\n`
       output += `   절대로 "검증 완료"로 답변하지 마세요.\n`
     }
     if (warnCount > 0) {
       output += `\n💡 ⚠ 항목은 법령명 불명확/부분 매칭/API 일시 실패 등. 법령명을 명시하거나 재시도하세요.\n`
+    }
+    if (cases.unknown > 0) {
+      output += `\n💡 판례 '미확인'은 부존재가 아닙니다 — 법제처 수록 판례는 대법원 중심이라 하급심·미수록 판례는 검색되지 않습니다. 부존재로 단정하지 말고 search_decisions로 교차 확인하세요.\n`
     }
 
     return {
