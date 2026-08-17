@@ -1,6 +1,6 @@
 # Korean Law MCP
 
-**42 APIs compressed into 10 tools.** Search, retrieve, and analyze Korean law — statutes, precedents, ordinances, treaties + **LLM hallucination guard for legal citations (existence + content)** + **precedent citator (cite_check)** + **point-in-time law resolution (applicable_law)** + **ordinance revision radar (ordinance_radar)**.
+**42 APIs compressed into 10 tools.** Search, retrieve, and analyze Korean law — statutes, precedents, ordinances, treaties + **LLM hallucination guard for legal citations (statutes and precedents, existence + content)** + **precedent citator (cite_check)** + **point-in-time law resolution (applicable_law)** + **ordinance revision radar (ordinance_radar)** + **successor lookup for repealed statutes**.
 
 [![npm version](https://img.shields.io/npm/v/korean-law-mcp.svg)](https://www.npmjs.com/package/korean-law-mcp)
 [![MCP 1.27](https://img.shields.io/badge/MCP-1.27-blue)](https://modelcontextprotocol.io)
@@ -30,6 +30,47 @@
 | [![Connect to Claude](./docs/video-claude.jpg)](https://youtu.be/KaUKLOH7290) | [![Connect to ChatGPT](./docs/video-gpt.jpg)](https://youtu.be/KCFIzervxtE) |
 
 ---
+
+## v4.12.0 — 62-issue batch + closing the "it doesn't exist" failure paths
+
+A batch that measured three axes (legal correctness, token efficiency, response latency) and closed **62 filed issues** ([#88–#149](https://github.com/chrisryugj/korean-law-mcp/issues), PR [#150](https://github.com/chrisryugj/korean-law-mcp/pull/150) by @humdrum00001010), plus follow-up repairs for 31 defects found in pre-merge domain review. Tests 196 → **701**.
+
+**The server no longer claims a record is absent when it is merely unreachable.** For a legal research tool, the worst failure is not slowness — it is asserting that an existing statute or precedent does not exist.
+
+- Precedent lookups treated **a single empty response right after a 503 or network error** as confirmed absence; confirmation is now based on observation history, not attempt count
+- The HTML fallback path declared `[NOT_FOUND]` for **real precedents** when it received a maintenance or anti-bot page; it now distinguishes a broken recovery path from a missing record
+- Annex lookups silently turned HTML responses into empty lists and hardened into "not in the 법제처 database"
+
+**Requests no longer stall or get dropped whole.**
+
+- Research chains take a **45-second deadline** (`MCP_CHAIN_DEADLINE_MS`) — on expiry they assemble whatever branches returned and ship a **partial result**, marking the rest. Slow upstreams used to blow past the MCP client timeout (60s) and lose everything
+- Bodies over 2 MiB: **300-second hang → 13 ms explicit error** (fixes a v4.11.0 regression)
+- Precedent miss 12.5s → **2.2s**; system-tree hit 10.6–11.6s → 6.3–8.3s
+- Routing an 8.5k-character query takes 476 ms; the regex that took up to 45.9s on adversarial input is gone
+
+**Citation verification got sharper.**
+
+- `verify_citations` now covers **precedents** as well as statutes, separating "cannot exist" from "unverified"
+- `impact_map` matches the **statute name** in addition to the article number — 군형법 Article 1 no longer contaminates a 형법 Article 1 query. Undecidable cases are held rather than dropped (including "구 OO법" citations common in constitutional review)
+- `cite_check` reads holdings that arrive as arrays or objects (previously a silent failure)
+
+**Annexes and search.** Reaches annexes beyond the 100-item window (verified on 도로교통법 시행규칙: annex 28 of 263), blocks the silent substitution of annex 1 for annex `1의2`, and cuts `discover_tools` responses by 65% with 10/10 correct answers retained.
+
+> Two user-visible changes: dates are now formatted `2024.01.05` instead of `2024.1.5.` (empty enforcement dates render as `N/A`), and `discover_tools` returns a ranked pointer format.
+
+## v4.11.0 — Request and release boundary hardening
+
+Closed the structures that let one request amplify into hundreds of upstream calls, or let the server keep working after the client disconnected.
+
+- **Per-request execution budget**: retries and anti-bot hops draw from the same budget (`MCP_MAX_UPSTREAM_REQUESTS`, default 48)
+- **Cancellation propagation**: HTTP disconnects and MCP cancellations now reach tools, chains, upstream fetches, and backoff waits
+- **Packaging verification**: artifacts without sources and missing `exports` targets are blocked before publish
+
+> ⚠️ Breaking: HTTP bind default `0.0.0.0` → `127.0.0.1`; `TRUST_PROXY` default `1` → `false` (only integers 1–10 accepted); `get_batch_articles` input caps (20 statutes, 50 articles each, 100 per request). See the [CHANGELOG](./CHANGELOG.md#4110---2026-08-16) for migration details.
+
+## v4.10.0 — Repealed statutes now point to their successors
+
+Searching for a repealed statute used to return nothing. The server now **traces the revision history and reports the repeal reason along with the consolidated successor regulation**, for both statutes and administrative rules — so questions about laws that no longer exist don't dead-end.
 
 ## v4.9.7 — Fixing the 429 storm for shared-key users (token-bucket fallback quota)
 
