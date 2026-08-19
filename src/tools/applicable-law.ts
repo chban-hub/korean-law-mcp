@@ -230,6 +230,16 @@ export async function applicableLaw(
       lines.push(`  ↳ 이 버전이 현행입니다 (기준일 이후 개정 없음)`)
     }
 
+    // 시행 예정 개정 경고 — 연혁(versions)에 이미 들어 있는 미래 시행분에서 추출 (추가 API 호출 없음).
+    // 현행만 보고 답하면 곧 시행될 대개정을 통째로 놓친다 (2026-08-19 실측: 형사소송법
+    // 2026.10.2. 시행 제21857호 — §215조의2 검사 직권 삭제·§245조의7③ 이의신청 3개월 기한
+    // 신설을 도구가 완전 침묵, 외부 PDF로만 발견됨).
+    const upcoming = versions.filter(v => v.efYd && v.efYd > today)
+    if (upcoming.length > 0) {
+      const next = upcoming[upcoming.length - 1]  // versions는 시행일 내림차순 — 마지막이 최근접 미래
+      lines.push(`  ⚠️ 시행 예정 개정 ${upcoming.length}건 존재 — 최근접: 시행 ${fmtYmd(next.efYd)} (제${next.ancNo}호, ${next.rrCls || "개정"}). 기준일 판단에는 영향 없으나, 현행 인용이나 향후 절차 관련 서면에는 개정 내용 확인 필수: get_law_text(mst="${next.mst}")`)
+    }
+
     // 3. 조문 비교 (jo 지정 시)
     const joDisplay = input.jo ? (input.jo.startsWith("제") ? input.jo : `제${input.jo}`) : undefined
     if (joDisplay) {

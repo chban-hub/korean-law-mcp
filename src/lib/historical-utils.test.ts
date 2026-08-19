@@ -82,4 +82,30 @@ describe("fetchHistoricalVersionsFull — 페이징 종료 판정", () => {
     expect(served).toEqual(["1", "2"])                   // 콤마 미파싱이면 1페이지에서 끊겨 "2" 없음
     expect(r.versions.map(v => v.mst)).toContain("800")  // 옛 본법 버전 도달
   })
+
+  // 회귀 (2026-08-19 형사소송법 실측): lsHistory는 분리시행 공포본을 같은 MST의
+  // 여러 행(시행일별)으로 내보낸다. 중복 제거 키가 MST 단독이면 시행일 내림차순
+  // 첫 행(미래 시행분)만 남아 이미 시행된 슬라이스가 사라지고, applicable_law의
+  // "현행" 탐색(efYd <= today)이 그 MST를 통째로 건너뛰어 직전 공포본을 현행으로
+  // 오판정한다 (MST 281865: 시행 20260701 슬라이스 소실 → 20260624판을 현행 반환).
+  it("분리시행(같은 MST·복수 시행일) 행을 슬라이스별로 모두 보존한다", async () => {
+    const page1 = pageHtml(3, [
+      row("형사소송법", 281865, "20271231"),  // 미래 시행분 (efdes 내림차순 첫 행)
+      row("형사소송법", 281865, "20260701"),  // 이미 시행된 슬라이스 — MST 단독 키면 소실
+      row("형사소송법", 280441, "20260624"),
+    ])
+    const client = {
+      fetchApi: async () => page1,
+    } as unknown as LawApiClient
+
+    const r = await fetchHistoricalVersionsFull(client, "형사소송법", undefined, 500)
+    expect(r.versions.map(v => `${v.mst}@${v.efYd}`)).toEqual([
+      "281865@20271231",
+      "281865@20260701",
+      "280441@20260624",
+    ])
+    // applicable_law의 현행 판정 재현: 오늘=20260819 기준 첫 매치가 20260701판이어야 한다
+    const current = r.versions.find(v => v.efYd && v.efYd <= "20260819")
+    expect(current?.efYd).toBe("20260701")
+  })
 })
