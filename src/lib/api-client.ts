@@ -29,6 +29,20 @@ import { getLawApiBaseUrl } from "./law-url-config.js"
 
 const LAW_API_BASE = getLawApiBaseUrl()
 
+/**
+ * JSON 본문에 법령 노드가 실제로 있는지 — getLawText의 eflaw→law 폴백 판정 전용.
+ * 파싱 불가 본문은 true(폴백 안 함)로 두어, 형식이 다른 정상 응답을 폴백이
+ * 덮어쓰지 않게 한다 (폴백은 "확실히 빈 봉투"에만 발동).
+ */
+function hasLawNode(text: string): boolean {
+  try {
+    const json = JSON.parse(text)
+    return json !== null && typeof json === "object" && "법령" in json
+  } catch {
+    return true
+  }
+}
+
 export class LawApiClient {
   private defaultApiKey: string
 
@@ -159,6 +173,31 @@ export class LawApiClient {
     this.checkHtmlError(text, params.jo
       ? `법령 조문(${params.jo})을 찾을 수 없습니다. MST/lawId와 조문번호를 확인해주세요.`
       : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요.")
+
+    // eflaw 단건 조회는 MST 단독(efYd 미동반)으로 "현행이 아닌" 버전을 못 푼다 —
+    // 시행 예정판·과거 연혁판 모두 200 + "{}"로 온다 (2026-08-19 형사소송법 실측:
+    // MST 288579 시행 2026.10.2.판, MST 280441 시행 2026.6.24.판 둘 다 빈 응답).
+    // MST는 버전 고유값이라 target=law로 치면 그 버전 전문(부칙 포함)이 그대로
+    // 회수되므로, 법령 노드가 빈 응답이면 law 타깃으로 1회 폴백한다.
+    if (params.mst && !hasLawNode(text)) {
+      const fbParams = new URLSearchParams({
+        target: "law",
+        OC: this.getApiKey(params.apiKey),
+        type: "JSON",
+      })
+      fbParams.append("MST", String(params.mst))
+      if (params.jo) fbParams.append("JO", String(params.jo))
+
+      const fbUrl = `${LAW_API_BASE}/lawService.do?${fbParams.toString()}`
+      const fbResponse = await fetchWithRetry(fbUrl, lookupRetryFor("law"))
+      await this.throwIfError(fbResponse, "getLawText")
+
+      const fbText = await this.readBody(fbResponse, "법령 조회")
+      this.checkHtmlError(fbText, params.jo
+        ? `법령 조문(${params.jo})을 찾을 수 없습니다. MST/lawId와 조문번호를 확인해주세요.`
+        : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요.")
+      if (hasLawNode(fbText)) return fbText
+    }
 
     return text
   }

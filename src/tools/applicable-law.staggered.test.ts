@@ -150,6 +150,62 @@ describe("applicableLaw — 적용 버전 자신의 부칙 발췌 (laterVersions
   })
 })
 
+describe("applicableLaw — 분리시행 슬라이스 보존 + 시행 예정 개정 경고", () => {
+  beforeEach(() => lawCache.clear())
+
+  // 회귀 (2026-08-19 형사소송법 실측): ① 같은 MST가 분리시행으로 두 행(이미 시행분 +
+  // 미래 시행분)일 때 MST 단독 dedup이 이미 시행분을 지워 "현행"이 직전 공포본으로
+  // 밀렸다. ② 시행 예정 대개정(제21857호, 2026.10.2.)의 존재를 응답 어디서도 알리지
+  // 않아 현행 인용만 보고 답하면 개정을 통째로 놓쳤다. 픽스처 날짜는 실행 시점
+  // 비의존이 되도록 미래분을 2099년으로 치환한 동형 구조.
+  it("이미 시행된 슬라이스가 현행으로 잡히고, 시행 예정 개정이 경고된다", async () => {
+    const client = {
+      searchLaw: async () => searchXml("형사소송법", "281865"),
+      fetchApi: async (p: FetchApiParams) => {
+        if (p.target === "lsHistory") {
+          return histPage(4, [
+            histRow("형사소송법", "281865", "20991231", "21241", "2025.12.30", "일부개정"),  // 미래 슬라이스 (같은 MST)
+            histRow("형사소송법", "288579", "20990102", "21857", "2026.08.04", "일부개정"),  // 시행 예정 개정
+            histRow("형사소송법", "281865", "20260701", "21241", "2025.12.30", "일부개정"),  // 이미 시행된 슬라이스
+            histRow("형사소송법", "280441", "20260624", "21100", "2025.12.23", "일부개정"),
+          ])
+        }
+        if (p.target === "eflaw") return EFLAW_EMPTY_XML
+        if (p.target === "law") return `{"법령":{"부칙":{"부칙단위":[]}}}`
+        throw new Error(`unexpected target: ${p.target}`)
+      },
+    } as unknown as LawApiClient
+
+    const r = await applicableLaw(client, { lawName: "형사소송법", date: "2026-08-19" })
+    const text = r.content[0].text
+    // ① 현행 = 이미 시행된 슬라이스 (MST 단독 dedup였으면 20260624판으로 밀림)
+    expect(text).toContain("[시행 2026.07.01]")
+    expect(text).toContain("(MST 281865)")
+    expect(text).not.toContain("[시행 2026.06.24]")
+    // ② 시행 예정 개정 경고 + 후속 조회 유도
+    expect(text).toContain("시행 예정 개정")
+    expect(text).toContain("제21857호")
+    expect(text).toContain('get_law_text(mst="288579")')
+  })
+
+  it("시행 예정 개정이 없으면 경고를 내지 않는다", async () => {
+    const client = {
+      searchLaw: async () => searchXml("형사소송법", "281865"),
+      fetchApi: async (p: FetchApiParams) => {
+        if (p.target === "lsHistory") {
+          return histPage(1, [histRow("형사소송법", "281865", "20260701", "21241", "2025.12.30", "일부개정")])
+        }
+        if (p.target === "eflaw") return EFLAW_EMPTY_XML
+        if (p.target === "law") return `{"법령":{"부칙":{"부칙단위":[]}}}`
+        throw new Error(`unexpected target: ${p.target}`)
+      },
+    } as unknown as LawApiClient
+
+    const r = await applicableLaw(client, { lawName: "형사소송법", date: "2026-08-19" })
+    expect(r.content[0].text).not.toContain("시행 예정 개정")
+  })
+})
+
 describe("applicableLaw — 조문 응답 정직성 (jo 검증)", () => {
   beforeEach(() => lawCache.clear())
 

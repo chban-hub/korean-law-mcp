@@ -123,11 +123,17 @@ export async function fetchHistoricalVersionsFull(
     page++
   }
 
-  // 중복 제거 (MST 기준 — 페이징 경계 안전망)
+  // 중복 제거 (MST+시행일 쌍 기준 — 페이징 경계 안전망).
+  // lsHistory는 분리시행 공포본을 같은 MST의 여러 행으로 내보낸다
+  // (예: 형사소송법 MST 281865 = 시행 2026.7.1. + 2027.12.31.). MST 단독 키는
+  // 시행일 내림차순 첫 행(미래 시행분)만 남겨 이미 시행된 슬라이스가 사라지고,
+  // applicable_law가 시행 중 버전을 건너뛰어 직전 공포본을 "현행"으로 오판정한다
+  // (2026-08-19 실측: 20260701 시행분 누락 → 20260624판을 현행 반환).
   const seen = new Set<string>()
   const unique = allVersions.filter(v => {
-    if (seen.has(v.mst)) return false
-    seen.add(v.mst)
+    const key = `${v.mst}:${v.efYd}`
+    if (seen.has(key)) return false
+    seen.add(key)
     return true
   })
 
