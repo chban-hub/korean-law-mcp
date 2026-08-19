@@ -79,3 +79,28 @@ describe("getLawText — eflaw 빈 봉투 시 law 타깃 폴백", () => {
     expect(text).toBe("{}")   // NOT_FOUND 표면화는 상위 레이어 몫 — 여기서 추측 금지
   })
 })
+
+// 회귀: MST는 "공포본" 단위라 분리시행 공포본이면 target=law가 시점과 무관하게
+// 마지막 시행 슬라이스를 돌려준다 (실측 2026-08-19: target=law&MST=281865 →
+// 시행일자 20271231. 2026.7.1.에 시행 중인 슬라이스가 아니다).
+// 따라서 시행일을 못박은 호출(efYd 동반)에는 폴백이 붙으면 안 된다 — 붙으면
+// applicable_law의 행위시법 조문 비교가 다른 슬라이스 본문으로 조용히 오염된다.
+describe("getLawText — efYd 지정 요청은 폴백 대상이 아니다", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("efYd가 있으면 빈 봉투라도 law로 폴백하지 않는다", async () => {
+    const urls: string[] = []
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      urls.push(String(url))
+      return jsonRes("{}")
+    }))
+
+    const client = new LawApiClient({ apiKey: "test" })
+    const text = await client.getLawText({ mst: "281865", efYd: "20260701" })
+
+    expect(text).toBe("{}")
+    expect(urls).toHaveLength(1)
+    expect(urls[0]).toContain("target=eflaw")
+    expect(urls.some(u => u.includes("target=law&"))).toBe(false)
+  })
+})

@@ -34,7 +34,7 @@ const LAW_API_BASE = getLawApiBaseUrl()
  * 파싱 불가 본문은 true(폴백 안 함)로 두어, 형식이 다른 정상 응답을 폴백이
  * 덮어쓰지 않게 한다 (폴백은 "확실히 빈 봉투"에만 발동).
  */
-function hasLawNode(text: string): boolean {
+export function hasLawNode(text: string): boolean {
   try {
     const json = JSON.parse(text)
     return json !== null && typeof json === "object" && "법령" in json
@@ -179,7 +179,11 @@ export class LawApiClient {
     // MST 288579 시행 2026.10.2.판, MST 280441 시행 2026.6.24.판 둘 다 빈 응답).
     // MST는 버전 고유값이라 target=law로 치면 그 버전 전문(부칙 포함)이 그대로
     // 회수되므로, 법령 노드가 빈 응답이면 law 타깃으로 1회 폴백한다.
-    if (params.mst && !hasLawNode(text)) {
+    // efYd가 지정된 요청에는 폴백하지 않는다 — MST는 "공포본" 단위라 분리시행
+    // 공포본이면 target=law가 마지막 시행 슬라이스를 돌려준다(실측: MST 281865 →
+    // 시행 20271231, 시행 중인 20260701 아님). 시행일을 못박은 호출에 다른 슬라이스를
+    // 끼워 넣으면 NOT_FOUND보다 나쁜 조용한 오답(행위시법 조문 비교 오염)이 된다.
+    if (params.mst && !params.efYd && !hasLawNode(text)) {
       const fbParams = new URLSearchParams({
         target: "law",
         OC: this.getApiKey(params.apiKey),

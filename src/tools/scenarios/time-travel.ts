@@ -11,6 +11,7 @@
  */
 import type { ScenarioContext, ScenarioResult, ScenarioSection } from "./types.js"
 import { fetchHistoricalVersionsFull, type HistoricalVersion } from "../../lib/historical-utils.js"
+import { hasLawNode } from "../../lib/api-client.js"
 import {
   changeExcerpt, diffArticles, displayJo, dot, excerptBudget, extractLawSnapshot,
   type ArticleSnapshot, type LawSnapshot,
@@ -30,6 +31,28 @@ export function pickVersion(versions: HistoricalVersion[], targetDate: string): 
   // "해당 시점 시행 버전"이 아닌 엉뚱한 버전이 뽑힐 수 있다.
   eligible.sort((a, b) => parseInt(b.efYd || "0", 10) - parseInt(a.efYd || "0", 10))
   return eligible[0]
+}
+
+/**
+ * 판본 본문 raw 조회 — 시행일(efYd)을 동반한 eflaw 우선.
+ * target=law는 MST만 받는데 MST는 "공포본" 단위라, 조항별로 나뉘어 시행되는
+ * 공포본이면 시점과 무관하게 마지막 시행 슬라이스를 돌려준다 (실측: 형사소송법
+ * MST 281865 → 시행 20271231 본문. 2026.7.1.에 시행 중인 슬라이스가 아니다).
+ * 그대로 두면 "시점 A: 2026.7.1. 시행" 머리말에 2027.12.31.판 본문이 붙어
+ * diff가 통째로 어긋난다. efYd가 없거나 eflaw가 빈 봉투면 기존 경로로 물러선다.
+ */
+async function fetchVersionRaw(ctx: ScenarioContext, ver: HistoricalVersion): Promise<string> {
+  if (ver.efYd) {
+    const raw = await ctx.apiClient.fetchApi({
+      endpoint: "lawService.do", target: "eflaw", type: "JSON",
+      extraParams: { MST: ver.mst, efYd: ver.efYd }, apiKey: ctx.apiKey,
+    })
+    if (hasLawNode(raw)) return raw
+  }
+  return ctx.apiClient.fetchApi({
+    endpoint: "lawService.do", target: "law", type: "JSON",
+    extraParams: { MST: ver.mst }, apiKey: ctx.apiKey,
+  })
 }
 
 function summarizeChange(old: ArticleSnapshot, cur: ArticleSnapshot): string {
@@ -109,7 +132,11 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
     return { sections, suggestedActions }
   }
 
-  if (oldVer.mst === newVer.mst) {
+  // "변경 없음"은 MST와 시행일이 모두 같을 때만이다. 한 공포본이 조항별로 나뉘어
+  // 시행되면(분리시행) MST는 같고 시행일만 다른 두 슬라이스가 뽑히는데, 이때 내용은
+  // 실제로 다르다 (실측: 형사소송법 MST 281865 → 20260701판 조문 644개 /
+  // 20271231판 653개). MST만 비교하면 이 차이를 "변경 없음"으로 단정한다.
+  if (oldVer.mst === newVer.mst && oldVer.efYd === newVer.efYd) {
     sections.push({
       title: "Time Travel — 시점 비교 (v4.0)",
       content: `ℹ️ 두 시점 모두 동일 버전 (시행 ${oldVer.efYd}, MST ${oldVer.mst}) — 변경 없음`,
@@ -122,14 +149,8 @@ export async function runTimeTravelScenario(ctx: ScenarioContext): Promise<Scena
   let newSnap: LawSnapshot = { articles: [], ancNo: "", ancYd: "", rrCls: "" }
   try {
     const [oldRaw, newRaw] = await Promise.all([
-      ctx.apiClient.fetchApi({
-        endpoint: "lawService.do", target: "law", type: "JSON",
-        extraParams: { MST: oldVer.mst }, apiKey: ctx.apiKey,
-      }),
-      ctx.apiClient.fetchApi({
-        endpoint: "lawService.do", target: "law", type: "JSON",
-        extraParams: { MST: newVer.mst }, apiKey: ctx.apiKey,
-      }),
+      fetchVersionRaw(ctx, oldVer),
+      fetchVersionRaw(ctx, newVer),
     ])
     oldSnap = extractLawSnapshot(JSON.parse(oldRaw))
     newSnap = extractLawSnapshot(JSON.parse(newRaw))
