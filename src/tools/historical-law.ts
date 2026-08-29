@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 import { truncateResponse, formatDateDot } from "../lib/schemas.js";
 import { formatToolError } from "../lib/errors.js";
-import { cleanHtml, flattenContent } from "../lib/article-parser.js";
+import { flattenContent, formatArticleUnit } from "../lib/article-parser.js";
 
 /** JSON 필드 안전 문자열화 — 객체/배열이 와도 "[object Object]"를 만들지 않는다 */
 function safeText(v: unknown): string {
@@ -15,6 +15,13 @@ function safeText(v: unknown): string {
     return typeof c === "string" ? c : flattenContent(v as never) || "";
   }
   return String(v);
+}
+
+/** 조문 표시명 — 가지번호가 있으면 "제5조의2" */
+function joLabel(a: any): string {
+  const branch = String(a?.조문가지번호 || "0");
+  const num = safeText(a?.조문번호 || a?.조번호);
+  return branch !== "0" ? `제${num}조의${branch}` : `제${num}조`;
 }
 
 /**
@@ -155,37 +162,49 @@ export async function getHistoricalLaw(
     output += `  소관부처: ${safeText(basic.소관부처명 || basic.소관부처) || "N/A"}\n\n`;
 
     // Extract articles
-    const rawArticles = law.조문;
-    const articles = rawArticles == null ? [] : Array.isArray(rawArticles) ? rawArticles : [rawArticles];
+    // 페이로드는 법령.조문.조문단위[]로 한 겹 감싼 구조다 (verify-citations·applicable-law가
+    // 읽는 형태와 동일). law.조문을 조문 객체의 배열로 읽으면 래퍼 하나만 잡혀 길이 1이 되고
+    // 조문번호가 undefined로 나온다 — "제undefined조" 한 줄이 조문 목록 전부였다 (#153 곁가지 2).
+    const rawArticles = law.조문?.조문단위 ?? law.조문;
+    const units = rawArticles == null ? [] : Array.isArray(rawArticles) ? rawArticles : [rawArticles];
+    // 조문단위에는 장·절 헤더가 조문여부="전문"으로 섞여 온다 (실측 아동복지법 MST 285697:
+    // 123개 중 12개). 조문으로 세면 개수와 목록이 함께 오염된다.
+    const articles = units.filter((a: any) => a?.조문여부 === "조문");
     if (articles.length > 0) {
       if (args.jo) {
         // Filter to specific article
-        const joCode = parseJoNumber(args.jo);
+        // parseJoNumber는 "75"/"75의2" 꼴을 돌려주고, 페이로드는 조문번호와 조문가지번호로
+        // 나눠 온다 — 합쳐진 문자열끼리 비교하면 가지번호 조문이 늘 NOT_FOUND가 된다.
+        const [wantNum, wantBranch = "0"] = parseJoNumber(args.jo).split("의");
         const article = articles.find((a: any) => {
-          const articleJo = a.조문번호 || a.조번호 || "";
-          return articleJo === joCode || String(articleJo) === joCode;
+          const num = String(a.조문번호 ?? a.조번호 ?? "");
+          const branch = String(a.조문가지번호 || "0");
+          return num === wantNum && branch === wantBranch;
         });
 
         if (article) {
+          // 조문내용에는 "제75조(과태료)" 제목줄만 들어 있고 본문은 항·호·목에 있다.
+          // formatArticleUnit이 그 결합의 단일 원본이다 (law-text·article-detail 공통).
+          const formatted = formatArticleUnit(article);
           output += `${args.jo}:\n`;
           if (article.조문제목) output += `제목: ${safeText(article.조문제목)}\n`;
-          output += `${cleanHtml(safeText(article.조문내용)) || "내용 없음"}\n`;
+          output += `${formatted?.body || "내용 없음"}\n`;
         } else {
           output += `[NOT_FOUND] ${args.jo}를 찾을 수 없습니다.\n⚠️ LLM은 조문을 추측/생성하지 마세요.\n`;
           output += `\n조문 목록:\n`;
           for (const a of articles.slice(0, 20)) {
-            output += `  - 제${a.조문번호 || a.조번호}조 ${a.조문제목 || ""}\n`;
+            output += `  - ${joLabel(a)} ${safeText(a.조문제목)}\n`;
           }
         }
       } else {
         // Show all articles (limited)
         output += `조문 (총 ${articles.length}개):\n\n`;
         for (const article of articles.slice(0, 30)) {
-          const joNum = safeText(article.조문번호 || article.조번호);
+          const formatted = formatArticleUnit(article);
           const title = safeText(article.조문제목);
-          const content = cleanHtml(safeText(article.조문내용));
+          const content = formatted?.body || "";
 
-          output += `제${joNum}조`;
+          output += joLabel(article);
           if (title) output += ` (${title})`;
           output += `\n`;
           if (content) {
