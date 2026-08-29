@@ -84,10 +84,18 @@ export class LawApiClient {
     return t === "JSON" ? "JSON" : "XML"
   }
 
-  /** 응답 본문이 HTML 에러 페이지인지 확인 (술어는 body-shape.ts 단일 원본) */
-  private checkHtmlError(text: string, context: string): void {
+  /**
+   * 응답 본문이 HTML 에러 페이지인지 확인 (술어는 body-shape.ts 단일 원본)
+   *
+   * `sentType`은 **그 호출이 실제로 보낸** type이다. 기본값인 `getResponseType()`을
+   * 그대로 쓰면 type을 하드코딩하는 메서드(getLawText 등 `type: "JSON"`)의 실패에
+   * "LAW_RESPONSE_TYPE=JSON으로 우회하라"는 안내가 항상 붙는다 — 이미 JSON으로 부른
+   * 호출이라 구조상 효과가 없는 안내다(#153 곁가지). 우회 안내는 실제로 XML을 보낸
+   * 호출에만 붙어야 한다.
+   */
+  private checkHtmlError(text: string, context: string, sentType: "XML" | "JSON" = this.getResponseType()): void {
     if (isHtmlPage(text)) {
-      const hint = this.getResponseType() === "XML"
+      const hint = sentType === "XML"
         ? " XML 엔드포인트 장애 시 LAW_RESPONSE_TYPE=JSON 환경변수로 우회할 수 있습니다."
         : ""
       throw new Error(`${context} - API가 HTML 에러 페이지를 반환했습니다. 파라미터를 확인해주세요.${hint}`)
@@ -170,9 +178,9 @@ export class LawApiClient {
 
     const text = await this.readBody(response, "법령 조회")
 
-    this.checkHtmlError(text, params.jo
+    const notFoundContext = params.jo
       ? `법령 조문(${params.jo})을 찾을 수 없습니다. MST/lawId와 조문번호를 확인해주세요.`
-      : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요.")
+      : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요."
 
     // eflaw 단건 조회는 MST 단독(efYd 미동반)으로 "현행이 아닌" 버전을 못 푼다 —
     // 시행 예정판·과거 연혁판 모두 200 + "{}"로 온다 (2026-08-19 형사소송법 실측:
@@ -183,7 +191,17 @@ export class LawApiClient {
     // 공포본이면 target=law가 마지막 시행 슬라이스를 돌려준다(실측: MST 281865 →
     // 시행 20271231, 시행 중인 20260701 아님). 시행일을 못박은 호출에 다른 슬라이스를
     // 끼워 넣으면 NOT_FOUND보다 나쁜 조용한 오답(행위시법 조문 비교 오염)이 된다.
-    if (params.mst && !params.efYd && !hasLawNode(text)) {
+    const canFallBackToLaw = Boolean(params.mst) && !params.efYd
+
+    // 같은 MST 단독 조회가 2026-08-27부터 빈 봉투 대신 **HTML 안내 페이지**로 실패한다
+    // (법제처가 eflaw 단건에 efYd를 요구하게 바뀜, #153). 두 응답은 "이 파라미터 조합으로는
+    // 못 푼다"는 같은 신호이므로 같은 폴백으로 흘려야 한다. HTML을 여기서 즉시 던지면
+    // 아래 폴백에 **도달하지 못해** 실존 조문이 통째로 조회 불가가 된다 — 기존 폴백이
+    // 무력화된 경로가 정확히 이것이다. 폴백 대상이 아닌 호출(lawId 단독·efYd 동반)은
+    // 종전대로 여기서 즉시 던진다.
+    if (!canFallBackToLaw) this.checkHtmlError(text, notFoundContext, "JSON")
+
+    if (canFallBackToLaw && (isHtmlPage(text) || !hasLawNode(text))) {
       const fbParams = new URLSearchParams({
         target: "law",
         OC: this.getApiKey(params.apiKey),
@@ -197,11 +215,13 @@ export class LawApiClient {
       await this.throwIfError(fbResponse, "getLawText")
 
       const fbText = await this.readBody(fbResponse, "법령 조회")
-      this.checkHtmlError(fbText, params.jo
-        ? `법령 조문(${params.jo})을 찾을 수 없습니다. MST/lawId와 조문번호를 확인해주세요.`
-        : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요.")
+      this.checkHtmlError(fbText, notFoundContext, "JSON")
       if (hasLawNode(fbText)) return fbText
     }
+
+    // 폴백이 원 응답을 대체하지 못했다. 원 응답이 HTML이면 여기서 확정한다 —
+    // 빈 봉투는 종전대로 그대로 돌려보내 상위 레이어가 NOT_FOUND로 표면화한다.
+    this.checkHtmlError(text, notFoundContext, "JSON")
 
     return text
   }
