@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.12.2] - 2026-08-29
+
+법제처 상류 변경으로 `get_law_text` 가 통째로 멈춘 장애를 복구한다. [#154](https://github.com/chrisryugj/korean-law-mcp/pull/154) (@Rillmo) 를 머지하고, 같은 이슈가 함께 보고한 `get_historical_law` 조문 파싱 결함을 후속 수리했다. 테스트 717 → **722**.
+
+**2026-08-27부터 `lawService.do?target=eflaw` 단건 조회가 `efYd` 를 요구한다.** MST 단독 요청의 실패 양상이 종전의 "200 + 빈 봉투"에서 "200 + HTML 안내 페이지"로 바뀌면서, 빈 봉투만 겨냥해 만들어 둔 `target=law` 폴백(v4.12.1)이 무력화됐다.
+
+### Fixed
+
+- **`get_law_text(mst=…)` 가 실존 조문을 통째로 못 찾던 장애** ([#153](https://github.com/chrisryugj/korean-law-mcp/issues/153), #154): `checkHtmlError` 가 폴백보다 **먼저 throw** 해서 기존 `target=law` 폴백에 도달하지 못했다. 두 실패 양상(빈 봉투·HTML 안내 페이지)은 "이 파라미터 조합으로는 못 푼다"는 같은 신호이므로 같은 폴백으로 흘리고, 폴백까지 법령 노드를 못 얻었을 때만 던진다. 폴백 대상이 아닌 호출(`lawId` 단독·`efYd` 동반)은 종전대로 즉시 던져 #152 의 "조용한 슬라이스 대체 금지" 불변식을 유지한다. 실측(2026-08-29): `target=eflaw&MST=285697&JO=007500` → HTML 1,649B, 같은 파라미터 `target=law` → 정상 JSON 6,977B (`법령.조문.조문단위[0]` 조문번호 75 / 조문제목 과태료 — `eflaw&ID=000190` 결과와 일치)
+- **`verify_citations` 가 실존 인용을 전건 `⚠` 로 보고하던 연쇄 장애** (#153): 이 도구는 위 경로만 타므로 복구가 그대로 전파된다. `legal_analysis(mode=verify_citations)` 도 같다
+- **효과 없는 우회 안내** (#153 곁가지 1): `getLawText` 는 `type: "JSON"` 을 하드코딩하는데 `checkHtmlError` 는 환경변수 기본값(`XML`)을 봐서, **이미 JSON 으로 부른 호출에 "LAW_RESPONSE_TYPE=JSON 으로 우회하라"** 는 안내가 항상 따라붙었다. 안내를 실제로 XML 을 보낸 호출로 좁혔다
+- **`get_historical_law` 가 조문을 한 건도 못 찾던 문제** (#153 곁가지 2): `law.조문` 을 조문 객체의 배열로 읽는데 페이로드는 `법령.조문.조문단위[]` 로 한 겹 더 감싸는 구조라, 배열 길이가 1(래퍼 자신)이 되고 조문 목록이 `제undefined조` 한 줄로 무너졌다. `verify_citations`·`applicable_law` 는 이미 조문단위를 읽고 있었다 — 이 도구만 어긋나 있었다. 함께 드러난 결함 둘을 같이 고친다: ①조문단위에 조문여부=`전문` 으로 섞여 오는 장·절 헤더를 제외 (실측 아동복지법 MST 285697: 123개 중 12개) ②조문 본문은 `조문내용`(제목줄뿐)이 아니라 항·호에 있으므로 그 결합의 단일 원본인 `formatArticleUnit` 사용 ③`parseJoNumber` 의 `"75의2"` 를 조문번호·조문가지번호로 갈라 비교 (종전엔 가지번호 조문이 늘 `[NOT_FOUND]`)
+
 ## [4.12.1] - 2026-08-19
 
 분리시행(한 공포본이 조항별로 나뉘어 시행되는 경우) 처리 결함 배치. [#152](https://github.com/chrisryugj/korean-law-mcp/pull/152) (@herrozim-ship-it) 을 머지하고, 머지 전 리뷰에서 실측 재현된 파급 결함 2건을 후속 수리했다. 테스트 709 → **712**.
