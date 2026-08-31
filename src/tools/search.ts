@@ -3,28 +3,42 @@
  */
 
 import { z } from "zod"
-import { DOMParser } from "@xmldom/xmldom"
 import type { LawApiClient } from "../lib/api-client.js"
 import { lawCache } from "../lib/cache.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { formatToolError, noResultHint } from "../lib/errors.js"
+import { formatToolError } from "../lib/errors.js"
+import { expandLawQuery, normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js"
+import { formatHit, hasRelatedHit, parseLawsXml, type LawHit } from "./search-hits.js"
+import { buildUpcomingNotes, fetchUpcomingLaws } from "../lib/upcoming-laws.js"
+import { searchLawFallbacks } from "./search-fallbacks.js"
 
 export const SearchLawSchema = z.object({
   query: z.string().describe("검색할 법령명 (예: '관세법', 'fta특례법', '화관법')"),
-  display: z.number().optional().default(20).describe("최대 결과 개수"),
+  display: z.number().optional().default(50).describe("최대 결과 개수 (기본 50 — 짧은 법령명 정확매칭 누락 방지)"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 })
 
 export type SearchLawInput = z.infer<typeof SearchLawSchema>
+
+/**
+ * 업스트림 조회 하한 (#89).
+ *
+ * 법제처는 LIKE 검색 + 가나다순으로 응답하므로 "민법"의 정확매칭이 "난민법·난민법
+ * 시행령·난민법 시행규칙" 뒤에 온다. display를 그대로 넘기면 아래 정확/부분 분리에
+ * 도달하기 전에 업스트림이 잘라버려 정확매칭이 통째로 사라진다 — 토큰을 아끼려
+ * display를 낮춘 클라이언트가 조용히 "다른 법령"을 1순위로 받는다.
+ *
+ * 그래서 업스트림에는 항상 하한 이상을 요청하고, 사용자가 지정한 display는 분리를
+ * 마친 결과에 적용한다. 업스트림 호출 횟수는 늘지 않는다.
+ */
+const UPSTREAM_DISPLAY_FLOOR = 50
 
 export async function searchLaw(
   apiClient: LawApiClient,
   input: SearchLawInput
 ): Promise<{ content: Array<{ type: string, text: string }>, isError?: boolean }> {
   try {
-    // Check cache first (search results cached for 1 hour)
-    // 캐시 키에 apiKey 해시를 포함하지 않음 — 검색 결과는 API 키에 무관하게 동일함
-    // (법제처 API는 키별로 다른 결과를 반환하지 않음, 단지 인증 용도)
+    // 캐시 키에 apiKey 해시 미포함 — 법제처는 키로 결과를 분기하지 않음
     const cacheKey = `search:${input.query.toLowerCase().trim()}:${input.display}`
     const cached = lawCache.get<string>(cacheKey)
     if (cached) {
@@ -36,38 +50,106 @@ export async function searchLaw(
       }
     }
 
-    const xmlText = await apiClient.searchLaw(input.query, input.apiKey)
+    const upstreamDisplay = Math.max(input.display, UPSTREAM_DISPLAY_FLOOR)
+    let xmlText = await apiClient.searchLaw(input.query, input.apiKey, upstreamDisplay)
+    let laws = parseLawsXml(xmlText)
+    let usedQuery = input.query
 
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(xmlText, "text/xml")
-
-    const laws = doc.getElementsByTagName("law")
+    // 0건이면 약칭/오타 확장 쿼리로 자동 재시도
+    if (laws.length === 0) {
+      const { expanded } = expandLawQuery(input.query)
+      for (const expandedQuery of expanded) {
+        if (expandedQuery === input.query) continue
+        const candidateXml = await apiClient.searchLaw(expandedQuery, input.apiKey, upstreamDisplay)
+        const candidates = parseLawsXml(candidateXml)
+        // 확장쿼리와 무관한 목록(법제처가 쿼리 무시)은 버리고 다음 확장쿼리 시도
+        if (candidates.length > 0 && hasRelatedHit(candidates, expandedQuery)) {
+          xmlText = candidateXml
+          laws = candidates
+          usedQuery = expandedQuery
+          break
+        }
+      }
+    }
 
     if (laws.length === 0) {
-      return noResultHint(input.query, "법령")
+      return await searchLawFallbacks(apiClient, input)
     }
 
-    let resultText = `검색 결과 (총 ${laws.length}건):\n\n`
+    // 정확매칭 분리: 법제처 API는 LIKE 검색 + 가나다순 정렬이라
+    // "상법"같이 짧은 법령명은 "보상법/배상법/기상법" 등에 묻혀버림.
+    // 법령명/약칭이 사용자 입력(또는 canonical alias)과 정확히 같으면 우선 노출.
+    const queryKey = normalizeAliasKey(input.query)
+    const canonicalKey = normalizeAliasKey(resolveLawAlias(input.query).canonical)
 
-    const display = Math.min(laws.length, input.display)
+    // 현행 우선 정렬: 연혁(과거버전) 법령이 정확매칭 첫 항목으로 노출되면
+    // LLM이 옛 조문을 현행으로 오인해 답변하는 사고가 남 (소방시설법 분법 사례).
+    laws.sort((a, b) => {
+      const rank = (h: LawHit) => h.statusCode === "연혁" ? 1 : 0
+      return rank(a) - rank(b)
+    })
 
-    for (let i = 0; i < display; i++) {
-      const law = laws[i]
-
-      const lawName = law.getElementsByTagName("법령명한글")[0]?.textContent || "알 수 없음"
-      const lawId = law.getElementsByTagName("법령ID")[0]?.textContent || ""
-      const mst = law.getElementsByTagName("법령일련번호")[0]?.textContent || ""
-      const promDate = law.getElementsByTagName("공포일자")[0]?.textContent || ""
-      const lawType = law.getElementsByTagName("법령구분명")[0]?.textContent || ""
-
-      resultText += `${i + 1}. ${lawName}\n`
-      resultText += `   - 법령ID: ${lawId}\n`
-      resultText += `   - MST: ${mst}\n`
-      resultText += `   - 공포일: ${promDate}\n`
-      resultText += `   - 구분: ${lawType}\n\n`
+    const exact: LawHit[] = []
+    const partial: LawHit[] = []
+    for (const h of laws) {
+      const nameKey = normalizeAliasKey(h.name)
+      const abbrKey = h.abbr ? normalizeAliasKey(h.abbr) : ""
+      const isExact = nameKey === queryKey
+        || nameKey === canonicalKey
+        || (abbrKey && (abbrKey === queryKey || abbrKey === canonicalKey))
+      if (isExact) exact.push(h)
+      else partial.push(h)
     }
 
-    // 후속 도구 안내 제거 (LLM이 이미 도구 목록을 알고 있음)
+    // display는 여기서 — 정확/부분 분리를 마친 "결과"에 적용한다 (#89).
+    const exactShown = Math.min(exact.length, input.display)
+    const partialShown = Math.min(partial.length, Math.max(0, input.display - exactShown))
+
+    let resultText = `검색 결과 (총 ${laws.length}건`
+    if (usedQuery !== input.query) {
+      resultText += `, 확장쿼리: "${usedQuery}"`
+    }
+    if (laws.length > exactShown + partialShown) {
+      resultText += `, display=${input.display} 적용`
+    }
+    resultText += `):\n\n`
+
+    let counter = 0
+    if (exactShown > 0) {
+      resultText += exact.length > exactShown
+        ? `📍 정확매칭 (${exact.length}건 중 ${exactShown}건 표시):\n`
+        : `📍 정확매칭 (${exact.length}건):\n`
+      for (let i = 0; i < exactShown; i++) {
+        counter++
+        resultText += formatHit(counter, exact[i])
+      }
+    }
+
+    if (partial.length > 0) {
+      resultText += `📂 부분매칭 (${partial.length}건 중 ${partialShown}건 표시):\n`
+      for (let i = 0; i < partialShown; i++) {
+        counter++
+        resultText += formatHit(counter, partial[i])
+      }
+    }
+
+    // 시행예정 병기: 제명변경 개정(구명칭→신명칭)이 공포~시행 사이면 신명칭 검색 시
+    // "정확매칭 없음"만 떠서 LLM이 "법령 없음"으로 오판 → 신·구 명칭 매핑을 명시
+    const upcoming = await fetchUpcomingLaws(apiClient, usedQuery, input.apiKey)
+    const upcomingNotes = buildUpcomingNotes(laws, upcoming)
+    if (upcomingNotes) resultText += upcomingNotes
+
+    // 다음 단계 힌트: 정확매칭이 있으면 그 첫 항목, 없으면 부분매칭 첫 항목 안내
+    const primary = exact[0] || partial[0]
+    if (primary) {
+      resultText += `💡 다음: get_law_text(mst="${primary.mst}") 로 「${primary.name}」 조문 전문. 특정 조문만은 jo="제N조" 추가.\n`
+      if (primary.statusCode === "연혁") {
+        resultText += `⚠️ 위 법령은 **연혁(과거버전)** 입니다. 현행 기준 답변에는 [현행] 표시된 법령의 MST를 사용하세요.\n`
+      }
+    }
+    if (exact.length === 0 && laws.length > 0) {
+      resultText += `⚠️ 정확매칭 없음 — 법제처 API의 부분 LIKE 검색 특성상 위 결과는 법령명에 "${input.query}"가 포함된 모든 법령입니다. 의도한 법령이 없으면 정식 법령명으로 재검색하세요.\n`
+    }
 
     // Cache the result (1 hour TTL)
     const truncated = truncateResponse(resultText)

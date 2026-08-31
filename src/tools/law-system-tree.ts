@@ -27,23 +27,31 @@ export async function getLawSystemTree(
     if (args.mst) extraParams.MST = String(args.mst);
     if (args.lawName) extraParams.LM = String(args.lawName);
 
-    // XML로 요청 (JSON에서는 행정규칙 노드가 누락되므로)
-    const xmlText = await apiClient.fetchApi({
+    // 두 응답은 서로의 결과를 쓰지 않는다 — XML은 최상위 행정규칙 블록만, JSON은
+    // 상하위법/관련법령 그래프만 공급한다. lsStmd는 왕복이 계열 최저속(각 ~5.6초)이라
+    // 직렬로 두면 그대로 더해져 히트가 11초를 넘었다. 동시에 띄워 벽시계를 왕복 한 번으로 줄인다.
+    //
+    // XML 호출을 없앨 수 있는지 실호출로 검증했다(#128, 2026-08-17, 4개 법령).
+    // JSON에도 행정규칙 노드가 있고 XML 항목을 전부 포함하지만(XML에만 있는 항목 0/4건),
+    // **두 집합은 같지 않다**: JSON 쪽은 형제 법령마다 매달린 것을 합친 더 넓은 집합이고
+    // (관세법 XML 22건 vs JSON 고유 97건), XML의 22건은 JSON에서 관세법(9)·시행령(10)·
+    // 시행규칙(22)에 흩어져 나타나 **어떤 소유 법령으로도 XML 집합을 재현할 수 없다.**
+    // 즉 XML 블록은 별도 큐레이션이라 치환하면 목록 내용이 바뀐다 — 호출 1회 절감보다
+    // 표시 집합이 조용히 넓어지는 쪽이 위험하므로 두 호출을 유지한다.
+    // allSettled인 이유: 한쪽이 먼저 거절될 때 다른 쪽 거절이 미처리로 남지 않게 한다.
+    // 둘 중 하나라도 실패하면 기존과 동일하게 도구 전체를 실패시킨다 — 행정규칙 목록이
+    // 조용히 빠진 체계도를 성공처럼 돌려주지 않는다.
+    const request = (type: "XML" | "JSON") => apiClient.fetchApi({
       endpoint: "lawService.do",
       target: "lsStmd",
-      type: "XML",
+      type,
       extraParams,
       apiKey: args.apiKey,
     });
-
-    // JSON 파싱도 시도 (상하위법/관련법령 구조는 JSON이 편리)
-    const jsonText = await apiClient.fetchApi({
-      endpoint: "lawService.do",
-      target: "lsStmd",
-      type: "JSON",
-      extraParams,
-      apiKey: args.apiKey,
-    });
+    const settled = await Promise.allSettled([request("XML"), request("JSON")]);
+    const failure = settled.find((r) => r.status === "rejected");
+    if (failure) throw failure.reason;
+    const [xmlText, jsonText] = settled.map((r) => (r as PromiseFulfilledResult<string>).value);
 
     let data: any;
     try {

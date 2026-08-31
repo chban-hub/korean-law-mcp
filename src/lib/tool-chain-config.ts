@@ -12,6 +12,12 @@ export interface SearchDetailChain {
   detailParam: string
   /** 검색 결과 텍스트에서 첫 번째 ID를 추출하는 정규식 (group 1) */
   idRegex: RegExp
+  /**
+   * 상세조회 도구가 `full`(축약 해제)을 받는가 (#120).
+   * 12개 중 3개만 받는다 — 나머지에 넘기면 Zod 가 조용히 버려 "전문 보여줘" 의도가 무음 소멸한다.
+   * 스키마에 `full` 을 추가할 때 여기도 함께 켤 것.
+   */
+  supportsFull?: boolean
 }
 
 /** 대부분의 검색 도구: [ID] 제목 형식 */
@@ -19,6 +25,7 @@ const BRACKET_ID = /\[(\d+)\]/
 
 export const SEARCH_DETAIL_CHAINS: Record<string, SearchDetailChain> = {
   search_precedents: {
+    supportsFull: true,
     detailTool: "get_precedent_text",
     detailParam: "id",
     idRegex: BRACKET_ID,
@@ -39,11 +46,13 @@ export const SEARCH_DETAIL_CHAINS: Record<string, SearchDetailChain> = {
     idRegex: BRACKET_ID,
   },
   search_constitutional_decisions: {
+    supportsFull: true,
     detailTool: "get_constitutional_decision_text",
     detailParam: "id",
     idRegex: BRACKET_ID,
   },
   search_admin_appeals: {
+    supportsFull: true,
     detailTool: "get_admin_appeal_text",
     detailParam: "id",
     idRegex: BRACKET_ID,
@@ -71,7 +80,9 @@ export const SEARCH_DETAIL_CHAINS: Record<string, SearchDetailChain> = {
   search_admin_rule: {
     detailTool: "get_admin_rule",
     detailParam: "id",
-    idRegex: /행정규칙ID:\s*(\S+)/,  // 행정규칙은 [ID] 형식이 아님
+    // 행정규칙은 [ID] 형식이 아님. lawService.do?target=admrul&ID= 가 받는 값은
+    // '행정규칙ID'(4~5자리)가 아니라 '행정규칙일련번호'(13자리)다 (#72)
+    idRegex: /행정규칙일련번호:\s*(\S+)/,
   },
   search_ordinance: {
     detailTool: "get_ordinance",

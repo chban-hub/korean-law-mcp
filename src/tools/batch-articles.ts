@@ -11,11 +11,21 @@ import { formatArticleUnit } from "../lib/article-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import type { ToolResponse } from "../lib/types.js"
 import { formatToolError } from "../lib/errors.js"
+import { throwIfRequestCancelled } from "../lib/session-state.js"
+
+/**
+ * One batch fetches a whole law per entry, so these are execution—not merely
+ * schema—limits.  They keep a valid outer MCP request from churning the
+ * shared cache or fanning out into hundreds of upstream reads.
+ */
+export const MAX_BATCH_LAWS = 20
+export const MAX_ARTICLES_PER_LAW = 50
+export const MAX_BATCH_ARTICLES = 100
 
 const LawEntrySchema = z.object({
   mst: z.string().optional().describe("법령일련번호"),
   lawId: z.string().optional().describe("법령ID"),
-  articles: z.array(z.string()).describe("조문 번호 배열 (예: ['제38조', '제39조'])"),
+  articles: z.array(z.string()).max(MAX_ARTICLES_PER_LAW).describe("조문 번호 배열 (예: ['제38조', '제39조'])"),
 })
 
 type LawEntry = z.infer<typeof LawEntrySchema>
@@ -23,14 +33,25 @@ type LawEntry = z.infer<typeof LawEntrySchema>
 export const GetBatchArticlesSchema = z.object({
   mst: z.string().optional().describe("법령일련번호 (단일 법령 조회 시)"),
   lawId: z.string().optional().describe("법령ID (단일 법령 조회 시)"),
-  articles: z.array(z.string()).optional().describe("조문 번호 배열 (단일 법령 조회 시, 예: ['제38조', '제39조'])"),
+  articles: z.array(z.string()).max(MAX_ARTICLES_PER_LAW).optional().describe("조문 번호 배열 (단일 법령 조회 시, 예: ['제38조', '제39조'])"),
   efYd: z.string().optional().describe("시행일자 (YYYYMMDD 형식)"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달"),
-  laws: z.array(LawEntrySchema).optional().describe(
+  laws: z.array(LawEntrySchema).max(MAX_BATCH_LAWS).optional().describe(
     "복수 법령 조문 일괄 조회 (예: [{mst:'123', articles:['제1조','제2조']}, {lawId:'456', articles:['제3조']}])"
   ),
 }).refine(data => data.laws || data.mst || data.lawId, {
   message: "laws 배열 또는 mst/lawId 중 하나는 필수입니다"
+}).superRefine((data, ctx) => {
+  const totalArticles = data.laws
+    ? data.laws.reduce((total, law) => total + law.articles.length, 0)
+    : data.articles?.length ?? 0
+  if (totalArticles > MAX_BATCH_ARTICLES) {
+    ctx.addIssue({
+      code: "custom",
+      message: `조문은 한 번에 최대 ${MAX_BATCH_ARTICLES}개까지 조회할 수 있습니다.`,
+      path: data.laws ? ["laws"] : ["articles"],
+    })
+  }
 })
 
 export type GetBatchArticlesInput = z.infer<typeof GetBatchArticlesSchema>
@@ -71,6 +92,7 @@ async function fetchArticlesForLaw(
   efYd?: string,
   apiKey?: string
 ): Promise<FetchResult> {
+  throwIfRequestCancelled()
   const cacheKey = `batch:${lawReq.mst || lawReq.lawId}:full:${efYd || 'current'}`
   let fullLawData: LawResponse
 
@@ -99,6 +121,7 @@ async function fetchArticlesForLaw(
   // 조문 번호를 JO 코드로 변환
   const joCodes = new Set<string>()
   for (const article of lawReq.articles) {
+    throwIfRequestCancelled()
     try {
       const joCode = buildJO(article)
       joCodes.add(joCode)
@@ -125,6 +148,7 @@ async function fetchArticlesForLaw(
   let foundCount = 0
 
   for (const unit of articleUnits) {
+    throwIfRequestCancelled()
     if (unit.조문여부 !== "조문") continue
 
     const joNum = unit.조문번호 || ""
@@ -156,6 +180,7 @@ export async function getBatchArticles(
   input: GetBatchArticlesInput
 ): Promise<ToolResponse> {
   try {
+    throwIfRequestCancelled()
     // 입력 정규화: laws 배열 또는 단일 법령 -> 통일된 배열
     let lawRequests: LawEntry[]
     if (input.laws && input.laws.length > 0) {
@@ -175,6 +200,7 @@ export async function getBatchArticles(
     // 사전 검증: 유효한 요청만 필터링
     const validRequests: { index: number; lawReq: LawEntry }[] = []
     for (let i = 0; i < lawRequests.length; i++) {
+      throwIfRequestCancelled()
       const lawReq = lawRequests[i]
       if (!lawReq.articles || lawReq.articles.length === 0) {
         errors.push(`${lawReq.mst || lawReq.lawId}: articles 배열이 비어 있습니다.`)
@@ -192,6 +218,7 @@ export async function getBatchArticles(
     const fetchResults: { index: number; result?: FetchResult; error?: string }[] = []
 
     for (let i = 0; i < validRequests.length; i += CONCURRENCY) {
+      throwIfRequestCancelled()
       const chunk = validRequests.slice(i, i + CONCURRENCY)
       const settled = await Promise.allSettled(
         chunk.map(async ({ index, lawReq }) => {

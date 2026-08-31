@@ -3,6 +3,7 @@ import type { LawApiClient } from "../lib/api-client.js"
 import { parseAdminAppealXML as parseAdminAppealXMLShared } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, noResultHint } from "../lib/errors.js"
+import { compactBody, stripRepeatedSummary } from "../lib/decision-compact.js"
 
 // Administrative appeal decision search tool - Search for administrative tribunal rulings
 export const searchAdminAppealsSchema = z.object({
@@ -76,6 +77,7 @@ export async function searchAdminAppeals(
 export const getAdminAppealTextSchema = z.object({
   id: z.string().describe("행정심판재결례일련번호 (검색 결과에서 획득)"),
   caseName: z.string().optional().describe("사건명 (선택사항, 검증용)"),
+  full: z.boolean().optional().describe("true=이유 전문 그대로. 미지정 시 '이유' 섹션 계단식 축약"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달"),
 });
 
@@ -134,7 +136,9 @@ export async function getAdminAppealText(
     }
 
     if (appeal.이유) {
-      output += `이유:\n${appeal.이유}\n`;
+      const deduped = stripRepeatedSummary(appeal.이유, [appeal.재결요지, appeal.주문]);
+      const compacted = compactBody(deduped, { full: args.full });
+      output += `이유:\n${compacted}\n`;
     }
 
     return {

@@ -35,6 +35,30 @@ const LAW_ALIAS_ENTRIES: LawAliasEntry[] = [
     canonical: "대한민국헌법",
     aliases: ["헌법", "헌 법"],
   },
+  // ── 4대 단행법 (정식명이 짧아 부분매칭 노이즈가 심한 케이스) ──
+  {
+    canonical: "상법",
+    aliases: ["상 법", "상사법"],
+    alternatives: ["상법 시행령", "상법시행법", "상법의 전자선하증권 규정의 시행에 관한 규정"],
+  },
+  {
+    canonical: "민법",
+    aliases: ["민 법"],
+    alternatives: ["민법 시행령", "민사소송법", "민사집행법"],
+  },
+  {
+    canonical: "형법",
+    aliases: ["형 법"],
+    alternatives: ["형사소송법", "형의 집행 및 수용자의 처우에 관한 법률"],
+  },
+  {
+    canonical: "어음법",
+    aliases: ["어 음법"],
+  },
+  {
+    canonical: "수표법",
+    aliases: ["수 표법"],
+  },
   {
     canonical: "관세법",
     aliases: ["관세벚", "관세요", "관세 볍", "관세 볍률"],
@@ -87,6 +111,205 @@ const LAW_ALIAS_ENTRIES: LawAliasEntry[] = [
     canonical: "지방공무원 보수규정",
     aliases: ["지방공무원보수규정", "지공보수규정"],
   },
+  // ── 다빈도 노무/안전 ──
+  {
+    canonical: "산업안전보건법",
+    aliases: ["산안법"],
+    alternatives: ["산업안전보건법 시행령", "산업안전보건법 시행규칙", "산업안전보건기준에 관한 규칙"],
+  },
+  {
+    canonical: "산업안전보건기준에 관한 규칙",
+    aliases: ["산안기준규칙", "안전보건규칙", "산업안전보건규칙", "산안규칙", "안전보건기준규칙"],
+    alternatives: ["산업안전보건법", "산업안전보건법 시행령"],
+  },
+  {
+    canonical: "중대재해 처벌 등에 관한 법률",
+    aliases: ["중대재해처벌법", "중처법", "중대재해법"],
+    alternatives: ["산업안전보건법"],
+  },
+  {
+    canonical: "근로기준법",
+    aliases: ["근기법", "근로법"],
+  },
+  {
+    canonical: "남녀고용평등과 일ㆍ가정 양립 지원에 관한 법률",
+    aliases: ["남녀고용평등법", "고평법"],
+  },
+  // ── 개인정보/정보통신 ──
+  {
+    canonical: "개인정보 보호법",
+    aliases: ["개보법", "개인정보법", "개인정보보호법"],
+  },
+  {
+    canonical: "정보통신망 이용촉진 및 정보보호 등에 관한 법률",
+    aliases: ["정보통신망법", "정통망법"],
+  },
+  {
+    canonical: "인공지능 발전과 신뢰 기반 조성 등에 관한 기본법",
+    aliases: ["인공지능기본법", "인공지능법", "ai기본법", "ai법"],
+    alternatives: ["인공지능 발전과 신뢰 기반 조성 등에 관한 기본법 시행령"],
+  },
+  // ── 청렴/이해충돌 ──
+  {
+    canonical: "부정청탁 및 금품등 수수의 금지에 관한 법률",
+    aliases: ["청탁금지법", "김영란법"],
+  },
+  {
+    canonical: "공직자의 이해충돌 방지법",
+    aliases: ["이해충돌방지법", "공직자이해충돌방지법"],
+  },
+  // ── 공공계약/공공기관 ──
+  {
+    canonical: "국가를 당사자로 하는 계약에 관한 법률",
+    aliases: ["국가계약법"],
+    alternatives: ["국가를 당사자로 하는 계약에 관한 법률 시행령"],
+  },
+  {
+    canonical: "지방자치단체를 당사자로 하는 계약에 관한 법률",
+    aliases: ["지방계약법"],
+    alternatives: ["지방자치단체를 당사자로 하는 계약에 관한 법률 시행령"],
+  },
+  {
+    canonical: "공공기관의 정보공개에 관한 법률",
+    aliases: ["정보공개법"],
+  },
+  // ── 부동산/주택 ──
+  {
+    canonical: "부동산 거래신고 등에 관한 법률",
+    aliases: ["부동산거래신고법", "부거법"],
+  },
+  {
+    canonical: "주택임대차보호법",
+    aliases: ["주임법"],
+  },
+  {
+    canonical: "상가건물 임대차보호법",
+    aliases: ["상임법", "상가임대차법"],
+  },
+  // ── 소방/건축 ──
+  {
+    canonical: "소방시설 설치 및 관리에 관한 법률",
+    aliases: ["소방시설법"],
+  },
+  // ── 세법 ──
+  {
+    canonical: "국세기본법",
+    aliases: ["국기법"],
+  },
+  {
+    canonical: "부가가치세법",
+    aliases: ["부가세법"],
+  },
+  // ── 공정거래/소비자 ──
+  {
+    canonical: "독점규제 및 공정거래에 관한 법률",
+    aliases: ["공정거래법", "공거법", "독점규제법"],
+    alternatives: ["독점규제 및 공정거래에 관한 법률 시행령"],
+  },
+  {
+    canonical: "하도급거래 공정화에 관한 법률",
+    aliases: ["하도급법"],
+  },
+  {
+    canonical: "약관의 규제에 관한 법률",
+    aliases: ["약관법", "약관규제법"],
+  },
+  {
+    canonical: "표시ㆍ광고의 공정화에 관한 법률",
+    aliases: ["표시광고법"],
+  },
+  {
+    canonical: "가맹사업거래의 공정화에 관한 법률",
+    aliases: ["가맹사업법", "가맹법"],
+  },
+  {
+    canonical: "전자상거래 등에서의 소비자보호에 관한 법률",
+    aliases: ["전자상거래법", "전상법"],
+  },
+  {
+    canonical: "신용정보의 이용 및 보호에 관한 법률",
+    aliases: ["신용정보법", "신정법"],
+  },
+  // ── 금융 ──
+  {
+    canonical: "자본시장과 금융투자업에 관한 법률",
+    aliases: ["자본시장법", "자시법"],
+    alternatives: ["자본시장과 금융투자업에 관한 법률 시행령"],
+  },
+  {
+    canonical: "특정 금융거래정보의 보고 및 이용 등에 관한 법률",
+    aliases: ["특정금융정보법", "특금법"],
+  },
+  {
+    canonical: "전자금융거래법",
+    aliases: ["전금법"],
+  },
+  // ── 부동산/도시 ──
+  {
+    canonical: "국토의 계획 및 이용에 관한 법률",
+    aliases: ["국토계획법", "국계법", "국토이용법"],
+    alternatives: ["국토의 계획 및 이용에 관한 법률 시행령"],
+  },
+  {
+    canonical: "도시 및 주거환경정비법",
+    aliases: ["도시정비법", "도정법"],
+  },
+  // ── 환경/보건 ──
+  {
+    canonical: "감염병의 예방 및 관리에 관한 법률",
+    aliases: ["감염병예방법", "감염병법"],
+  },
+  {
+    canonical: "대기환경보전법",
+    aliases: ["대기환경법", "대기법"],
+  },
+  // ── 교통/운수 ──
+  // 도로교통법은 LexDiff 원본(chrisryugj/lexdiff lib/search-normalizer.ts, 2026-08-17 대조)에
+  // 없는 이 레포 전용 추가다. 음주운전 등 이 서버의 대표 사용례가 이 법이라 약칭 경로가 필요하다(#107).
+  {
+    canonical: "도로교통법",
+    aliases: ["도교법", "도로교통 법"],
+    alternatives: ["도로교통법 시행령", "도로교통법 시행규칙", "교통사고처리 특례법"],
+  },
+  {
+    canonical: "여객자동차 운수사업법",
+    aliases: ["여객운수법", "여객자동차법"],
+  },
+  {
+    canonical: "화물자동차 운수사업법",
+    aliases: ["화물운수법", "화운법"],
+  },
+  // ── 민·형사 절차 ──
+  {
+    canonical: "민사소송법",
+    aliases: ["민소법"],
+  },
+  {
+    canonical: "형사소송법",
+    aliases: ["형소법"],
+  },
+  {
+    canonical: "민사집행법",
+    aliases: ["민집법"],
+  },
+  // ── 사회보험/복지 ──
+  {
+    canonical: "국민건강보험법",
+    aliases: ["국건법", "건보법"],
+  },
+  {
+    canonical: "산업재해보상보험법",
+    aliases: ["산재보험법", "산재법"],
+  },
+  {
+    canonical: "고용보험법",
+    aliases: ["고보법"],
+  },
+  // ── 통신 ──
+  {
+    canonical: "전기통신사업법",
+    aliases: ["전기통신법", "전사법"],
+  },
 ]
 
 const aliasLookup = new Map<string, LawAliasEntry>()
@@ -98,7 +321,7 @@ for (const entry of LAW_ALIAS_ENTRIES) {
   }
 }
 
-function normalizeAliasKey(value: string): string {
+export function normalizeAliasKey(value: string): string {
   return normalizeBasicTypos(value)
     .toLowerCase()
     .replace(/\s+/gu, "")
@@ -151,6 +374,82 @@ export function resolveLawAlias(lawName: string): LawAliasResolution {
     canonical: cleaned,
     alternatives: [],
   }
+}
+
+/**
+ * Query 안에 약어가 부분 문자열로 끼어 있는 경우, 풀네임으로 치환된 변형을 반환.
+ *
+ * 예:
+ *   "화관법 제5조"     → ["화학물질관리법 제5조"]
+ *   "화관법 시행령"    → ["화학물질관리법 시행령"]
+ *   "산안법 위반 사례" → ["산업안전보건법 위반 사례"]
+ *   "중처법 제4조 책임" → ["중대재해 처벌 등에 관한 법률 제4조 책임"]
+ *
+ * 매칭 원칙 (stats-mcp의 extractKeyword 패턴 차용):
+ *   - 긴 alias 우선 매칭 (충돌 방지)
+ *   - alias 길이 2자 이상만 부분 매칭 (오탐 방지)
+ *   - 동일 canonical 중복 방지
+ *   - matchedAlias가 query의 전체와 같으면 (정확 매칭은 resolveLawAlias가 처리하므로) 제외
+ */
+export interface EmbeddedAliasMatch {
+  alias: string
+  canonical: string
+  alternatives: string[]
+  expandedQuery: string
+}
+
+export function extractEmbeddedAliases(query: string): EmbeddedAliasMatch[] {
+  const normalizedQuery = normalizeLawSearchText(query)
+  const normalizedQueryKey = normalizeAliasKey(normalizedQuery)
+  const results: EmbeddedAliasMatch[] = []
+  const seenCanonicals = new Set<string>()
+
+  type Candidate = { alias: string; canonical: string; alternatives: string[]; key: string }
+  const candidates: Candidate[] = []
+  for (const entry of LAW_ALIAS_ENTRIES) {
+    for (const alias of entry.aliases) {
+      const key = normalizeAliasKey(alias)
+      if (key.length < 2) continue
+      candidates.push({
+        alias,
+        canonical: entry.canonical,
+        alternatives: entry.alternatives ?? [],
+        key,
+      })
+    }
+  }
+  candidates.sort((a, b) => b.key.length - a.key.length)
+
+  for (const c of candidates) {
+    if (seenCanonicals.has(c.canonical)) continue
+    if (normalizedQueryKey === c.key) continue
+    if (!normalizedQueryKey.includes(c.key)) continue
+
+    const escapedAlias = c.alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const aliasRegex = new RegExp(escapedAlias, "g")
+    let expandedQuery = normalizedQuery.replace(aliasRegex, c.canonical)
+
+    if (expandedQuery === normalizedQuery) {
+      const aliasParts = c.alias.split(/\s+/u).filter(Boolean).map((p) =>
+        p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      )
+      if (aliasParts.length >= 2) {
+        const flexible = new RegExp(aliasParts.join("\\s*"), "g")
+        expandedQuery = normalizedQuery.replace(flexible, c.canonical)
+      }
+    }
+    if (expandedQuery === normalizedQuery) continue
+
+    seenCanonicals.add(c.canonical)
+    results.push({
+      alias: c.alias,
+      canonical: c.canonical,
+      alternatives: c.alternatives,
+      expandedQuery,
+    })
+  }
+
+  return results
 }
 
 /**
@@ -256,6 +555,13 @@ export function expandOrdinanceQuery(query: string): ExpandedQueries {
     expanded.push(normalized.replace("조례", "규칙"))
   }
 
+  // 5. 약칭 부분 매칭 (자치법규에도 약어가 인용될 수 있음)
+  for (const match of extractEmbeddedAliases(normalized)) {
+    if (!expanded.includes(match.expandedQuery)) {
+      expanded.push(match.expandedQuery)
+    }
+  }
+
   return {
     original: normalized,
     expanded: expanded.slice(0, 5) // 최대 5개
@@ -269,7 +575,25 @@ export function expandLawQuery(query: string): ExpandedQueries {
   const normalized = normalizeLawSearchText(query)
   const expanded: string[] = []
 
-  // 키워드 확장
+  // 1. 약칭 정확 매칭 (전체 query == alias)
+  const aliasResolution = resolveLawAlias(normalized)
+  if (aliasResolution.canonical !== normalized) {
+    expanded.push(aliasResolution.canonical)
+  }
+  expanded.push(...aliasResolution.alternatives)
+
+  // 2. 약칭 부분 매칭 — query 안에 약어가 끼어 있으면 풀네임으로 치환된 변형 추가
+  // ("화관법 제5조" → "화학물질관리법 제5조", "산안법 시행령" → "산업안전보건법 시행령")
+  for (const match of extractEmbeddedAliases(normalized)) {
+    if (!expanded.includes(match.expandedQuery)) {
+      expanded.push(match.expandedQuery)
+    }
+    for (const alt of match.alternatives) {
+      if (!expanded.includes(alt)) expanded.push(alt)
+    }
+  }
+
+  // 3. 키워드 확장
   for (const [keyword, alternatives] of Object.entries(KEYWORD_EXPANSIONS)) {
     if (normalized.toLowerCase().includes(keyword.toLowerCase())) {
       for (const alt of alternatives) {
@@ -280,13 +604,6 @@ export function expandLawQuery(query: string): ExpandedQueries {
       }
     }
   }
-
-  // 약칭 해결
-  const aliasResolution = resolveLawAlias(normalized)
-  if (aliasResolution.canonical !== normalized) {
-    expanded.unshift(aliasResolution.canonical)
-  }
-  expanded.push(...aliasResolution.alternatives)
 
   return {
     original: normalized,

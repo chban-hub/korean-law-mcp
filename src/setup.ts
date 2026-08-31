@@ -6,11 +6,12 @@
  */
 
 import { createInterface } from "node:readline/promises"
-import { readFile, writeFile, mkdir } from "node:fs/promises"
+import { readFile, writeFile, mkdir, chmod } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { homedir, platform } from "node:os"
 import { stdin, stdout } from "node:process"
+import { getLawApiProtocol } from "./lib/law-url-config.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,13 +110,21 @@ async function writeJsonFile(path: string, data: Record<string, unknown>): Promi
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true })
   }
-  await writeFile(path, JSON.stringify(data, null, 2) + "\n", "utf-8")
+  // 설정 파일에는 LAW_OC가 평문으로 들어간다 → 소유자만 읽도록 제한.
+  // mode 옵션은 새로 만들 때만 먹으므로, 기존 파일에는 chmod로 다시 적용한다.
+  await writeFile(path, JSON.stringify(data, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 })
+  try {
+    await chmod(path, 0o600)
+  } catch { /* 권한 변경 실패는 설치를 막지 않는다 (Windows 등) */ }
 }
 
-function buildServerEntry(apiKey: string): Record<string, unknown> {
+function buildServerEntry(apiKey: string, lawApiProtocol = getLawApiProtocol()): Record<string, unknown> {
   const env: Record<string, string> = {}
   if (apiKey) {
     env.LAW_OC = apiKey
+  }
+  if (lawApiProtocol === "http") {
+    env.LAW_API_PROTOCOL = lawApiProtocol
   }
   return {
     command: "npx",
@@ -125,10 +134,13 @@ function buildServerEntry(apiKey: string): Record<string, unknown> {
 }
 
 /** Zed는 context_servers 키에 { command: { path, args, env } } 구조 */
-function buildZedEntry(apiKey: string): Record<string, unknown> {
+function buildZedEntry(apiKey: string, lawApiProtocol = getLawApiProtocol()): Record<string, unknown> {
   const env: Record<string, string> = {}
   if (apiKey) {
     env.LAW_OC = apiKey
+  }
+  if (lawApiProtocol === "http") {
+    env.LAW_API_PROTOCOL = lawApiProtocol
   }
   return {
     command: {
@@ -199,7 +211,7 @@ async function printBanner(): Promise<void> {
   }
   console.log()
 
-  const tagline = "  MCP Server v3  ━━  법제처 41개 API → 14개 도구"
+  const tagline = "  MCP Server v4  ━━  법제처 42개 API → 17개 도구"
   await typewrite(`${c.dim}${tagline}${c.reset}`, 12)
   console.log()
 
@@ -297,7 +309,8 @@ export async function runSetup(): Promise<void> {
     // Step 3: 설정 파일 업데이트
     console.log()
     stepHeader(3, 3, "설정 파일 업데이트")
-    const entry = buildServerEntry(apiKey)
+    const lawApiProtocol = getLawApiProtocol()
+    const entry = buildServerEntry(apiKey, lawApiProtocol)
 
     for (const idx of indices) {
       const client = clients[idx]
@@ -305,7 +318,7 @@ export async function runSetup(): Promise<void> {
       try {
         const config = await readJsonFile(client.configPath)
         const key = client.format
-        const serverEntry = key === "context_servers" ? buildZedEntry(apiKey) : entry
+        const serverEntry = key === "context_servers" ? buildZedEntry(apiKey, lawApiProtocol) : entry
         const servers = (config[key] ?? {}) as Record<string, unknown>
         servers["korean-law"] = serverEntry
         config[key] = servers

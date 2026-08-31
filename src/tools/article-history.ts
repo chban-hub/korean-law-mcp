@@ -7,6 +7,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
+import { normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js"
 
 /**
  * JO 코드를 읽기 쉬운 형식으로 변환
@@ -52,21 +53,42 @@ export async function getArticleHistory(
     // lawName이 제공된 경우 먼저 법령 검색하여 lawId 찾기
     if (input.lawName && !lawId) {
       const searchResult = await apiClient.searchLaw(input.lawName, input.apiKey)
-      const lawIdMatch = searchResult.match(/<법령ID>(\d+)<\/법령ID>/)
-      if (lawIdMatch) {
-        lawId = lawIdMatch[1]
-      } else {
+      // 법제처 검색은 LIKE + 가나다순이라 '상법'을 넣으면 '국가배상법' 등이 앞설 수 있음.
+      // 첫 결과를 무조건 쓰지 말고 법령명/약칭이 입력과 정확히 일치하는 항목을 우선 선택.
+      const doc = new DOMParser().parseFromString(searchResult, "text/xml")
+      const nodes = doc.getElementsByTagName("law")
+      const queryKey = normalizeAliasKey(input.lawName)
+      const canonicalKey = normalizeAliasKey(resolveLawAlias(input.lawName).canonical)
+      let firstId = ""
+      let exactId = ""
+      for (let i = 0; i < nodes.length; i++) {
+        const id = nodes[i].getElementsByTagName("법령ID")[0]?.textContent || ""
+        if (!id) continue
+        if (!firstId) firstId = id
+        const nameKey = normalizeAliasKey(nodes[i].getElementsByTagName("법령명한글")[0]?.textContent || "")
+        const abbrKey = normalizeAliasKey(nodes[i].getElementsByTagName("법령약칭명")[0]?.textContent || "")
+        if (nameKey === queryKey || nameKey === canonicalKey || (abbrKey && (abbrKey === queryKey || abbrKey === canonicalKey))) {
+          exactId = id
+          break
+        }
+      }
+      lawId = exactId || firstId
+      if (!lawId) {
         return {
           content: [{
             type: "text",
-            text: `법령 '${input.lawName}'을(를) 찾을 수 없습니다. 법령명을 확인하거나 search_law로 먼저 검색해주세요.`
+            text: `[NOT_FOUND] 법령 '${input.lawName}'을(를) 찾을 수 없습니다.\n⚠️ LLM은 개정 이력을 추측하지 마세요. 법령명을 확인하거나 search_law로 먼저 검색하세요.`
           }],
           isError: true
         }
       }
     }
 
-    const xmlText = await apiClient.getArticleHistory({ ...input, lawId, apiKey: input.apiKey })
+    // lsJoHstInf는 날짜 범위가 없으면 lawId를 줘도 항상 0건 반환 → 날짜 미지정 시 전체 기간 자동 적용
+    const noDateFilter = !input.regDt && !input.fromRegDt && !input.toRegDt
+    const dateDefaults = noDateFilter ? { fromRegDt: "19480101", toRegDt: "20991231" } : {}
+
+    const xmlText = await apiClient.getArticleHistory({ ...input, ...dateDefaults, lawId, apiKey: input.apiKey })
 
     const parser = new DOMParser()
     const doc = parser.parseFromString(xmlText, "text/xml")
@@ -78,8 +100,9 @@ export async function getArticleHistory(
       return {
         content: [{
           type: "text",
-          text: "조문 개정 이력이 없습니다."
-        }]
+          text: "[NOT_FOUND] 조문 개정 이력이 없습니다.\n⚠️ 해당 법령은 개정 이력 데이터가 없거나, 법령ID/MST가 유효하지 않을 수 있습니다. LLM은 개정 이력을 추측/생성하지 마세요."
+        }],
+        isError: true
       }
     }
 
@@ -122,7 +145,13 @@ export async function getArticleHistory(
 
     // 조문이 하나도 없는 경우 (법령정보만 있는 경우)
     if (itemNum === 0) {
-      resultText = "조문 개정 이력이 없습니다."
+      return {
+        content: [{
+          type: "text",
+          text: "[NOT_FOUND] 조문 개정 이력이 없습니다.\n⚠️ 법령정보는 존재하나 조문별 개정 기록이 비어있습니다. LLM은 추측하지 마세요."
+        }],
+        isError: true
+      }
     }
 
     return {

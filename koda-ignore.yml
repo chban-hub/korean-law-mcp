@@ -1,0 +1,29 @@
+# KODA 스캐너 예외 — 검토 후 오탐으로 판정한 항목만 등록한다.
+# 등록 근거는 2026-08-03 보안 점검(v4.9.3) 결과.
+
+ignore:
+  - rule: secret.generic-assignment
+    path: src/*
+    reason: >-
+      `apiKey: input.apiKey` 처럼 호출자가 넘긴 키를 그대로 전달하는 파라미터 배선이다.
+      저장소 어디에도 자격증명 리터럴이 없고, 키는 전량 환경변수(LAW_OC) 또는
+      요청 헤더에서만 들어온다. git 히스토리 전수 스캔에서도 실제 키는 나오지 않았다.
+    owner: chrisryugj
+    until: 2027-08-03
+
+  - rule: code.empty-exception-handler
+    path: src/*
+    reason: >-
+      전부 의도적으로 삼키는 정리·폴백 경로다(transport.close 정리, response.clone 실패 시
+      원본 응답 사용, 안티봇 우회 실패 시 원본 유지). STDIO 모드에서는 stdout/stderr 출력이
+      JSON-RPC 프레임을 오염시키므로 여기서 로깅하지 않는 것이 설계상 요구사항이다.
+    owner: chrisryugj
+    until: 2027-08-03
+
+  - rule: code.xml-injection
+    path: test/*
+    reason: >-
+      테스트 픽스처가 법제처 응답을 흉내 내려고 XML 문자열을 조립하는 부분이다.
+      서비스 코드가 아니며 신뢰 경계를 넘는 입력도 없다.
+    owner: chrisryugj
+    until: 2027-08-03

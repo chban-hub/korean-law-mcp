@@ -10,20 +10,21 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { LawApiClient } from "./lib/api-client.js"
 import { registerTools } from "./tool-registry.js"
 import { startHTTPServer } from "./server/http-server.js"
+import { parseHttpPort } from "./server/http-config.js"
+import { readExecutionLimits, type ExecutionLimits } from "./lib/execution-limits.js"
 import { VERSION } from "./version.js"
-import { type ToolProfile, parseProfile } from "./lib/tool-profiles.js"
 
 // API 클라이언트 초기화 (LAW_OC 또는 KOREAN_LAW_API_KEY 지원)
 const LAW_OC = process.env.LAW_OC || process.env.KOREAN_LAW_API_KEY || ""
 const apiClient = new LawApiClient({ apiKey: LAW_OC })
 
 // MCP 서버 팩토리 (HTTP 모드: 세션마다 새 인스턴스 필요)
-function createServer(profile?: ToolProfile): Server {
+function createServer(executionLimits: ExecutionLimits = readExecutionLimits()): Server {
   const s = new Server(
     { name: "korean-law", version: VERSION },
     { capabilities: { tools: {} } }
   )
-  registerTools(s, apiClient, profile ?? "full")
+  registerTools(s, apiClient, executionLimits)
   return s
 }
 
@@ -41,7 +42,7 @@ async function main() {
   const modeIndex = args.indexOf("--mode")
   const mode = modeIndex !== -1 ? args[modeIndex + 1] : "stdio"
   const portIndex = args.indexOf("--port")
-  const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 8000
+  const port = parseHttpPort(portIndex !== -1 ? args[portIndex + 1] : undefined)
 
   if (mode === "http" || mode === "sse") {
     await startHTTPServer(createServer, port)
@@ -51,9 +52,7 @@ async function main() {
     const stderrWrite = (...args: unknown[]) =>
       process.stderr.write(args.map(String).join(" ") + "\n")
     console.log = console.warn = console.info = console.debug = stderrWrite
-    // MCP_PROFILE 환경변수로 프로필 선택 (기본: full)
-    const profile = parseProfile(process.env.MCP_PROFILE)
-    const server = createServer(profile)
+    const server = createServer()
     const transport = new StdioServerTransport()
     await server.connect(transport)
   }

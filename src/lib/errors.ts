@@ -3,12 +3,27 @@
  */
 
 import type { ToolResponse } from "./types.js"
+import { maskSensitiveUrl } from "./fetch-with-retry.js"
+import { UpstreamRecordMissingError } from "./upstream-miss.js"
 
 /**
  * 에러 코드
  */
 export const ErrorCodes = {
   NOT_FOUND: "LAW_NOT_FOUND",
+  /**
+   * 업스트림이 자료를 주지 않았다는 **관측**. 부존재 주장이 아니다.
+   * `NOT_FOUND` 계열과 반드시 분리해 둔다 — 기계 독자에게는 산문의 유보보다
+   * 대괄호 라벨이 이기고, 이 경로에서 라벨이 "없음"으로 읽히면 실재하는 판례를
+   * 없다고 자문하는 거짓 부정이 된다 (_workspace/13_legal_wording_review.md 축①).
+   */
+  UPSTREAM_NO_DATA: "UPSTREAM_NO_DATA",
+  /**
+   * 별표를 찾기는 했으나 파일에 본문이 인라인돼 있지 않아 텍스트를 얻지 못했다.
+   * 대괄호 라벨은 기계 독자에 대한 계약이므로 ad-hoc 문자열로 두지 않는다 —
+   * 상수 밖에서 만든 라벨은 어느 집합에 속하는지 소비자가 알 수 없다(#138).
+   */
+  ANNEX_BODY_UNAVAILABLE: "ANNEX_BODY_UNAVAILABLE",
   INVALID_PARAM: "INVALID_PARAMETER",
   API_ERROR: "EXTERNAL_API_ERROR",
   RATE_LIMITED: "RATE_LIMITED",
@@ -55,11 +70,15 @@ export class LawApiError extends Error {
 /**
  * 검색 결과 없음 힌트 생성
  * 법제처 API는 공백 키워드를 AND 조건으로 처리하므로, 키워드가 많으면 결과가 0건이 되기 쉬움
+ *
+ * [NOT_FOUND] 프리픽스로 LLM이 기계적으로 실패를 감지하게 함 (환각 방지 v3.5.4)
  */
 export function noResultHint(query: string, label?: string): ToolResponse {
   const prefix = label ? `${label} ` : ""
   const keywords = query.trim().split(/\s+/)
-  const lines = [`${prefix}'${query}' 검색 결과가 없습니다.`]
+  const lines = [`[NOT_FOUND] ${prefix}'${query}' 검색 결과가 없습니다.`]
+  lines.push("")
+  lines.push("⚠️ 이 도구는 실제 데이터를 찾지 못했습니다. LLM이 결과를 추측하거나 지어내지 마세요. 사용자에게 '검색 실패'를 보고하고 아래 제안을 우선 시도하세요.")
 
   if (keywords.length >= 2) {
     lines.push("")
@@ -75,6 +94,25 @@ export function noResultHint(query: string, label?: string): ToolResponse {
   }
 }
 
+/**
+ * 명시적 "데이터 없음" 응답 생성 (환각 방지 v3.5.4)
+ * noResultHint는 검색 실패용. 특정 리소스가 없을 때(조문, 별표, 파일 등) 사용.
+ */
+export function notFoundResponse(message: string, suggestions?: string[]): ToolResponse {
+  const lines = [`[NOT_FOUND] ${message}`]
+  lines.push("")
+  lines.push("⚠️ 이 도구는 요청한 데이터를 찾지 못했습니다. LLM이 임의로 답변을 생성하지 마세요. '해당 데이터 없음'을 사용자에게 명시하세요.")
+  if (suggestions && suggestions.length > 0) {
+    lines.push("")
+    lines.push("재시도 제안:")
+    suggestions.forEach((s) => lines.push(`  - ${s}`))
+  }
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    isError: true,
+  }
+}
+
 export function formatToolError(error: unknown, context?: string): ToolResponse {
   let code: string
   let msg: string
@@ -84,6 +122,24 @@ export function formatToolError(error: unknown, context?: string): ToolResponse 
     code = error.code || ErrorCodes.API_ERROR
     msg = error.message
     suggestions = error.suggestions || []
+  } else if (error instanceof UpstreamRecordMissingError) {
+    // 관측 사실만 라벨에 담는다. 두 방향의 사고 — 없는 것을 지어내기와 있는 것을
+    // 없다고 단정하기 — 를 나란히 금지하고, 구별 불가한 두 원인에 순위를 매기지 않는다.
+    code = ErrorCodes.UPSTREAM_NO_DATA
+    msg = error.message
+    suggestions = [
+      "⚠️ 이 응답은 자료의 부존재를 증명하지 않습니다. 사용자에게 '조회 실패'로 보고하고, '그런 법령·판례는 없다'고 단정하지 마세요.",
+      "⚠️ 자료를 받지 못했습니다. 내용을 추측하거나 지어내지 마세요.",
+      // 안내 페이지(kind==="html")는 재시도로 낫지 않는 원인을 하나 더 갖는다 — 그 키로
+      // 해당 API가 신청·승인되지 않은 경우다. 모듈은 3값을 아는데 표면에서 2값으로
+      // 누르면 "잠시 후 재시도"만 안내하게 되고, 그 경우는 영원히 낫지 않는다.
+      error.kind === "html"
+        ? "원인은 셋 중 하나이며 이 응답만으로는 구별되지 않습니다 — (a) 해당 ID/MST의 자료가 실제로 없음, (b) 법제처 점검·과부하, (c) 이 인증키(OC)로 해당 API가 신청·승인되지 않음."
+        : "원인은 둘 중 하나이며 이 응답만으로는 구별되지 않습니다 — (a) 해당 ID/MST의 자료가 실제로 없음, (b) 법제처 점검·과부하로 본문이 빈 채 옴.",
+      error.kind === "html"
+        ? "잠시 후 재시도해도 같으면 open.law.go.kr에서 이 OC 키의 API 신청·승인 상태를 확인하세요 — (c)는 재시도로 낫지 않습니다. ID/MST는 search_* 결과에서 재확인하세요 (임의 생성 금지)."
+        : "잠시 후 재시도해 보고, 그래도 같으면 ID/MST를 search_* 결과에서 재확인하세요 (임의 생성 금지).",
+    ]
   } else if (error instanceof Error) {
     // Zod validation 에러 감지
     if (error.name === "ZodError" && Array.isArray((error as any).issues)) {
@@ -104,7 +160,8 @@ export function formatToolError(error: unknown, context?: string): ToolResponse 
   }
 
   const lines: string[] = []
-  lines.push(`[${code}] ${msg}`)
+  // 최종 방어선 — 도구 코드가 URL 포함 에러를 직접 만들어도 API 키가 클라이언트로 새지 않게
+  lines.push(`[${code}] ${maskSensitiveUrl(msg)}`)
 
   if (context) {
     lines.push(`도구: ${context}`)

@@ -4,9 +4,44 @@
 
 import { normalizeLawSearchText, resolveLawAlias } from "./search-normalizer.js"
 import { fetchWithRetry } from "./fetch-with-retry.js"
-import { sessionStore, getSessionApiKey } from "./session-state.js"
+import { readResponseText } from "./response-body.js"
+import { isBlankBody, isHtmlPage } from "./body-shape.js"
 
-const LAW_API_BASE = "https://www.law.go.kr/DRF"
+// 법제처 DRF는 정상 파라미터에도 연속 호출 버스트에 간헐 404를 낸다
+// (2026-07-19 행위시법 골드셋 R1에서 19콜 중 10콜 관측, 수초 내 자연 회복 —
+// lsHistory 페이징 연속 조회에서 특히 빈발). DRF 엔드포인트는 고정이라
+// 영구 404가 사실상 없으므로 404를 재시도 대상에 포함한다.
+const DRF_RETRY = { retryOn: [404, 429, 503, 504] }
+
+// `lawService.do` 단건 조회 중 "그 레코드 없음"이 200 + 빈 본문/안내 페이지로 오는
+// 조합은 실측표상 **prec·thdCmp·lsStmd 뿐**이다(upstream-miss.ts 주석). 그 경로에서는
+// 재시도 사다리를 완주해도 같은 답이므로 확인 1회로 끊는다. 그 밖의 target(law·eflaw·
+// ordin·admrul·oldAndNew 등)과 검색(`lawSearch.do`)은 미스도 정상 봉투로 오므로 이
+// 배선을 하지 않는다 — 거기 빈 본문은 진짜 장애라 기존 사다리가 방어 역할을 한다.
+// endpoint 단위로 켜면 target=law까지 사다리가 2회로 잘리고, 오류 문안에 "자료가
+// 실제로 없음"이라는 부존재 후보가 섞인다(#150).
+const DRF_LOOKUP_RETRY = { ...DRF_RETRY, singleRecordLookup: true }
+const MISS_AS_BAD_BODY_TARGETS = new Set(["prec", "thdCmp", "lsStmd"])
+const lookupRetryFor = (target: string) =>
+  MISS_AS_BAD_BODY_TARGETS.has(target) ? DRF_LOOKUP_RETRY : DRF_RETRY
+import { requestContext } from "./session-state.js"
+import { getLawApiBaseUrl } from "./law-url-config.js"
+
+const LAW_API_BASE = getLawApiBaseUrl()
+
+/**
+ * JSON 본문에 법령 노드가 실제로 있는지 — getLawText의 eflaw→law 폴백 판정 전용.
+ * 파싱 불가 본문은 true(폴백 안 함)로 두어, 형식이 다른 정상 응답을 폴백이
+ * 덮어쓰지 않게 한다 (폴백은 "확실히 빈 봉투"에만 발동).
+ */
+export function hasLawNode(text: string): boolean {
+  try {
+    const json = JSON.parse(text)
+    return json !== null && typeof json === "object" && "법령" in json
+  } catch {
+    return true
+  }
+}
 
 export class LawApiClient {
   private defaultApiKey: string
@@ -18,14 +53,13 @@ export class LawApiClient {
   /**
    * API 키 결정 순서:
    * 1. 요청별 override 키
-   * 2. 현재 세션의 API 키 (HTTP 모드)
+   * 2. 현재 요청 컨텍스트의 API 키 (HTTP stateless 모드)
    * 3. 환경변수 LAW_OC
    * 4. 생성자에서 받은 기본 키
    */
   private getApiKey(overrideKey?: string): string {
-    const currentSessionId = sessionStore.getStore()
-    const sessionApiKey = currentSessionId ? getSessionApiKey(currentSessionId) : undefined
-    const key = overrideKey || sessionApiKey || process.env.LAW_OC || process.env.KOREAN_LAW_API_KEY || this.defaultApiKey
+    const ctxApiKey = requestContext.getStore()?.apiKey
+    const key = overrideKey || ctxApiKey || process.env.LAW_OC || process.env.KOREAN_LAW_API_KEY || this.defaultApiKey
     if (!key) {
       throw new Error("API 키가 필요합니다. 법제처(https://open.law.go.kr/LSO/openApi/guideResult.do)에서 발급받으세요.")
     }
@@ -36,7 +70,7 @@ export class LawApiClient {
   private async throwIfError(response: Response, endpoint: string): Promise<void> {
     if (!response.ok) {
       // body stream 리크 방지: throw 전에 body consume
-      try { await response.text() } catch { /* ignore */ }
+      try { await readResponseText(response) } catch { /* ignore */ }
       const status = response.status
       if (status === 429) throw new Error(`API 요청 한도 초과 (429) - 잠시 후 다시 시도하세요.`)
       if (status >= 500) throw new Error(`법제처 서버 오류 (${status}) - ${endpoint}`)
@@ -50,10 +84,18 @@ export class LawApiClient {
     return t === "JSON" ? "JSON" : "XML"
   }
 
-  /** 응답 본문이 HTML 에러 페이지인지 확인 */
-  private checkHtmlError(text: string, context: string): void {
-    if (text.includes("<!DOCTYPE html") || text.includes("<html")) {
-      const hint = this.getResponseType() === "XML"
+  /**
+   * 응답 본문이 HTML 에러 페이지인지 확인 (술어는 body-shape.ts 단일 원본)
+   *
+   * `sentType`은 **그 호출이 실제로 보낸** type이다. 기본값인 `getResponseType()`을
+   * 그대로 쓰면 type을 하드코딩하는 메서드(getLawText 등 `type: "JSON"`)의 실패에
+   * "LAW_RESPONSE_TYPE=JSON으로 우회하라"는 안내가 항상 붙는다 — 이미 JSON으로 부른
+   * 호출이라 구조상 효과가 없는 안내다(#153 곁가지). 우회 안내는 실제로 XML을 보낸
+   * 호출에만 붙어야 한다.
+   */
+  private checkHtmlError(text: string, context: string, sentType: "XML" | "JSON" = this.getResponseType()): void {
+    if (isHtmlPage(text)) {
+      const hint = sentType === "XML"
         ? " XML 엔드포인트 장애 시 LAW_RESPONSE_TYPE=JSON 환경변수로 우회할 수 있습니다."
         : ""
       throw new Error(`${context} - API가 HTML 에러 페이지를 반환했습니다. 파라미터를 확인해주세요.${hint}`)
@@ -61,9 +103,33 @@ export class LawApiClient {
   }
 
   /**
-   * 법령 검색
+   * 빈 응답 감지 — 법제처가 간헐 장애 시 200으로 빈 본문을 반환하는 케이스.
+   * 그대로 XML 파서에 넘기면 "missing root element"로 터지므로 명확한 메시지로 전환.
+   * (fetchWithRetry가 빈/HTML 응답을 재시도하지만, 재시도 소진 후에도 빈 응답이면 여기서 처리)
    */
-  async searchLaw(query: string, apiKey?: string): Promise<string> {
+  private checkEmptyResponse(text: string, context: string): void {
+    if (isBlankBody(text)) {
+      throw new Error(`${context} - 법제처 API가 빈 응답을 반환했습니다. 일시적 장애일 수 있으니 잠시 후 다시 시도하세요.`)
+    }
+  }
+
+  /**
+   * 응답 본문 읽기의 단일 통로. 빈 본문은 여기서 걸린다 — 파서까지 내려가면
+   * 원인(업스트림 빈 응답)이 증상("missing root element")으로 바뀌어 진단이 어려워진다.
+   * 메서드마다 가드를 손으로 붙이면 새 메서드에서 잊히므로 읽기 자체에 묶어 둔다.
+   */
+  private async readBody(response: Response, context: string): Promise<string> {
+    const text = await readResponseText(response)
+    this.checkEmptyResponse(text, context)
+    return text
+  }
+
+  /**
+   * 법령 검색
+   * @param display 결과 개수 (기본값 법제처 API default, 짧은 법령명("상법" 등) 정확 매칭 찾으려면 큰 값 권장)
+   * @param target "law"=현행법령(기본), "eflaw"=시행일 기준(시행예정 포함)
+   */
+  async searchLaw(query: string, apiKey?: string, display?: number, target: "law" | "eflaw" = "law"): Promise<string> {
     const normalizedQuery = normalizeLawSearchText(query)
     const aliasResolution = resolveLawAlias(normalizedQuery)
     const finalQuery = aliasResolution.canonical
@@ -71,15 +137,18 @@ export class LawApiClient {
     const params = new URLSearchParams({
       OC: this.getApiKey(apiKey),
       type: this.getResponseType(),
-      target: "law",
+      target,
       query: finalQuery,
     })
+    if (display && display > 0) params.append("display", String(display))
 
     const url = `${LAW_API_BASE}/lawSearch.do?${params.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "searchLaw")
 
-    return await response.text()
+    const text = await this.readBody(response, "법령 검색")
+    this.checkHtmlError(text, "법령 검색 결과를 받지 못했습니다")
+    return text
   }
 
   /**
@@ -104,14 +173,55 @@ export class LawApiClient {
     if (params.efYd) apiParams.append("efYd", String(params.efYd))
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, lookupRetryFor("eflaw"))
     await this.throwIfError(response, "getLawText")
 
-    const text = await response.text()
+    const text = await this.readBody(response, "법령 조회")
 
-    this.checkHtmlError(text, params.jo
+    const notFoundContext = params.jo
       ? `법령 조문(${params.jo})을 찾을 수 없습니다. MST/lawId와 조문번호를 확인해주세요.`
-      : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요.")
+      : "법령을 찾을 수 없습니다. MST 또는 법령명을 확인해주세요."
+
+    // eflaw 단건 조회는 MST 단독(efYd 미동반)으로 "현행이 아닌" 버전을 못 푼다 —
+    // 시행 예정판·과거 연혁판 모두 200 + "{}"로 온다 (2026-08-19 형사소송법 실측:
+    // MST 288579 시행 2026.10.2.판, MST 280441 시행 2026.6.24.판 둘 다 빈 응답).
+    // MST는 버전 고유값이라 target=law로 치면 그 버전 전문(부칙 포함)이 그대로
+    // 회수되므로, 법령 노드가 빈 응답이면 law 타깃으로 1회 폴백한다.
+    // efYd가 지정된 요청에는 폴백하지 않는다 — MST는 "공포본" 단위라 분리시행
+    // 공포본이면 target=law가 마지막 시행 슬라이스를 돌려준다(실측: MST 281865 →
+    // 시행 20271231, 시행 중인 20260701 아님). 시행일을 못박은 호출에 다른 슬라이스를
+    // 끼워 넣으면 NOT_FOUND보다 나쁜 조용한 오답(행위시법 조문 비교 오염)이 된다.
+    const canFallBackToLaw = Boolean(params.mst) && !params.efYd
+
+    // 같은 MST 단독 조회가 2026-08-27부터 빈 봉투 대신 **HTML 안내 페이지**로 실패한다
+    // (법제처가 eflaw 단건에 efYd를 요구하게 바뀜, #153). 두 응답은 "이 파라미터 조합으로는
+    // 못 푼다"는 같은 신호이므로 같은 폴백으로 흘려야 한다. HTML을 여기서 즉시 던지면
+    // 아래 폴백에 **도달하지 못해** 실존 조문이 통째로 조회 불가가 된다 — 기존 폴백이
+    // 무력화된 경로가 정확히 이것이다. 폴백 대상이 아닌 호출(lawId 단독·efYd 동반)은
+    // 종전대로 여기서 즉시 던진다.
+    if (!canFallBackToLaw) this.checkHtmlError(text, notFoundContext, "JSON")
+
+    if (canFallBackToLaw && (isHtmlPage(text) || !hasLawNode(text))) {
+      const fbParams = new URLSearchParams({
+        target: "law",
+        OC: this.getApiKey(params.apiKey),
+        type: "JSON",
+      })
+      fbParams.append("MST", String(params.mst))
+      if (params.jo) fbParams.append("JO", String(params.jo))
+
+      const fbUrl = `${LAW_API_BASE}/lawService.do?${fbParams.toString()}`
+      const fbResponse = await fetchWithRetry(fbUrl, lookupRetryFor("law"))
+      await this.throwIfError(fbResponse, "getLawText")
+
+      const fbText = await this.readBody(fbResponse, "법령 조회")
+      this.checkHtmlError(fbText, notFoundContext, "JSON")
+      if (hasLawNode(fbText)) return fbText
+    }
+
+    // 폴백이 원 응답을 대체하지 못했다. 원 응답이 HTML이면 여기서 확정한다 —
+    // 빈 봉투는 종전대로 그대로 돌려보내 상위 레이어가 NOT_FOUND로 표면화한다.
+    this.checkHtmlError(text, notFoundContext, "JSON")
 
     return text
   }
@@ -138,10 +248,10 @@ export class LawApiClient {
     if (params.ln) apiParams.append("LN", String(params.ln))
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, lookupRetryFor("oldAndNew"))
     await this.throwIfError(response, "compareOldNew")
 
-    return await response.text()
+    return await this.readBody(response, "신구법 대조")
   }
 
   /**
@@ -164,10 +274,10 @@ export class LawApiClient {
     if (params.lawId) apiParams.append("ID", String(params.lawId))
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, lookupRetryFor("thdCmp"))
     await this.throwIfError(response, "getThreeTier")
 
-    return await response.text()
+    return await this.readBody(response, "3단비교")
   }
 
   /**
@@ -177,6 +287,7 @@ export class LawApiClient {
     query: string
     knd?: string
     apiKey?: string
+    nw?: string // 1=현행(기본), 2=연혁 — 폐지·개정 전 이력 포함
   }): Promise<string> {
     const apiParams = new URLSearchParams({
       OC: this.getApiKey(params.apiKey),
@@ -186,12 +297,13 @@ export class LawApiClient {
     })
 
     if (params.knd) apiParams.append("knd", params.knd)
+    if (params.nw) apiParams.append("nw", params.nw)
 
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "searchAdminRule")
 
-    return await response.text()
+    return await this.readBody(response, "행정규칙 검색")
   }
 
   /**
@@ -206,10 +318,10 @@ export class LawApiClient {
     })
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, lookupRetryFor("admrul"))
     await this.throwIfError(response, "getAdminRule")
 
-    const text = await response.text()
+    const text = await this.readBody(response, "행정규칙 조회")
     this.checkHtmlError(text, "행정규칙을 찾을 수 없습니다. ID를 확인해주세요")
 
     return text
@@ -223,6 +335,11 @@ export class LawApiClient {
     lawName: string
     knd?: "1" | "2" | "3" | "4" | "5"
     apiKey?: string
+    /**
+     * 1-based 페이지. display 를 100 초과로 올려도 업스트림이 100건에서 자르므로
+     * (2026-08-17 실측: display=300 → numOfRows=100) 전 건은 page 로만 이어 받는다.
+     */
+    page?: number
   }): Promise<string> {
     // 법령 종류 판별
     const lawType = this.detectLawType(params.lawName)
@@ -247,11 +364,20 @@ export class LawApiClient {
       apiParams.set("knd", params.knd)
     }
 
+    // 1페이지는 파라미터를 붙이지 않는다 — 기존 요청과 바이트 동일하게 유지
+    if (params.page && params.page > 1) {
+      apiParams.set("page", String(params.page))
+    }
+
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getAnnexes")
 
-    return await response.text()
+    const text = await this.readBody(response, "별표·서식 검색")
+    // 다른 검색 경로와 같은 가드 (#150) — 없으면 HTML이 parseAnnexEnvelope의
+    // JSON.parse catch에서 무음으로 빈 목록이 되고, 부존재 단정으로 둔갑한다.
+    this.checkHtmlError(text, "별표·서식 검색 결과를 받지 못했습니다")
+    return text
   }
 
   /**
@@ -269,8 +395,8 @@ export class LawApiClient {
       return 'law'
     }
 
-    // 행정규칙: 훈령, 예규, 고시, 지침, 내규
-    if (/훈령|예규|고시|지침|내규/.test(lawName)) {
+    // 행정규칙: 훈령, 예규, 고시, 지침, 내규, 세칙 (규정/규칙 단독은 시행규칙 오분류 위험 → 4차 fallback에 위임)
+    if (/훈령|예규|고시|지침|내규|세칙/.test(lawName)) {
       return 'admin'
     }
 
@@ -295,10 +421,10 @@ export class LawApiClient {
     })
 
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "searchOrdinance")
 
-    return await response.text()
+    return await this.readBody(response, "자치법규 검색")
   }
 
   /**
@@ -314,10 +440,10 @@ export class LawApiClient {
     if (jo) apiParams.append("JO", jo)
 
     const url = `${LAW_API_BASE}/lawService.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, lookupRetryFor("ordin"))
     await this.throwIfError(response, "getOrdinance")
 
-    const text = await response.text()
+    const text = await this.readBody(response, "자치법규 조회")
     this.checkHtmlError(text, "자치법규를 찾을 수 없습니다. ordinSeq를 확인해주세요")
 
     return text
@@ -351,10 +477,10 @@ export class LawApiClient {
     if (params.page) apiParams.append("page", params.page.toString())
 
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getArticleHistory")
 
-    return await response.text()
+    return await this.readBody(response, "조문 개정이력 조회")
   }
 
   /**
@@ -381,11 +507,21 @@ export class LawApiClient {
     }
 
     const url = `${LAW_API_BASE}/${params.endpoint}?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    // 미스가 빈 본문으로 오는 단건 조회 target만 확인 1회로 끊는다(lookupRetryFor).
+    // 그 위에, type=HTML(lsHistory 등)은 HTML 본문이 정상이므로 빈본문/HTML 재시도
+    // 휴리스틱이 정상 응답마다 재시도를 소진(요청 4배 증폭)하지 않도록 허용 플래그를 겹쳐 붙인다.
+    const base = params.endpoint === "lawService.do" ? lookupRetryFor(params.target) : DRF_RETRY
+    const response = await fetchWithRetry(
+      url,
+      params.type === "HTML" ? { ...base, allowHtmlBody: true } : base
+    )
     await this.throwIfError(response, `fetchApi(${params.target})`)
 
-    const text = await response.text()
-    this.checkHtmlError(text, "API 응답 오류 - 파라미터를 확인해주세요")
+    const text = await this.readBody(response, `${params.target} 조회`)
+    // type=HTML 응답은 HTML이 정상 — checkHtmlError(XML/JSON 응답에 HTML이 오면 에러) 우회
+    if (params.type !== "HTML") {
+      this.checkHtmlError(text, "API 응답 오류 - 파라미터를 확인해주세요")
+    }
 
     return text
   }
@@ -412,9 +548,9 @@ export class LawApiClient {
     if (params.page) apiParams.append("page", params.page.toString())
 
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
-    const response = await fetchWithRetry(url)
+    const response = await fetchWithRetry(url, DRF_RETRY)
     await this.throwIfError(response, "getLawHistory")
 
-    return await response.text()
+    return await this.readBody(response, "법령 변경이력 조회")
   }
 }

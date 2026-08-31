@@ -1,0 +1,100 @@
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { dirname, relative, resolve, sep } from "node:path"
+import { fileURLToPath } from "node:url"
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const buildDir = resolve(root, "build")
+const sourceDir = resolve(root, "src")
+const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"))
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message)
+}
+
+function walk(directory) {
+  const entries = []
+  for (const name of readdirSync(directory)) {
+    const path = resolve(directory, name)
+    if (statSync(path).isDirectory()) entries.push(...walk(path))
+    else entries.push(path)
+  }
+  return entries
+}
+
+function sourcePathForBuildFile(buildFile) {
+  const relativeBuildPath = relative(buildDir, buildFile)
+  if (relativeBuildPath.endsWith(".d.ts")) {
+    return resolve(sourceDir, relativeBuildPath.slice(0, -".d.ts".length) + ".ts")
+  }
+  if (relativeBuildPath.endsWith(".js")) {
+    return resolve(sourceDir, relativeBuildPath.slice(0, -".js".length) + ".ts")
+  }
+  return undefined
+}
+
+function assertPathInPackage(path, label) {
+  const resolved = resolve(root, path)
+  assert(resolved === root || resolved.startsWith(`${root}${sep}`), `${label} resolves outside the package.`)
+  assert(existsSync(resolved), `${label} is missing from the clean build: ${path}`)
+}
+
+function verifyExportTargets(value, label = "exports") {
+  if (typeof value === "string") {
+    if (value.includes("*")) {
+      const prefix = value.slice(0, value.indexOf("*"))
+      assertPathInPackage(prefix, label)
+    } else {
+      assertPathInPackage(value, label)
+    }
+    return
+  }
+  if (value && typeof value === "object") {
+    for (const [key, target] of Object.entries(value)) verifyExportTargets(target, `${label}.${key}`)
+  }
+}
+
+function packedFiles() {
+  const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+  if (result.status !== 0) {
+    throw new Error(`npm pack --dry-run failed:\n${result.stderr || result.stdout}`)
+  }
+  const output = result.stdout.trim()
+  const start = output.indexOf("[")
+  assert(start >= 0, "npm pack --dry-run did not return JSON.")
+  const pack = JSON.parse(output.slice(start))
+  assert(Array.isArray(pack) && pack.length === 1 && Array.isArray(pack[0].files), "npm pack --dry-run returned an unexpected file list.")
+  return pack[0].files.map(file => file.path)
+}
+
+export function verifyPackageArtifacts() {
+  assert(existsSync(buildDir), "build/ is missing. Run npm run build before verification.")
+
+  for (const buildFile of walk(buildDir)) {
+    const sourceFile = sourcePathForBuildFile(buildFile)
+    if (sourceFile) {
+      assert(existsSync(sourceFile), `Stale build output has no source module: ${relative(root, buildFile)}`)
+    }
+  }
+
+  assertPathInPackage(packageJson.main, "main")
+  assertPathInPackage(packageJson.types, "types")
+  for (const [name, target] of Object.entries(packageJson.bin ?? {})) {
+    assertPathInPackage(target, `bin.${name}`)
+  }
+  verifyExportTargets(packageJson.exports)
+
+  const allowedTopLevel = new Set(["README.md", "LICENSE", "NOTICE", "package.json"])
+  const files = packedFiles()
+  for (const file of files) {
+    assert(file.startsWith("build/") || allowedTopLevel.has(file), `Unexpected packed artifact: ${file}`)
+    assert(!file.includes("sse-server"), `Stale server artifact would be published: ${file}`)
+  }
+
+  console.log(`package artifacts verified (${files.length} packed files)`)
+}
+
+verifyPackageArtifacts()

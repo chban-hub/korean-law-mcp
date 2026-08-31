@@ -5,9 +5,10 @@
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
-import { buildJO } from "../lib/law-parser.js"
-import { cleanHtml } from "../lib/article-parser.js"
+import { buildJO, formatJO } from "../lib/law-parser.js"
+import { cleanHtml, flattenContent, groupMokByReset } from "../lib/article-parser.js"
 import { formatToolError } from "../lib/errors.js"
+import { toArray } from "../lib/xml-parser.js"
 
 export const GetArticleDetailSchema = z.object({
   mst: z.string().optional().describe("법령일련번호 (search_law에서 획득)"),
@@ -55,7 +56,7 @@ export async function getArticleDetail(
 
     if (!lawData) {
       return {
-        content: [{ type: "text", text: "법령 데이터를 찾을 수 없습니다." }],
+        content: [{ type: "text", text: "[NOT_FOUND] 법령 데이터를 찾을 수 없습니다.\n⚠️ LLM은 조문을 추측하지 마세요." }],
         isError: true
       }
     }
@@ -63,9 +64,9 @@ export async function getArticleDetail(
     const basicInfo = lawData.기본정보 || lawData
     const lawName = basicInfo?.법령명_한글 || basicInfo?.법령명한글 || basicInfo?.법령명 || "알 수 없음"
 
-    // 조회 위치 표시
-    let locationLabel = `제${input.jo.replace(/^제/, "").replace(/조$/, "")}조`
-    if (/^\d{4,6}$/.test(input.jo)) locationLabel = `JO=${input.jo}`
+    // 조회 위치 표시. `제N조의M`에 `조`를 덧붙이면 '제401조의2조'가 된다(#118) —
+    // 조문 번호 표기는 그대로 재인용되므로 정규 표기(formatJO)로 되돌린다.
+    let locationLabel = formatJO(joCode) || input.jo
     if (input.hang) locationLabel += ` 제${input.hang}항`
     if (input.ho) locationLabel += ` 제${input.ho}호`
     if (input.mok) locationLabel += ` ${input.mok}목`
@@ -75,11 +76,11 @@ export async function getArticleDetail(
 
     // 조문 추출
     const rawUnits = lawData.조문?.조문단위
-    const articleUnits: any[] = Array.isArray(rawUnits) ? rawUnits : rawUnits ? [rawUnits] : []
+    const articleUnits: any[] = toArray(rawUnits)
 
     if (articleUnits.length === 0) {
       return {
-        content: [{ type: "text", text: resultText + "해당 조문을 찾을 수 없습니다." }],
+        content: [{ type: "text", text: resultText + "[NOT_FOUND] 해당 조문을 찾을 수 없습니다.\n⚠️ LLM은 조문 내용을 추측/생성하지 마세요." }],
         isError: true
       }
     }
@@ -96,42 +97,51 @@ export async function getArticleDetail(
       if (joTitle) resultText += ` ${joTitle}`
       resultText += `\n`
 
-      // 조문내용
+      // 조문내용 — JSON API는 문자열 또는 (중첩)배열로 반환한다.
+      // String(배열)은 콤마로 뭉개지고 중첩 항목은 [object Object]가 되어
+      // 같은 조문을 get_law_text와 다르게(훼손된 채) 출력하던 결함.
+      // 형제 도구들처럼 flattenContent로 평탄화한다.
       if (unit.조문내용) {
-        const content = typeof unit.조문내용 === "string" ? unit.조문내용 : String(unit.조문내용)
-        resultText += `${cleanHtml(content)}\n`
+        const content = flattenContent(unit.조문내용)
+        if (content) resultText += `${cleanHtml(content)}\n`
       }
 
-      // 항 내용
+      // 항 내용 — 항내용/호내용/목내용도 조문내용과 같이 (중첩)배열로 올 수 있어 flattenContent 필수
       if (unit.항) {
         const hangList = Array.isArray(unit.항) ? unit.항 : [unit.항]
+        const renderMok = (mokList: any[]) => {
+          for (const mok of mokList) {
+            const mokContent = flattenContent(mok.목내용)
+            if (mokContent) resultText += `      ${mok.목번호 || ""} ${cleanHtml(mokContent)}\n`
+          }
+        }
         for (const hang of hangList) {
           const hangNum = hang.항번호 || ""
-          const hangContent = hang.항내용 || ""
+          const hangContent = flattenContent(hang.항내용)
           if (hangContent) {
             resultText += `  ${hangNum ? `(${hangNum})` : ""} ${cleanHtml(hangContent)}\n`
           }
 
-          if (hang.호) {
-            const hoList = Array.isArray(hang.호) ? hang.호 : [hang.호]
-            for (const ho of hoList) {
-              const hoNum = ho.호번호 || ""
-              const hoContent = ho.호내용 || ""
-              if (hoContent) {
-                resultText += `    ${hoNum}. ${cleanHtml(hoContent)}\n`
-              }
+          const hoList = hang.호 ? (Array.isArray(hang.호) ? hang.호 : [hang.호]) : []
+          // 법제처 JSON은 목을 호가 아닌 항 레벨 형제 배열로 준다 (article-parser.groupMokByReset 참조)
+          const hangMokList = hang.목 ? (Array.isArray(hang.목) ? hang.목 : [hang.목]) : []
+          const mokGroups = groupMokByReset(hangMokList)
+          const alignable = hoList.length > 0 && mokGroups.length === hoList.length
 
-              if (ho.목) {
-                const mokList = Array.isArray(ho.목) ? ho.목 : [ho.목]
-                for (const mok of mokList) {
-                  const mokNum = mok.목번호 || ""
-                  const mokContent = mok.목내용 || ""
-                  if (mokContent) {
-                    resultText += `      ${mokNum}. ${cleanHtml(mokContent)}\n`
-                  }
-                }
-              }
+          for (let i = 0; i < hoList.length; i++) {
+            const ho = hoList[i]
+            const hoContent = flattenContent(ho.호내용)
+            if (hoContent) {
+              resultText += `    ${ho.호번호 || ""} ${cleanHtml(hoContent)}\n`
             }
+
+            if (ho.목) renderMok(Array.isArray(ho.목) ? ho.목 : [ho.목])
+            if (alignable) renderMok(mokGroups[i])
+          }
+
+          if (!alignable && hangMokList.length > 0) {
+            resultText += `  [참고] 아래 목은 위 각 호의 세부 항목이나 API 응답 구조상 소속 호를 특정할 수 없어 일괄 표시합니다.\n`
+            renderMok(hangMokList)
           }
         }
       }

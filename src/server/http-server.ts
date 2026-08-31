@@ -1,81 +1,214 @@
 /**
- * Streamable HTTP 서버 - 리모트 배포용 (MCP 표준)
+ * Streamable HTTP 서버 - stateless 모드 (MCP 공식 패턴)
+ *
+ * 매 POST 요청마다 fresh Server + Transport 생성, 요청 종료 시 즉시 정리.
+ * 세션 Map/EventStore/idle cleanup 없음 → 재시작/스케일아웃/OOM 내성.
+ * 참고: @modelcontextprotocol/sdk/examples/server/simpleStatelessStreamableHttp.js
  */
 
 import express from "express"
-import { randomUUID } from "node:crypto"
+import { timingSafeEqual } from "node:crypto"
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { InMemoryEventStore } from "@modelcontextprotocol/sdk/examples/shared/inMemoryEventStore.js"
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
-import { sessionStore, setSessionApiKey, deleteSession } from "../lib/session-state.js"
+import { requestContext } from "../lib/session-state.js"
+import { createTokenBucket, createDailyCap } from "../lib/rate-limit.js"
+import { RequestExecutionBudget, type ExecutionLimits } from "../lib/execution-limits.js"
+import { maskSensitiveUrl } from "../lib/fetch-with-retry.js"
+import { TOOL_COUNTS } from "../tool-registry.js"
 import { VERSION } from "../version.js"
-import { type ToolProfile, parseProfile } from "../lib/tool-profiles.js"
+import { readHttpServerConfig } from "./http-config.js"
 
-// 세션 정보 (Transport + Server + 마지막 접근 시간)
-interface SessionInfo {
-  transport: StreamableHTTPServerTransport
-  server: Server
-  lastAccess: number
+/** 타이밍 공격 내성 문자열 비교 (길이가 달라도 throw하지 않음) */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a)
+  const bufB = Buffer.from(b)
+  if (bufA.length !== bufB.length) return false
+  return timingSafeEqual(bufA, bufB)
 }
 
-// 세션 맵
-const MAX_SESSIONS = 100
-const sessions = new Map<string, SessionInfo>()
+/** `Authorization: Bearer x` → `x` (Bearer 접두사가 없으면 원문) */
+function bearerValue(raw: string | undefined): string {
+  return raw ? raw.replace(/^Bearer\s+/i, "") : ""
+}
 
-export async function startHTTPServer(createServer: (profile?: ToolProfile) => Server, port: number) {
+/**
+ * 에러 메시지에서 민감 정보(API 키 포함 URL) scrub.
+ * MCP 응답/서버 로그 양쪽에 적용되어야 함.
+ */
+function scrubError(error: unknown): { message: string; stack?: string } {
+  if (error instanceof Error) {
+    return {
+      message: maskSensitiveUrl(error.message),
+      stack: error.stack ? maskSensitiveUrl(error.stack) : undefined,
+    }
+  }
+  return { message: maskSensitiveUrl(String(error)) }
+}
+
+/** Count executable calls in an already-parsed JSON-RPC envelope. */
+export function countToolCalls(body: unknown): number {
+  const messages = Array.isArray(body) ? body : [body]
+  return messages.filter(message =>
+    typeof message === "object" && message !== null && (message as { method?: unknown }).method === "tools/call",
+  ).length
+}
+
+export function exceedsBatchLimit(body: unknown, maxBatchCalls: number): boolean {
+  return countToolCalls(body) > maxBatchCalls
+}
+
+export async function startHTTPServer(
+  createServer: (executionLimits: ExecutionLimits) => Server,
+  port: number,
+) {
+  // Parse every security boundary before the listener is opened.  A bad value
+  // must fail startup, not degrade into NaN and disable a comparison later.
+  const config = readHttpServerConfig()
   const app = express()
-  // Fly.io proxy 뒤에서 실제 클라이언트 IP 인식 (rate limit per-IP 정상 동작)
-  app.set("trust proxy", true)
-  app.use(express.json({ limit: "100kb" }))
+  // Direct deployments must not trust a spoofable X-Forwarded-For header.
+  // A reverse-proxy deployment opts in with a bounded numeric hop count.
+  app.set("trust proxy", config.trustProxy)
 
-  // 10분 idle 세션 자동 정리 (2분마다 체크)
-  const SESSION_MAX_IDLE = 10 * 60 * 1000 // 10분
-  setInterval(() => {
-    const now = Date.now()
-    let cleaned = 0
-    for (const [sessionId, session] of sessions) {
-      if (now - session.lastAccess > SESSION_MAX_IDLE) {
-        try {
-          session.transport.close()
-          session.server.close().catch(() => {})
-        } catch { /* ignore */ }
-        sessions.delete(sessionId)
-        deleteSession(sessionId)
-        cleaned++
-      }
-    }
-    if (cleaned > 0) {
-      console.error(`[Session Cleanup] Removed ${cleaned} idle sessions (remaining: ${sessions.size})`)
-    }
-  }, 2 * 60 * 1000).unref()
-
-  // Rate Limiting (RATE_LIMIT_RPM 환경변수, 기본: 60 req/min per IP)
-  const rateLimitRpm = parseInt(process.env.RATE_LIMIT_RPM || "60", 10)
-  const rateBuckets = new Map<string, { count: number; resetAt: number }>()
-
-  if (rateLimitRpm > 0) {
-    app.use((req, res, next) => {
-      if (req.path === "/health" || req.path === "/") return next()
-
-      const ip = req.ip || req.socket.remoteAddress || "unknown"
-      const now = Date.now()
-      let bucket = rateBuckets.get(ip)
-
-      if (!bucket || now >= bucket.resetAt) {
-        bucket = { count: 0, resetAt: now + 60_000 }
-        rateBuckets.set(ip, bucket)
-      }
-
-      bucket.count++
-
-      if (bucket.count > rateLimitRpm) {
-        res.status(429).json({ error: "Too many requests. Try again later." })
-        return
-      }
+  // ACCESS_LOG=1 일 때만 요청 로그 — req.path만 기록 (쿼리스트링의 oc= API 키 유출 방지)
+  if (process.env.ACCESS_LOG === "1") {
+    app.use((req, _res, next) => {
+      console.error(`[access] ${req.method} ${req.path} ip=${req.ip} ua="${req.headers["user-agent"] ?? "-"}"`)
       next()
     })
+  }
 
+  // ── Origin 검증 (DNS rebinding 방어) ──────────────────────────────────────
+  // MCP 명세는 로컬/원격 HTTP 트랜스포트에 Origin 검증을 요구한다. 브라우저가 심은
+  // Origin을 그대로 통과시키면, 사용자가 악성 페이지를 여는 것만으로 그 페이지가
+  // 이 서버를 대신 호출하고 응답까지 읽어갈 수 있다(CORS가 '*'면 특히).
+  // 정책: Origin 헤더가 없는 요청(일반 MCP 클라이언트·서버간 호출)은 그대로 통과.
+  //       Origin이 있으면 ALLOWED_ORIGINS 화이트리스트에 있어야 한다.
+  //       CORS_ORIGIN을 명시적으로 설정한 경우 그 값도 허용 목록으로 취급한다.
+  const corsOriginConfigured = process.env.CORS_ORIGIN !== undefined
+  const corsOrigin = process.env.CORS_ORIGIN || "*"
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(o => o.trim())
+    .filter(Boolean)
+  if (!corsOriginConfigured && allowedOrigins.length === 0) {
+    console.error("ℹ️  ALLOWED_ORIGINS 미설정 — Origin 헤더가 붙은 브라우저 요청은 차단됩니다 (DNS rebinding 방어). 웹 클라이언트를 쓰려면 ALLOWED_ORIGINS를 설정하세요.")
+  }
+
+  /** 이 Origin을 허용할지 판정. 반환값은 응답에 실을 ACAO 값(null이면 거부) */
+  function resolveOrigin(origin: string | undefined): string | null {
+    if (!origin) return corsOrigin // 브라우저가 아닌 클라이언트
+    if (allowedOrigins.includes(origin)) return origin
+    if (allowedOrigins.length === 0 && corsOriginConfigured) {
+      if (corsOrigin === "*") return "*"
+      if (corsOrigin === origin) return origin
+    }
+    return null
+  }
+
+  app.use((req, res, next) => {
+    if (req.path === "/health" || req.path === "/") return next()
+    const origin = req.headers.origin as string | undefined
+    const allowed = resolveOrigin(origin)
+    if (allowed === null) {
+      res.status(403).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Origin not allowed." },
+        id: null,
+      })
+      return
+    }
+    res.header("Access-Control-Allow-Origin", allowed)
+    if (allowed !== "*") res.header("Vary", "Origin")
+    next()
+  })
+
+  // ── 접근 인증 (MCP_AUTH_TOKEN 설정 시에만 활성) ────────────────────────────
+  // 폐쇄망·사내망 배포처럼 서버 자체에 접근 통제가 필요한 환경에서 설정한다.
+  // 미설정이면 기존처럼 공개 동작 (법제처 API 키는 인가 수단이 아니다).
+  const authToken = config.authToken
+  if (!authToken) {
+    if (config.allowUnauthenticatedRemote) {
+      console.error("⚠️  MCP_ALLOW_UNAUTHENTICATED_REMOTE=1 — non-loopback /mcp is intentionally unauthenticated.")
+    } else {
+      console.error("ℹ️  MCP_AUTH_TOKEN 미설정 — loopback HTTP only. Remote exposure requires MCP_AUTH_TOKEN or an explicit override.")
+    }
+  }
+  app.use((req, res, next) => {
+    if (!authToken) return next()
+    if (req.method === "OPTIONS") return next() // 프리플라이트는 인증 헤더를 못 싣는다
+    if (req.path === "/health" || req.path === "/") return next()
+
+    const presented =
+      (req.headers["x-mcp-token"] as string | undefined) ||
+      bearerValue(req.headers["authorization"] as string | undefined)
+
+    if (!presented || !safeEqual(presented, authToken)) {
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "Unauthorized." },
+        id: null,
+      })
+      return
+    }
+    next()
+  })
+
+  app.use(express.json({ limit: config.bodyLimitBytes }))
+
+  // Rate Limiting (RATE_LIMIT_RPM 환경변수, 기본: 60 req/min per IP)
+  const rateLimitRpm = config.rateLimitRpm
+  const rateBuckets = new Map<string, { count: number; resetAt: number }>()
+
+  // 단일 POST에 담을 수 있는 tools/call 상한. JSON-RPC 배치는 배열의 요청을
+  // 전부 디스패치하므로(SDK 확인), 카운트 없이 두면 한 요청으로 rate limit·폴백
+  // 쿼터를 배수만큼 우회할 수 있다. 배치 크기를 제한해 증폭을 원천 차단한다.
+  const maxBatchCalls = config.maxBatchCalls
+
+  // Batch work is bounded whether or not the optional per-IP rate limiter is
+  // enabled.  Otherwise RATE_LIMIT_RPM=0 accidentally turns off this guard.
+  app.use((req, res, next) => {
+    if (req.path === "/health" || req.path === "/") return next()
+
+    // 핸드셰이크(initialize)·도구목록(tools/list)·알림은 rate limit 제외.
+    // 이들이 429를 맞으면 클라이언트가 도구 목록을 못 받아 "도구 못 찾음"이 된다.
+    // claude.ai 커넥터는 소수 egress IP로 트래픽이 몰려 IP 버킷을 공유하므로,
+    // 비용 소모 요청(tools/call)에만 게이트한다. (v4.6.2 폴백 게이트와 동일 원칙)
+    // 배치는 tools/call '개수'만큼 카운트한다 (요청당 1회가 아님 — 배치 증폭 방지).
+    const callCount = countToolCalls(req.body)
+    if (callCount === 0) return next()
+
+    if (exceedsBatchLimit(req.body, maxBatchCalls)) {
+      res.status(429).json({ error: `Too many tool calls in one request (max ${maxBatchCalls}).` })
+      return
+    }
+
+    if (rateLimitRpm === 0) return next()
+
+    const ip = req.ip || req.socket.remoteAddress || "unknown"
+    const now = Date.now()
+    let bucket = rateBuckets.get(ip)
+
+    if (!bucket || now >= bucket.resetAt) {
+      bucket = { count: 0, resetAt: now + 60_000 }
+      rateBuckets.set(ip, bucket)
+    }
+
+    bucket.count += callCount
+
+    if (bucket.count > rateLimitRpm) {
+      const retryAfterSec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))
+      res.setHeader("Retry-After", String(retryAfterSec))
+      res.status(429).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: `Too many requests — retry in ${retryAfterSec}s.` },
+        id: null,
+      })
+      return
+    }
+    next()
+  })
+
+  if (rateLimitRpm > 0) {
     // 5분마다 만료된 버킷 정리
     setInterval(() => {
       const now = Date.now()
@@ -85,17 +218,10 @@ export async function startHTTPServer(createServer: (profile?: ToolProfile) => S
     }, 5 * 60 * 1000).unref()
   }
 
-  // CORS 및 보안 헤더 설정 (CORS_ORIGIN 미설정 시 경고)
-  const corsOrigin = process.env.CORS_ORIGIN || "*"
-  if (corsOrigin === "*") {
-    console.error("⚠️  CORS_ORIGIN 미설정 — 모든 도메인 허용 중. 프로덕션에서는 CORS_ORIGIN 환경변수를 설정하세요.")
-  }
+  // 보안 헤더 (Access-Control-Allow-Origin은 위 Origin 검증 미들웨어가 설정)
   app.use((req, res, next) => {
-    // CORS
-    res.header("Access-Control-Allow-Origin", corsOrigin)
     res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-    res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, last-event-id")
-    // Security headers
+    res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, last-event-id, apikey, x-api-key, x-mcp-token, authorization")
     res.header("X-Content-Type-Options", "nosniff")
     res.header("X-Frame-Options", "DENY")
     res.header("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -111,16 +237,16 @@ export async function startHTTPServer(createServer: (profile?: ToolProfile) => S
       name: "Korean Law MCP Server",
       version: VERSION,
       status: "running",
-      transport: "streamable-http",
+      transport: "streamable-http (stateless)",
       endpoints: {
         mcp: "/mcp",
-        "mcp-lite": "/mcp?profile=lite",
-        health: "/health"
+        health: "/health",
       },
-      profiles: {
-        lite: "14 tools (chains + meta, for web clients)",
-        full: "all tools (default)"
-      }
+      tools: {
+        exposed: TOOL_COUNTS.exposed,
+        total: TOOL_COUNTS.total,
+        description: `V3_EXPOSED ${TOOL_COUNTS.exposed}개 직노출, 나머지 ${TOOL_COUNTS.total - TOOL_COUNTS.exposed}개는 execute_tool 경유`,
+      },
     })
   })
 
@@ -128,214 +254,176 @@ export async function startHTTPServer(createServer: (profile?: ToolProfile) => S
     res.json({ status: "ok", timestamp: new Date().toISOString() })
   })
 
-  // POST /mcp - 클라이언트 요청 처리
+  // 서버 LAW_OC 폴백 사용량 전역 상한 — 키 없는 분산 요청이 서버 키의 법제처 quota를
+  // 소진시키는 것 방지 (IP당 limit만으로는 막을 수 없음). 0이면 폴백 비활성.
+  //
+  // 이 게이트는 자체 키 없는 사용자 '전원'이 공유한다. 고정창이던 시절엔 창 초반
+  // 몇 명이 다 쓰면 나머지가 남은 창 내내 429를 맞았다 — 실측으로 무키 요청의
+  // 2/3가 즉시 429였다(2026-08-12). 토큰버킷으로 바꿔 같은 평균 처리율에서
+  // 버스트를 흡수하고, 총량 보호는 일일 캡으로 따로 건다.
+  const fallbackMinute = createTokenBucket(config.fallbackRpm, config.fallbackBurst)
+  const fallbackDay = createDailyCap(config.fallbackDailyCap)
+  // n = 이 요청이 소모하는 tools/call 개수 (배치는 배열 길이만큼 서버 키를 쓴다)
+  function fallbackAllowed(n: number): { ok: boolean; retryAfterSec: number; daily: boolean } {
+    const minute = fallbackMinute.take(n)
+    if (!minute.ok) return { ...minute, daily: false }
+    // 분당 게이트를 통과한 요청만 일일 총량을 소모한다 (거부분 낭비 방지)
+    const day = fallbackDay.take(n)
+    return { ok: day.ok, retryAfterSec: day.retryAfterSec, daily: !day.ok }
+  }
+
+  // POST /mcp - stateless 요청 처리
   app.post("/mcp", async (req, res) => {
-    console.error(`[POST /mcp] Received request`)
+    // Extract API key: header > URL query
+    // 쿼리스트링 키는 프록시/엣지 액세스 로그에 평문으로 남으므로 헤더 사용 권장.
+    // ALLOW_QUERY_API_KEY=0 으로 쿼리 경로를 차단할 수 있다 (폐쇄망 권장).
+    // 인증이 켜진 경우 Authorization 헤더는 접근 토큰이므로 법제처 키로 오인하면 안 된다.
+    const authHeader = bearerValue(req.headers["authorization"] as string | undefined)
+    const authHeaderIsAccessToken = Boolean(authToken) && authHeader && safeEqual(authHeader, authToken)
+    const queryKey = process.env.ALLOW_QUERY_API_KEY === "0" ? undefined : (req.query.oc as string | undefined)
+    const apiKey =
+      (req.headers["apikey"] as string | undefined) ||
+      (req.headers["law_oc"] as string | undefined) ||
+      (req.headers["law-oc"] as string | undefined) ||
+      (req.headers["x-api-key"] as string | undefined) ||
+      (authHeaderIsAccessToken ? undefined : authHeader || undefined) ||
+      (req.headers["x-law-oc"] as string | undefined) ||
+      queryKey
 
-    // Extract API key: URL query > header > 기존 세션
-    const apiKeyFromQuery = req.query.oc as string | undefined
-    const apiKeyFromHeader =
-      apiKeyFromQuery ||
-      req.headers["apikey"] ||
-      req.headers["law_oc"] ||
-      req.headers["law-oc"] ||
-      req.headers["x-api-key"] ||
-      req.headers["authorization"]?.replace(/^Bearer\s+/i, "") ||
-      req.headers["x-law-oc"]
-
-    try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined
-      let transport: StreamableHTTPServerTransport
-
-      const existingSession = sessionId ? sessions.get(sessionId) : undefined
-
-      if (existingSession) {
-        // 기존 세션 재사용
-        console.error(`[POST /mcp] Reusing session: ${sessionId}`)
-        transport = existingSession.transport
-        existingSession.lastAccess = Date.now()
-
-        // API 키 업데이트 (헤더에서 제공된 경우)
-        if (apiKeyFromHeader) {
-          setSessionApiKey(sessionId!, apiKeyFromHeader as string)
-        }
-
-        // AsyncLocalStorage로 세션 ID 격리 (동시 요청 안전)
-        await sessionStore.run(sessionId, async () => {
-          await transport.handleRequest(req, res, req.body)
-        })
-        return
-      } else if (sessionId && !existingSession) {
-        // 세션 ID가 있지만 서버에 없음 (suspend 후 재시작 등)
-        // MCP 스펙: 404 반환 → 클라이언트가 새 세션으로 재초기화
-        console.error(`[POST /mcp] Unknown session ID: ${sessionId} (returning 404 for re-init)`)
-        res.status(404).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32001,
-            message: "Session not found. Please reinitialize."
-          },
-          id: null
-        })
-        return
-      } else if (!sessionId && isInitializeRequest(req.body)) {
-        // 세션 수 제한 — transport 생성 전에 체크하여 리소스 누수 방지
-        if (sessions.size >= MAX_SESSIONS) {
-          res.status(503).json({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: `Max sessions (${MAX_SESSIONS}) reached. Try again later.` },
-            id: null,
-          })
-          return
-        }
-        // 새 세션 초기화 — URL 쿼리파라미터에서 프로필 결정
-        const profile = parseProfile(req.query.profile as string | undefined)
-        console.error(`[POST /mcp] New initialization request (profile: ${profile})`)
-
-        const eventStore = new InMemoryEventStore()
-        const sessionServer = createServer(profile)
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          enableJsonResponse: true,
-          eventStore,
-          onsessioninitialized: (sid) => {
-            console.error(`[POST /mcp] Session initialized: ${sid}`)
-            sessions.set(sid, {
-              transport,
-              server: sessionServer,
-              lastAccess: Date.now()
-            })
-            if (apiKeyFromHeader) {
-              setSessionApiKey(sid, apiKeyFromHeader as string)
-            }
-          }
-        })
-
-        // Transport 종료 시 정리
-        transport.onclose = () => {
-          const sid = transport.sessionId
-          if (sid && sessions.has(sid)) {
-            console.error(`[POST /mcp] Transport closed for session ${sid}`)
-            sessions.delete(sid)
-            deleteSession(sid)
-          }
-        }
-
-        // 세션별 MCP 서버에 연결
-        await sessionServer.connect(transport)
-        await transport.handleRequest(req, res, req.body)
-        return
-      } else {
-        // 잘못된 요청
-        console.error(`[POST /mcp] Invalid request: No valid session ID or init request`)
-        res.status(400).json({
+    // 자체 키 없는 요청은 서버 LAW_OC로 폴백 — 전역 상한 적용
+    // initialize/tools/list 등 핸드셰이크는 법제처 쿼터를 안 쓰므로 tools/call만 게이트
+    // (핸드셰이크까지 429로 막으면 claude.ai 커넥터가 도구 목록 자체를 못 싣는다)
+    const fallbackCallCount = countToolCalls(req.body)
+    if (!apiKey && fallbackCallCount > 0) {
+      const verdict = fallbackAllowed(fallbackCallCount)
+      if (!verdict.ok) {
+        res.setHeader("Retry-After", String(verdict.retryAfterSec))
+        res.status(429).json({
           jsonrpc: "2.0",
           error: {
             code: -32000,
-            message: "Bad Request: No valid session ID provided"
+            message: verdict.daily
+              ? "Shared API daily cap reached. Provide your own key via 'apiKey' header (free: https://open.law.go.kr)."
+              : `Shared API quota exceeded — retry in ${verdict.retryAfterSec}s, or provide your own key via 'apiKey' header (free: https://open.law.go.kr).`,
           },
-          id: null
+          id: null,
         })
         return
       }
+    }
+
+    let server: Server | undefined
+    let transport: StreamableHTTPServerTransport | undefined
+
+    try {
+      server = createServer(config.executionLimits)
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,  // ← stateless 모드
+        enableJsonResponse: true,
+      })
+
+      // Disconnecting the HTTP client must stop its upstream work.  This is
+      // deliberately separate from MCP's item cancellation signal: sibling
+      // batch items share a budget but retain separate cancellation signals.
+      const connectionAbort = new AbortController()
+      const abortConnection = () => {
+        if (!connectionAbort.signal.aborted) connectionAbort.abort("HTTP client disconnected")
+      }
+      req.once("aborted", abortConnection)
+
+      // 요청 종료 시 리소스 정리
+      res.on("close", () => {
+        if (!res.writableEnded) abortConnection()
+        try { transport?.close() } catch { /* ignore */ }
+        server?.close().catch(() => {})
+      })
+
+      await server.connect(transport)
+
+      // ALS로 요청 단위 API 키 격리 (동시 요청 안전)
+      await requestContext.run({
+        apiKey,
+        signal: connectionAbort.signal,
+        budget: new RequestExecutionBudget(config.executionLimits),
+      }, async () => {
+        await transport!.handleRequest(req, res, req.body)
+      })
     } catch (error) {
-      console.error("[POST /mcp] Error:", error)
+      const scrubbed = scrubError(error)
+      console.error("[POST /mcp] Error:", scrubbed.message)
+      if (scrubbed.stack && process.env.NODE_ENV !== "production") {
+        console.error(scrubbed.stack)
+      }
+      try { transport?.close() } catch { /* ignore */ }
+      server?.close().catch(() => {})
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: "Internal server error"
-          },
+          error: { code: -32603, message: "Internal server error" },
           id: null
         })
       }
     }
   })
 
-  // GET /mcp - SSE 스트림 (서버 알림용)
-  app.get("/mcp", async (req, res) => {
-    console.error(`[GET /mcp] SSE stream request`)
-
-    try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined
-      const session = sessionId ? sessions.get(sessionId) : undefined
-
-      if (!session) {
-        // MCP 스펙: 모르는 세션 → 404 (클라이언트 재초기화 유도)
-        console.error(`[GET /mcp] Unknown session ID: ${sessionId} (returning 404)`)
-        res.status(404).send("Session not found. Please reinitialize.")
-        return
-      }
-
-      session.lastAccess = Date.now()
-
-      res.on("close", () => {
-        console.error(`[GET /mcp] SSE connection closed for session ${sessionId}`)
-      })
-
-      await session.transport.handleRequest(req, res)
-    } catch (error) {
-      console.error("[GET /mcp] Error:", error)
-      if (!res.headersSent) {
-        res.status(500).send("Internal server error")
-      }
-    }
+  // GET/DELETE /mcp - stateless 모드에서는 불허 (MCP 공식 예제와 동일)
+  app.get("/mcp", (req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed. Server runs in stateless mode." },
+      id: null
+    })
   })
 
-  // DELETE /mcp - 세션 종료
-  app.delete("/mcp", async (req, res) => {
-    console.error(`[DELETE /mcp] Session termination request`)
-
-    try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined
-      const session = sessionId ? sessions.get(sessionId) : undefined
-
-      if (!session) {
-        // 이미 없는 세션 → 404 (idempotent하게 처리)
-        console.error(`[DELETE /mcp] Unknown session ID: ${sessionId} (returning 404)`)
-        res.status(404).send("Session not found")
-        return
-      }
-
-      await session.transport.handleRequest(req, res)
-      sessions.delete(sessionId!)
-      deleteSession(sessionId!)
-      console.error(`[DELETE /mcp] Session removed: ${sessionId}`)
-    } catch (error) {
-      console.error("[DELETE /mcp] Error:", error)
-      if (!res.headersSent) {
-        res.status(500).send("Error processing session termination")
-      }
-    }
+  app.delete("/mcp", (req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed. Server runs in stateless mode." },
+      id: null
+    })
   })
 
-  // 서버 시작 (0.0.0.0으로 바인딩하여 외부 접속 허용)
-  const expressServer = app.listen(port, "0.0.0.0", () => {
-    console.error(`✓ Korean Law MCP server (HTTP mode) listening on port ${port}`)
-    console.error(`✓ MCP endpoint: http://0.0.0.0:${port}/mcp`)
-    console.error(`✓ Health check: http://0.0.0.0:${port}/health`)
-    console.error(`✓ Transport: Streamable HTTP`)
+  // 최종 에러 핸들러 — Express 기본 핸들러는 스택 트레이스와 설치 경로를 그대로
+  // 본문에 실어 보낸다(NODE_ENV 미설정 시). body-parser의 413/400도 여기로 온다.
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = typeof err?.status === "number" ? err.status : 500
+    const scrubbed = scrubError(err)
+    console.error(`[express] ${status} ${scrubbed.message}`)
+    if (res.headersSent) return
+    res.status(status).json({
+      jsonrpc: "2.0",
+      error: {
+        code: status === 413 ? -32600 : -32603,
+        message: status === 413 ? "Request entity too large." : "Internal server error",
+      },
+      id: null,
+    })
   })
 
-  // 종료 처리
-  async function gracefulShutdown(signal: string) {
+  // 서버 시작.  Loopback is the safe default; remote exposure is an explicit
+  // MCP_HTTP_HOST configuration validated above.
+  const expressServer = app.listen(port, config.host, () => {
+    console.error(`✓ Korean Law MCP server (HTTP stateless) listening on port ${port}`)
+    console.error(`✓ MCP endpoint: http://${config.host}:${port}/mcp`)
+    console.error(`✓ Health check: http://${config.host}:${port}/health`)
+  })
+
+  // 종료 처리 — in-flight 요청 완료 대기 (최대 10초), 이후 강제 종료
+  function gracefulShutdown(signal: string) {
     console.error(`${signal} received, shutting down server...`)
-
-    for (const [sessionId, session] of sessions) {
-      try {
-        await session.transport.close()
-        await session.server.close()
-        sessions.delete(sessionId)
-        deleteSession(sessionId)
-      } catch (error) {
-        console.error(`Error closing transport for session ${sessionId}:`, error)
-      }
-    }
-
-    expressServer.close()
-    console.error("Server shutdown complete")
-    process.exit(0)
+    const forceExit = setTimeout(() => {
+      console.error("Shutdown timeout (10s) — forcing exit")
+      process.exit(0)
+    }, 10_000)
+    forceExit.unref()
+    // idle keep-alive 연결은 close()가 안 끊는다 → 없으면 항상 10초 타임아웃 후
+    // 비정상 종료로 기록됨. fly 롤링 배포의 clean exit을 위해 명시적으로 끊는다.
+    expressServer.closeIdleConnections()
+    expressServer.close(() => {
+      clearTimeout(forceExit)
+      console.error("Server shutdown complete")
+      process.exit(0)
+    })
   }
 
   process.on("SIGINT", () => gracefulShutdown("SIGINT"))
